@@ -50,6 +50,11 @@ WORKER_ALIVE_SECONDS = 15
 STALE_JOB_SECONDS = 30
 
 
+# Parts of an AnalysisResult that are not kept inside the stored `result` document: each
+# has a column or a lookup of its own, and is added when the result is read.
+STORED_APART = {"coaching", "revisions", "monologue_id"}
+
+
 class DuplicateJob(Exception):
     """A job with the same idempotency key already exists."""
 
@@ -94,6 +99,7 @@ def create_job(
     role: str = TAKE,
     title: str | None = None,
     source_analysis_id: str | None = None,
+    monologue_id: str | None = None,
 ) -> Job:
     job = Job(
         id=job_id,
@@ -101,6 +107,7 @@ def create_job(
         role=role,
         title=title,
         source_analysis_id=source_analysis_id,
+        monologue_id=monologue_id,
         profile=profile,
         language_hint=language_hint,
         retain_audio=retain_audio,
@@ -210,6 +217,21 @@ def recording_family(session: Session, root_id: str) -> list[Analysis]:
     )
 
 
+def monologue_exists(session: Session, monologue_id: str) -> bool:
+    """Whether any revision of this monologue's reference recording is still stored."""
+    return (
+        session.execute(
+            select(Analysis.id)
+            .where(
+                Analysis.role == REFERENCE,
+                (Analysis.root_id == monologue_id) | (Analysis.id == monologue_id),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
 def next_revision(session: Session, root_id: str) -> int:
     family = recording_family(session, root_id)
     # 2 at least: if the first result has since been deleted, this is still a later one.
@@ -301,6 +323,12 @@ def complete_job(
         root_id = recording_root(source) if source else job.source_analysis_id
         revision, reason = next_revision(session, root_id), "reanalysed"
 
+    # A take keeps its monologue only while that monologue exists. If it was deleted
+    # while this job waited, the take is stored as a free one, not as one nobody can find.
+    monologue_id = job.monologue_id
+    if monologue_id and not monologue_exists(session, monologue_id):
+        monologue_id = None
+
     result = schemas.AnalysisResult(
         **body.model_dump(),
         analysis_id=analysis_id,
@@ -327,9 +355,11 @@ def complete_job(
         root_id=root_id,
         revision=revision,
         revision_reason=reason,
+        monologue_id=monologue_id,
         # The coaching lives in its own column so it can be rewritten without the result,
-        # and the family of revisions is looked up afresh whenever the result is read.
-        result=result.model_dump(mode="json", by_alias=True, exclude={"coaching", "revisions"}),
+        # and the family of revisions is looked up afresh whenever the result is read. The
+        # monologue is likewise read from its column, so it is stored in one place only.
+        result=result.model_dump(mode="json", by_alias=True, exclude=STORED_APART),
         coaching=coaching.model_dump(mode="json", by_alias=True) if coaching else None,
         # Stored on its own as well: a picture for the screen, read by no measurement.
         waveform=waveform.model_dump(mode="json", by_alias=True) if waveform else None,
@@ -717,6 +747,7 @@ def to_status(
         error=error,
         analysis_id=job.analysis_id,
         source_analysis_id=job.source_analysis_id,
+        monologue_id=job.monologue_id,
         can_retry=(
             job.status == FAILED
             and job.error_retryable

@@ -80,9 +80,9 @@ const HEADINGS: { [Phase in RunState["phase"]]: Heading } = {
     if (run.job.status === "queued") return "Waiting in the queue";
     if (kind === "coaching") return "Writing the coaching again";
     if (again) {
-      return role === "reference" ? "Measuring the reference again" : "Analysing the recording again";
+      return role === "reference" ? "Measuring the original again" : "Analysing the recording again";
     }
-    return role === "reference" ? "Measuring the reference recording" : "Analysing your recording";
+    return role === "reference" ? "Measuring the original recording" : "Analysing your recording";
   },
   loading_result: () => "Loading the result",
   done: (_, kind, role, again) =>
@@ -90,17 +90,17 @@ const HEADINGS: { [Phase in RunState["phase"]]: Heading } = {
       ? "New coaching written"
       : again
         ? role === "reference"
-          ? "Reference measured again"
+          ? "Original measured again"
           : "New revision ready"
         : role === "reference"
-          ? "Reference added"
+          ? "Monologue added"
           : "Analysis finished",
   cancelled: (_, kind) => (kind === "coaching" ? "Coaching cancelled" : "Analysis cancelled"),
   failed: (_, kind, role) =>
     kind === "coaching"
       ? "New coaching could not be written"
       : role === "reference"
-        ? "The reference could not be added"
+        ? "The monologue could not be added"
         : "The analysis did not finish",
 };
 
@@ -188,12 +188,14 @@ function RunBody({ run, kind, role, coachingFor, again = false, store }: RunPane
             {kind === "coaching"
               ? "It replaces the earlier coaching in the results below. The measurements were not changed."
               : again && role === "reference"
-                ? "It is in your reference recordings as a new revision, measured with the settings as they are now, and has been chosen to compare with. The earlier one is still listed until you delete it."
+                ? "It is stored as a new revision of the original, measured with the settings as they are now, and your takes are now compared with it. The earlier revision is kept."
                 : again
                   ? "It is shown below as a new revision, made with the settings as they are now. The earlier result is still in your history, unchanged."
                   : role === "reference"
-                  ? "It is now in your reference recordings and has been chosen to compare with."
-                  : "The results are below and have been added to your history."}
+                  ? "It is now in your monologues. Choose “Practise” on it to start."
+                  : run.job.monologueId
+                    ? "The comparison with the original is below, and the take has been saved under this monologue."
+                    : "The results are below and have been added to your history."}
           </p>
           <div>
             <Button onClick={() => store.dismissRun()}>Dismiss</Button>

@@ -11,6 +11,8 @@ type TimerPanelProps = {
   remainingMs: number;
   summary: PracticeSummary;
   dispatch: (action: PracticeAction) => void;
+  /** Starts another round once this one has no step left. */
+  onPractiseAgain: () => void;
 };
 
 const TIMER_LABELS: Record<TimerState["status"], string> = {
@@ -26,6 +28,7 @@ export function TimerPanel({
   remainingMs,
   summary,
   dispatch,
+  onPractiseAgain,
 }: TimerPanelProps) {
   const paused = timer.status === "paused";
 
@@ -58,9 +61,20 @@ export function TimerPanel({
       ) : (
         <p className="mt-1 text-lg font-semibold">
           {summary.routineCompleted
-            ? `Routine complete: all ${summary.total} steps done today.`
-            : `No steps left today. ${summary.completed} completed, ${summary.skipped} skipped.`}
+            ? `Routine complete: all ${summary.total} steps done.`
+            : `No steps left in this round. ${summary.completed} completed, ${summary.skipped} skipped.`}
         </p>
+      )}
+      {!activeStep && (
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <Button variant="primary" onClick={onPractiseAgain}>
+            Practise again
+          </Button>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Optional: another round of the same five steps. This round stays in today&rsquo;s
+            record. To do it on a different monologue, choose that one in Monologues.
+          </p>
+        </div>
       )}
       {!activeStep && !summary.routineCompleted && (
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">

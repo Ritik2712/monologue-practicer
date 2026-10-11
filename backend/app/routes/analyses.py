@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
 
-from app import history, job_queue, profiles, revisions, schemas, uploads
+from app import history, job_queue, monologues, profiles, revisions, schemas, uploads
 from app.comparison.compare import compare
 from app.comparison.settings import DEFAULT_COMPARISON_SETTINGS
 from app.config import settings
@@ -70,6 +70,7 @@ def submit_analysis(
     retain_audio: Annotated[bool, Form(alias="retainAudio")] = False,
     role: Annotated[schemas.Role, Form()] = "take",
     title: Annotated[str | None, Form(max_length=300)] = None,
+    monologue_id: Annotated[str | None, Form(alias="monologueId", max_length=64)] = None,
     idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
 ) -> schemas.JobStatus:
     """Accepts a recording, queues it for analysis and returns at once with a job to poll.
@@ -81,11 +82,21 @@ def submit_analysis(
     `role` says what the recording is: one of the user's own takes (the default), or a
     `reference` to compare takes against. A reference is measured in exactly the same way,
     is listed separately, gets no coaching, and can be given a `title`.
+
+    `monologueId` says which monologue a take was recorded for: the ID of that monologue,
+    or of its reference recording in any revision. The take is then listed under that
+    monologue and not in the General Practice history. It is ignored for a reference.
     """
     existing = job_queue.find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
         response.status_code = 200
         return job_queue.to_status(session, existing, now, data_dir)
+
+    monologue = None
+    if monologue_id and role == job_queue.TAKE:
+        monologue = monologues.resolve(session, monologue_id)
+        if monologue is None:
+            raise _error(404, "monologue_not_found", "No monologue with this ID exists.")
 
     extension = uploads.pick_extension(audio.filename, audio.content_type)
     if extension is None:
@@ -141,6 +152,7 @@ def submit_analysis(
                 if role == job_queue.REFERENCE
                 else None
             ),
+            monologue_id=monologue,
         )
     except job_queue.DuplicateJob as duplicate:
         uploads.delete_audio(audio_path, data_dir)
@@ -160,6 +172,7 @@ def _result(session, analysis: Analysis) -> schemas.AnalysisResult:
         result.coaching = schemas.Coaching.model_validate(analysis.coaching)
     # Looked up now, so an older result also lists the revisions made after it.
     result.revisions = revisions.revision_infos(session, analysis)
+    result.monologue_id = analysis.monologue_id
     return result
 
 
@@ -331,30 +344,51 @@ def get_analysis_options() -> schemas.AnalysisOptions:
     )
 
 
+def _monologue(session, given: str | None) -> str | None:
+    """Turns the `monologue` query value into what the history functions expect."""
+    if given is None or given == history.NO_MONOLOGUE:
+        return given
+    resolved = monologues.resolve(session, given)
+    if resolved is None:
+        raise _error(404, "monologue_not_found", "No monologue with this ID exists.")
+    return resolved
+
+
 @router.get("/analyses", response_model=schemas.AnalysisList)
 def list_analyses(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
     role: schemas.Role = "take",
+    monologue: Annotated[str | None, Query(max_length=64)] = None,
 ) -> schemas.AnalysisList:
     """Past analyses, newest first, with the headline numbers of each.
 
     Lists the user's own takes unless `role=reference` asks for the reference recordings.
+    `monologue=<id>` lists only the takes recorded for that monologue, and `monologue=none`
+    only the takes that belong to no monologue: the General Practice history.
     """
-    return history.list_analyses(session, limit=limit, offset=offset, role=role)
+    return history.list_analyses(
+        session, limit=limit, offset=offset, role=role, monologue=_monologue(session, monologue)
+    )
 
 
 @router.delete("/analyses", response_model=schemas.HistoryCleared)
 def clear_history(
-    session: SessionDep, data_dir: DataDirDep, role: schemas.Role = "take"
+    session: SessionDep,
+    data_dir: DataDirDep,
+    role: schemas.Role = "take",
+    monologue: Annotated[str | None, Query(max_length=64)] = None,
 ) -> schemas.HistoryCleared:
     """Deletes every stored result of one role, its finished jobs, and all their audio.
 
     Clears the history of takes unless `role=reference` is given. The other is never
-    touched, and neither are jobs still queued or running.
+    touched, and neither are jobs still queued or running. `monologue` narrows the takes
+    as it does when listing: `monologue=none` clears only the General Practice history.
     """
-    return history.clear_history(session, data_dir, role=role)
+    return history.clear_history(
+        session, data_dir, role=role, monologue=_monologue(session, monologue)
+    )
 
 
 @router.delete("/analyses/{analysis_id}", status_code=204)

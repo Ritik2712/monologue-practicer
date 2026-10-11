@@ -193,7 +193,7 @@ export function Results({
           </h2>
           <p className={`mt-1 text-sm ${MUTED}`}>
             {isReference
-              ? "The reference recording, measured the same way as your takes"
+              ? "The original recording of the monologue (its reference), measured the same way as your takes"
               : `${formatDateTime(analysis.createdAt)} · ${profileName(analysis.profile)} profile`}{" "}
             · {language} · {formatSpan(analysis.durationSeconds)}
           </p>

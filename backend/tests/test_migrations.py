@@ -77,4 +77,7 @@ def test_jobs_stored_before_coaching_existed_become_analysis_jobs(tmp_path):
             text("SELECT calibration_version, root_id, revision, revision_reason FROM analyses")
         ).one() == (1, "a1", 1, None)
         assert connection.execute(text("SELECT source_analysis_id FROM jobs")).scalar_one() is None
+        # A take stored before monologues existed belongs to none of them.
+        assert connection.execute(text("SELECT monologue_id FROM jobs")).scalar_one() is None
+        assert connection.execute(text("SELECT monologue_id FROM analyses")).scalar_one() is None
     engine.dispose()

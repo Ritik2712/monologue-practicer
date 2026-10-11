@@ -3,10 +3,10 @@ export type PracticeStepConfig = {
   title: string;
   instruction: string;
   durationSeconds: number;
-  /** Extra line shown under the instruction, e.g. to flag a feature that is not built yet. */
+  /** Extra line shown under the instruction, e.g. to say what the app does not measure. */
   note?: string;
-  /** A screen elsewhere in the app that helps with this step. */
-  link?: { href: string; label: string };
+  /** What the step's tools are, to finish the sentence "Show …" on the button that opens them. */
+  tools: string;
 };
 
 /**
@@ -21,34 +21,36 @@ export const PRACTICE_ROUTINE: { readonly steps: readonly PracticeStepConfig[] }
       instruction:
         "Study the original actor's pauses, emphasis, pace, breathing, pitch, and vocal intensity.",
       durationSeconds: 180,
-      note: "The Monologue screen plays the original and shows its measured pauses, pace, loudness and pitch. Breathing and emphasis by slowing down are not measured: those are still for your ear.",
-      link: { href: "/monologue", label: "Open Monologue to study the original recording" },
+      note: "Breathing, and emphasis made by slowing down, are not measured: those are still for your ear.",
+      tools: "the original recording",
     },
     {
       id: "mark",
       title: "Mark the delivery",
       instruction: "Mark the words to emphasise, where to pause, and where the voice changes.",
       durationSeconds: 180,
+      tools: "the script of the original",
     },
     {
       id: "perform",
       title: "Perform the monologue",
       instruction: "Practise the delivery, rhythm, and emotional progression, not just the words.",
       durationSeconds: 240,
+      tools: "the script to perform from",
     },
     {
       id: "compare",
       title: "Record and compare",
       instruction: "Record yourself and compare your recording with the original.",
       durationSeconds: 180,
-      note: "The Monologue screen records your take and sets it against the original: where each of you pauses, how fast each phrase is said, and both versions to listen to.",
-      link: { href: "/monologue", label: "Open Monologue to record and compare your take" },
+      tools: "recording and the comparison",
     },
     {
       id: "correct",
       title: "Correct and repeat",
-      instruction: "Choose the two biggest delivery mistakes and perform the passage again.",
+      instruction: "Choose the two biggest differences from the original and perform the passage again.",
       durationSeconds: 120,
+      tools: "the biggest differences",
     },
   ],
 };

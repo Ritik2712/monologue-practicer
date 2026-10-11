@@ -6,17 +6,19 @@ top to bottom and understand what each part does and why it was built that way.
 | Document | What is in it |
 | --- | --- |
 | **This file** | What the app is, what is built, how the parts fit together, glossary |
-| [DOCUMENTATION_FRONTEND.md](DOCUMENTATION_FRONTEND.md) | Everything that runs in the browser: pages, the Daily Practice checklist, the timer, General Practice, the Monologue screen, the feedback controls and the calibration panel, browser storage, and the frontend decisions |
-| [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md) | The Python side: the API list, the database, the job queue and worker (and why there is no Celery), how feedback, calibration and revisions are stored, and the backend decisions |
+| [DOCUMENTATION_FRONTEND.md](DOCUMENTATION_FRONTEND.md) | Everything that runs in the browser: pages, the Monologues list, Daily Practice on a monologue (the checklist, the timer, the tools of each step), a take's full analysis, General Practice, the feedback controls and the calibration panel, browser storage, and the frontend decisions |
+| [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md) | The Python side: the API list, the database, the job queue and worker (and why there is no Celery), how monologues and their takes are kept together, how feedback, calibration and revisions are stored, and the backend decisions |
 | [DOCUMENTATION_SCIENCE.md](DOCUMENTATION_SCIENCE.md) | How a recording is measured — speech detection, pauses, the three kinds of WPM, loudness, pitch — with formulas and limits; how the coaching is produced with a local AI model and how its answer is checked; how a take is compared with a reference recording; how feedback adjusts settings, and what it is not allowed to change; and the science decisions |
 | [README.md](README.md) | The commands to install, run and check the app |
 
 The documents are updated at the end of every phase. Every phase in the original plan
-(0 to 6) is built, and Phase 7 added what Phase 6 had left out. If the code and a document
-ever disagree, the code is right and the document needs fixing.
+(0 to 6) is built, Phase 7 added what Phase 6 had left out, and Phase 8 joined the Monologue
+screen and Daily Practice into one flow. If the code and a document ever disagree, the code
+is right and the document needs fixing.
 
-**Last updated:** end of Phase 7 (feedback on references, picking a word for a missed
-pause, the summary of your feedback, and one command to start everything).
+**Last updated:** end of Phase 8 (a list of monologues, Daily Practice done on one of
+them with each step's tools inside it, takes stored under their monologue, and General
+Practice left for speaking that has no original to compare with).
 
 ## 1. What this app is
 
@@ -29,24 +31,31 @@ computer. No paid services, no cloud, no account. The full plan has these parts:
   loudness, pitch) and coaching from a local AI model.
 - **Feedback / calibration**: tell the app when its analysis was wrong so it adjusts.
 
-All four are built. There are three screens:
+All four are built. Since Phase 8 the first two are one flow, because the daily routine is
+always done on a monologue. There are three places in the navigation:
 
-- the **Daily Speaking Practice** checklist;
-- **Monologue**, where you add the original recording once, study it, record your own take,
-  and see where the two differ, pause by pause and phrase by phrase, with both to listen to;
-- **General Practice**, where you record or upload your voice, see it measured, and get
-  coaching on what to change for the next take. The coaching is worded by an AI model
-  running on this computer (Ollama), or by fixed rules when that model is not available.
+- **Monologues**: the list of monologues you practise. A monologue is added by giving its
+  original recording once. Choosing one opens Daily Practice for it;
+- **Daily Speaking Practice**: the timed five-step routine, done on that monologue. Each
+  step holds what it is done with: the original to listen to and study, its script with
+  the measured pauses, the recorder for your take, the comparison of the take with the
+  original pause by pause and phrase by phrase, and the two biggest differences. Every
+  take is saved under its monologue, and each has a page with its full analysis;
+- **General Practice**, for any speaking that has no original to set it against: you
+  record or upload your voice, see it measured, and get coaching against a delivery
+  profile you choose. The coaching is worded by an AI model running on this computer
+  (Ollama), or by fixed rules when that model is not available.
 
-**Feedback and calibration** live inside General Practice. Beside each pause, phrase and
-correction you can say where the analysis got it wrong: this pause was a slip, a pause was
-missed here, these words are wrong, this advice was not useful. Two things come of it. A
+**Feedback and calibration** live wherever a full result is shown: a take's full analysis,
+and General Practice. Beside each pause, phrase and correction you can say where the
+analysis got it wrong: this pause was a slip, a pause was missed here, these words are
+wrong, this advice was not useful. Two things come of it. A
 label on a pause changes how the coaching reads that pause. And when several reports
 agree, one setting moves a small step, inside a fixed range, with the reason shown and an
 undo. No feedback ever changes a measurement that is already stored.
 
-A reference recording takes feedback too, on the Monologue screen: its misheard words can
-be corrected, and mistakes in its pauses reported. The panel that shows the settings also
+A monologue's original recording (its reference) takes feedback too, in step 1 of Daily
+Practice: its misheard words can be corrected, and mistakes in its pauses reported. The panel that shows the settings also
 counts up everything you have said so far, and on request the local AI model puts that
 count into a few sentences. That summary is only something to read.
 
@@ -64,6 +73,7 @@ All three programs can be started with one command: `./run.sh`.
 | 5 | Reference comparison, Monologue screen, waveform overlay | The Monologue screen, the reference library, the comparison section (also inside General Practice), the waveform picture, checklist links | Reference recordings as a role of analysis, lining up two transcripts, the comparison, the waveform outline, 2 new endpoints, 5 new database columns | **Built** |
 | 6 | Feedback and automatic calibration | Feedback controls beside each pause, phrase and correction; the list of what was said; the calibration panel with undo, reset and on/off; revisions in the header and history | Storing feedback; deciding what each piece counts towards; the adjustment rules; versions of the settings; corrected transcripts and fresh analyses as new revisions; 9 new endpoints, 3 new tables | **Built** |
 | 7 | What Phase 6 left out, and one command to start the app | Picking the word a missed pause came after; feedback controls on a reference, on the Monologue screen; "What your feedback adds up to" in the calibration panel, with a button to ask the AI model | Feedback and transcript corrections on references; the rule that a setting needs a report from one of your own takes; the facts counted from the feedback; a third kind of job that has the AI model word them, with checks; 2 new endpoints, 1 new table; `run.sh` | **Built** |
+| 8 | Monologues and Daily Practice as one flow | The Monologues list; Daily Practice on a chosen monologue, with the tools of each step under it; the script of the original; rounds ("practise again"); a page for a take's full analysis; General Practice without the reference comparison | Which monologue a take belongs to; the monologues as a list with their takes counted; deleting a monologue with its takes; the General Practice history narrowed to takes that belong to none; 2 new endpoints, 2 new database columns | **Built** |
 
 Phase 1 was a frontend-only phase: the checklist runs completely in the browser and never
 calls the backend. Phase 2 was a backend-only phase. Phase 3 is where the two meet: the
@@ -75,6 +85,10 @@ all three as well: the rules for what feedback may change (science), where it is
 and how old results stay traceable (backend), and the controls and the panel (frontend).
 Phase 7 was not in the original plan: it built three things Phase 6 had named as not
 built, and a script at the top of the project. It also touched all three documents.
+Phase 8 was not in the plan either. It came from using the app: the daily routine is
+always done on a monologue, so keeping the routine on one screen and the monologue on
+another made no sense. It is mostly frontend work, with a small backend part (a take
+remembers its monologue), and it changes no measurement.
 
 ## 3. The big picture
 
@@ -89,7 +103,8 @@ lives.
   │  the pages you see and click     │
   │                                  │
   │  localStorage                    │
-  │  (the checklist is saved here)   │
+  │  (the checklist is saved here,   │
+  │   with the monologue it is on)   │
   └───────────────┬──────────────────┘
                   │  HTTP requests, e.g. GET /api/health
                   ▼
@@ -152,13 +167,14 @@ monologue coach/
 
 | Data | Where | Who can see it | Status | Explained in |
 | --- | --- | --- | --- | --- |
-| Daily checklist progress and history | The browser's `localStorage` | Only this browser on this device | **Built** | Frontend document |
+| Daily checklist progress and history, with the monologue each round was on | The browser's `localStorage` | Only this browser on this device | **Built** | Frontend document |
+| Which monologue a take was recorded for | The same SQLite file, in the take's `monologue_id` column | Only this computer | **Built** | Backend document |
+| The monologues themselves | Nowhere of their own: a monologue is its reference recording, in every revision, plus the takes marked with it | Only this computer | **Built** | Backend document |
 | Analysis jobs and results | SQLite file `backend/data/monologue_coach.db` | Only this computer | **Built** | Backend document |
 | The coaching for each result | The same SQLite file, in its own column beside the measurements | Only this computer | **Built** | Backend document |
 | Reference recordings: their measurements | The same SQLite file, as analyses with the role "reference" | Only this computer | **Built** | Backend document |
 | Reference recordings: their audio | `backend/data/audio/`, when kept (the default for a reference) | Only this computer | **Built** | Backend document |
 | The waveform outline of each recording | The same SQLite file, in its own column; sent only when the picture is switched on | Only this computer | **Built** | Science document |
-| Which reference is chosen | The browser's `localStorage` | Only this browser on this device | **Built** | Frontend document |
 | The ID of an analysis in progress | The browser's `localStorage`, until the job ends | Only this browser on this device | **Built** | Frontend document |
 | A recording you just made or chose | The page's memory, until the tab is closed or refreshed | Only this tab | **Built** | Frontend document |
 | Uploaded recordings | `backend/data/uploads/`, deleted once analysed | Only this computer | **Built** | Backend document |
@@ -317,6 +333,35 @@ are in their own documents.
   automatically after every piece of feedback (half a minute of the model's time for a
   sentence nobody asked for).
 
+### G13. The daily routine is done on a monologue, and the two are one flow
+
+- **Chosen:** the Monologues screen is a list. Choosing a monologue opens Daily Practice
+  for it, and each of the five steps holds what it is done with. A take recorded in step 4
+  belongs to that monologue: it is stored with it, listed under it, and compared with its
+  original.
+- **Why:** it is how the app is used. Step 1 says "listen to the original" and step 4
+  "record and compare"; before Phase 8 both sent the user to another screen, where a
+  reference had to be chosen and a take picked from a menu of every take ever made.
+- **Decided against:** keeping the two screens and adding more links between them (the
+  user still has to carry "which monologue" across in their head); a monologue chosen
+  once in a setting (a user with two monologues would be changing a setting daily).
+- **What it cost:** the checklist no longer works with nothing chosen, and its tools need
+  the backend. The timer and the checkboxes still work without it.
+
+### G14. General Practice has no reference comparison
+
+- **Chosen:** a take made in General Practice is measured and coached against a delivery
+  profile, and is never set against a reference recording. A take recorded for a monologue
+  is compared with that monologue's original and with no other.
+- **Why:** it finishes what G6 started. The three kinds of statement now each have their
+  own place: measurements and profile coaching in General Practice, the measured
+  comparison in Daily Practice. Before, any take could be compared with any reference,
+  including one of different words, which the comparison could only answer with "these do
+  not appear to be the same passage".
+- **Decided against:** leaving the comparison in General Practice as an option. A
+  comparison of a take with an original it was not recorded for is a question nobody
+  asked.
+
 ## 7. Glossary
 
 | Word | Meaning |
@@ -346,7 +391,10 @@ are in their own documents.
 | **Grounding** | Making sure everything the model says rests on something that was actually measured. |
 | **Template** | A fixed sentence with gaps that code fills in, e.g. "Say {line} at half speed". |
 | **Take** | One of your own recordings. |
-| **Reference** | A recording you supply to compare your takes with, such as the original performance. |
+| **Reference** | A recording you supply to compare your takes with, such as the original performance. On screen it is called "the original". |
+| **Monologue** | One piece you practise: its reference recording, and the takes you recorded for it. |
+| **Free take** | A take that belongs to no monologue: one made in General Practice. |
+| **Round** | One pass through the five steps of the daily routine. One round is the day's routine; more are extra. |
 | **Line-up (alignment)** | Working out which word of one recording is which word of the other. |
 | **Waveform** | A picture of a sound wave. Here it is only ever a picture: nothing is measured from it. |
 | **Feedback** | Something you say about one analysis: a label, a report, or a note for the record. |

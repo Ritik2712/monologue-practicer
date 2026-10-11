@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/Button";
@@ -18,9 +19,7 @@ import { validateAudioFile } from "../validation";
 import { BackendNotice } from "./BackendNotice";
 import { CalibrationPanel } from "./CalibrationPanel";
 import { HistoryPanel } from "./HistoryPanel";
-import { MUTED, Notice, Section } from "./parts";
-import { ReferenceComparison } from "./ReferenceComparison";
-import { ReferenceLibrary } from "./ReferenceLibrary";
+import { FOCUS_RING, MUTED, Notice } from "./parts";
 import { Results } from "./Results";
 import { RunPanel } from "./RunPanel";
 import {
@@ -52,7 +51,7 @@ const CONFIRM_TEXT: Record<Confirmation["kind"], { title: string; description: s
   clear_history: {
     title: "Clear all history?",
     description:
-      "Every saved analysis of your own takes, and every recording kept with them, is deleted from this device. Your reference recordings are not affected, nor is an analysis still in progress or the Daily Practice checklist. This cannot be undone.",
+      "Every analysis made in General Practice, and every recording kept with one, is deleted from this device. Your monologues and the takes recorded for them are not affected, nor is an analysis still in progress or the Daily Practice checklist. This cannot be undone.",
     confirmLabel: "Clear all history",
   },
 };
@@ -83,7 +82,7 @@ export function GeneralPractice() {
   const options = state.options.status === "ready" ? state.options.data : null;
   const busy = ["submitting", "tracking", "loading_result"].includes(state.run.phase);
 
-  // A link such as /general?analysis=<id>, as the Monologue screen gives, opens that result.
+  // A link such as /general?analysis=<id> opens that result.
   useEffect(() => {
     const analysisId = new URLSearchParams(window.location.search).get("analysis");
     if (analysisId) store.openAnalysis(analysisId);
@@ -152,14 +151,18 @@ export function GeneralPractice() {
   };
 
   const viewed = state.viewed;
-  const viewedAnalysis = viewed.status === "ready" ? viewed.analysis : null;
-  // On this screen feedback is about the take on view; a reference gets its feedback on the
-  // Monologue screen. With nothing on view, only the calibration and the summary load.
-  const feedback = useFeedback(viewedAnalysis?.role === "take" ? viewedAnalysis.analysisId : null);
+  // This screen is for recordings that belong to no monologue. A take recorded for one,
+  // or a monologue's original, may be on view in the shared store after a visit to
+  // Daily Practice: it has its own screen and is not shown here.
+  const elsewhere =
+    viewed.status === "ready" &&
+    (viewed.analysis.role === "reference" || !!viewed.analysis.monologueId)
+      ? viewed.analysis
+      : null;
+  const viewedAnalysis = viewed.status === "ready" && !elsewhere ? viewed.analysis : null;
+  // With nothing on view, only the calibration and the summary load.
+  const feedback = useFeedback(viewedAnalysis?.analysisId ?? null);
   const audioSrc = viewedAnalysis ? audioSourceFor(viewedAnalysis, state.localAudio, generalApi) : null;
-  const chosenReference = state.references.items.find(
-    (item) => item.analysisId === state.selectedReferenceId,
-  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -169,6 +172,17 @@ export function GeneralPractice() {
           Record yourself or upload a recording, and see how you spoke: pace, pauses, loudness and
           pitch, phrase by phrase, with coaching on what to change for the next take. Hindi,
           English and Hinglish.
+        </p>
+        <p className={`mt-1 text-sm ${MUTED}`}>
+          For any speaking you want measured, judged against a delivery profile you choose. To
+          practise a monologue against its original recording, use{" "}
+          <Link
+            href="/monologue"
+            className={`rounded font-medium text-indigo-800 underline underline-offset-4 hover:no-underline dark:text-indigo-300 ${FOCUS_RING}`}
+          >
+            Monologues
+          </Link>
+          .
         </p>
         <p className={`mt-1 text-sm ${MUTED}`}>
           Everything is analysed on this computer, including the AI coaching. Your audio and your
@@ -247,6 +261,18 @@ export function GeneralPractice() {
           That analysis could not be opened. {viewed.message}
         </Notice>
       )}
+      {elsewhere?.monologueId && (
+        <Notice kind="info">
+          The take that is open was recorded for a monologue, so it is not shown here.{" "}
+          <Link
+            href={`/monologue/take?analysis=${encodeURIComponent(elsewhere.analysisId)}`}
+            className={`rounded font-medium text-indigo-800 underline underline-offset-4 hover:no-underline dark:text-indigo-300 ${FOCUS_RING}`}
+          >
+            Open its full analysis
+          </Link>
+          .
+        </Notice>
+      )}
       {viewedAnalysis && (
         <Results
           // A fresh component per analysis, so playback and choices do not carry over.
@@ -255,38 +281,6 @@ export function GeneralPractice() {
           profile={options?.profiles.find((item) => item.id === viewedAnalysis.profile)}
           history={state.history.items}
           audioSrc={audioSrc}
-          referenceSection={
-            <Section
-              id="reference-heading"
-              title="Compare with a reference recording"
-              description="Set this take against a recording you supply, such as the original performance: where each of you pauses, and how fast each phrase is said. This is a measured comparison of two real recordings, separate from the delivery profile above."
-            >
-              <ReferenceLibrary
-                state={state}
-                store={store}
-                options={options}
-                busy={busy}
-                calibration={
-                  feedback.state.calibration.status === "ready"
-                    ? feedback.state.calibration.data
-                    : null
-                }
-              />
-              {chosenReference && (
-                <ReferenceComparison
-                  // Fresh players and a closed waveform for each pair of recordings.
-                  key={`${viewedAnalysis.analysisId}-${chosenReference.analysisId}`}
-                  comparison={state.comparison}
-                  reference={chosenReference}
-                  takeId={viewedAnalysis.analysisId}
-                  takeAudioSrc={audioSrc}
-                  referenceAudioSrc={audioSourceFor(chosenReference, state.localAudio, generalApi)}
-                  waveforms={state.waveforms}
-                  onLoadWaveform={(analysisId) => store.loadWaveform(analysisId)}
-                />
-              )}
-            </Section>
-          }
           coach={
             health.status === "reachable"
               ? { status: health.health.coach, model: health.health.coachModel }
@@ -298,7 +292,7 @@ export function GeneralPractice() {
           onClose={() => store.closeAnalysis()}
           onDelete={() => ask({ kind: "delete_analysis", analysisId: viewedAnalysis.analysisId })}
           onDeleteAudio={() => ask({ kind: "delete_audio", analysisId: viewedAnalysis.analysisId })}
-          feedback={viewedAnalysis.role === "take" ? feedback : undefined}
+          feedback={feedback}
           correction={state.correction}
           onCorrectTranscript={(corrections) =>
             store.correctTranscript(viewedAnalysis.analysisId, corrections)

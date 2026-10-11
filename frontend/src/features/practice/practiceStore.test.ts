@@ -396,3 +396,144 @@ describe("another tab", () => {
     expect(listener).toHaveBeenCalled();
   });
 });
+
+describe("the monologue and the rounds of a day", () => {
+  const KNOCKS = { id: "m1", title: "The one who knocks" };
+  const BLINDERS = { id: "m2", title: "By order" };
+  const completeAll = (store: ReturnType<typeof openPage>["store"]) => {
+    for (const step of STEPS) store.dispatch({ type: "set_completed", stepId: step.id, completed: true });
+  };
+
+  it("does not save a day on which a monologue was only chosen", () => {
+    const { store, fake } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+
+    expect(store.getSnapshot().record.monologue).toEqual(KNOCKS);
+    expect(fake.map.has(PRACTICE_STORAGE_KEY)).toBe(false);
+  });
+
+  it("saves the monologue with the day's progress and restores it after a refresh", () => {
+    const { store, fake } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    store.dispatch({ type: "set_completed", stepId: "listen", completed: true });
+
+    const reopened = openPage(fake).store.getSnapshot().record;
+    expect(reopened.monologue).toEqual(KNOCKS);
+    expect(completedIds(reopened)).toEqual(["listen"]);
+  });
+
+  it("keeps a round that is under way on its monologue", () => {
+    const { store } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    store.dispatch({ type: "start" });
+    store.dispatch({ type: "set_monologue", monologue: BLINDERS });
+
+    expect(store.getSnapshot().record.monologue).toEqual(KNOCKS);
+    expect(store.getSnapshot().record.timer.status).toBe("running");
+  });
+
+  it("switches monologue on request, clearing only the round on screen", () => {
+    const { store } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    store.dispatch({ type: "set_completed", stepId: "listen", completed: true });
+    store.dispatch({ type: "switch_monologue", monologue: BLINDERS });
+
+    const { record } = store.getSnapshot();
+    expect(record.monologue).toEqual(BLINDERS);
+    expect(completedIds(record)).toEqual([]);
+  });
+
+  it("starts another round after a finished one, and keeps both across a refresh", () => {
+    const { store, fake } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    store.dispatch({ type: "start_round", monologue: KNOCKS });
+    // Nothing happens while the round still has steps to do.
+    expect(store.getSnapshot().record.earlierRounds).toEqual([]);
+
+    completeAll(store);
+    store.dispatch({ type: "start_round", monologue: BLINDERS });
+    store.dispatch({ type: "set_completed", stepId: "listen", completed: true });
+
+    const reopened = openPage(fake).store.getSnapshot().record;
+    expect(reopened.earlierRounds).toEqual([
+      { monologue: KNOCKS, completed: 5, skipped: 0, total: 5, finishedAtEpochMs: T0 },
+    ]);
+    expect(reopened.monologue).toEqual(BLINDERS);
+    expect(completedIds(reopened)).toEqual(["listen"]);
+  });
+
+  it("keeps a finished round even when the next one was never begun", () => {
+    const { store, fake } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    completeAll(store);
+    store.dispatch({ type: "start_round", monologue: KNOCKS });
+
+    expect(openPage(fake).store.getSnapshot().record.earlierRounds).toHaveLength(1);
+  });
+
+  it("reset today clears every round of the day and stays on the monologue", () => {
+    const { store, fake } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    completeAll(store);
+    store.dispatch({ type: "start_round", monologue: KNOCKS });
+    store.dispatch({ type: "reset_today" });
+
+    const { record } = store.getSnapshot();
+    expect(record.earlierRounds).toEqual([]);
+    expect(record.monologue).toEqual(KNOCKS);
+    expect(fake.map.has(PRACTICE_STORAGE_KEY)).toBe(false);
+  });
+
+  it("starts the next day with no monologue, and yesterday's stays in the history", () => {
+    const { store, clock } = openPage();
+    store.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    store.dispatch({ type: "set_completed", stepId: "listen", completed: true });
+
+    clock.advance(DAY);
+    store.tick();
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.record.monologue).toBeNull();
+    expect(snapshot.history[0].monologue).toEqual(KNOCKS);
+  });
+
+  it("reads a day saved before monologues were chosen here", () => {
+    const { store, fake } = openPage();
+    store.dispatch({ type: "set_completed", stepId: "listen", completed: true });
+    // What an earlier version wrote: the same record without the two new fields.
+    const data = JSON.parse(fake.map.get(PRACTICE_STORAGE_KEY) as string);
+    delete data.days["2026-10-10"].monologue;
+    delete data.days["2026-10-10"].earlierRounds;
+    fake.map.set(PRACTICE_STORAGE_KEY, JSON.stringify(data));
+
+    const reopened = openPage(fake).store;
+    const { record, warning } = reopened.getSnapshot();
+    expect(warning).toBeNull();
+    expect(record.monologue).toBeNull();
+    expect(record.earlierRounds).toEqual([]);
+    expect(completedIds(record)).toEqual(["listen"]);
+    // A monologue can then be attached without losing what was done.
+    reopened.dispatch({ type: "set_monologue", monologue: KNOCKS });
+    expect(reopened.getSnapshot().record.monologue).toEqual(KNOCKS);
+    expect(completedIds(reopened.getSnapshot().record)).toEqual(["listen"]);
+  });
+
+  it("drops a monologue or a round that does not read, and keeps the day", () => {
+    const { store, fake } = openPage();
+    store.dispatch({ type: "set_completed", stepId: "listen", completed: true });
+    const data = JSON.parse(fake.map.get(PRACTICE_STORAGE_KEY) as string);
+    data.days["2026-10-10"].monologue = { id: 7 };
+    data.days["2026-10-10"].earlierRounds = [
+      { monologue: KNOCKS, completed: 5, skipped: 0, total: 5, finishedAtEpochMs: T0 },
+      { monologue: KNOCKS, completed: 9, skipped: 0, total: 5, finishedAtEpochMs: T0 },
+      "nonsense",
+    ];
+    fake.map.set(PRACTICE_STORAGE_KEY, JSON.stringify(data));
+
+    const { record, warning } = openPage(fake).store.getSnapshot();
+    expect(warning).toBeNull();
+    expect(record.monologue).toBeNull();
+    expect(record.earlierRounds).toHaveLength(1);
+    expect(completedIds(record)).toEqual(["listen"]);
+  });
+});

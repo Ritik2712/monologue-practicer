@@ -215,6 +215,8 @@ export type AnalysisResult = {
   revisionReason?: RevisionReason | null;
   /** Every result made from this recording, oldest first. */
   revisions?: RevisionInfo[];
+  /** The monologue this take was recorded for. Null for a reference and for a free take. */
+  monologueId?: string | null;
   audioRetained: boolean;
   profile: Profile;
   language: LanguageInfo;
@@ -252,6 +254,8 @@ export type AnalysisSummary = {
   durationSeconds: number;
   revision: number;
   revisionReason?: RevisionReason | null;
+  /** The monologue a take was recorded for, if any. */
+  monologueId?: string | null;
   audioRetained: boolean;
   originalFilename: string | null;
   metrics: Partial<Record<MetricName, MetricValue>>;
@@ -261,6 +265,31 @@ export type AnalysisSummary = {
 };
 
 export type AnalysisList = { items: AnalysisSummary[]; total: number };
+
+/**
+ * One monologue being practised: a reference recording, in its newest revision, and a count
+ * of the takes recorded for it. `monologueId` stays the same when the reference is corrected
+ * or measured again; `referenceId` then points at the new revision.
+ */
+export type Monologue = {
+  monologueId: string;
+  /** The reference recording that takes are compared with. */
+  referenceId: string;
+  title: string;
+  /** When the reference was first added. */
+  createdAt: string;
+  language: string;
+  durationSeconds: number;
+  audioRetained: boolean;
+  revision: number;
+  revisionCount: number;
+  takeCount: number;
+  lastTakeAt: string | null;
+  /** The thresholds the reference was measured with. */
+  settings?: Record<string, number>;
+};
+
+export type MonologueList = { items: Monologue[] };
 
 export type JobError = { code: string; message: string; retryable: boolean };
 
@@ -276,6 +305,8 @@ export type JobStatus = {
   analysisId: string | null;
   /** Set when this job analyses the kept recording of an earlier analysis again. */
   sourceAnalysisId?: string | null;
+  /** The monologue the take being analysed was recorded for, if any. */
+  monologueId?: string | null;
   canRetry: boolean;
   canCancel: boolean;
   queuePosition: number | null;

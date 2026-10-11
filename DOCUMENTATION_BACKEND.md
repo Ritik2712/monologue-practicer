@@ -11,8 +11,9 @@ the slow work: measuring the audio and getting the coaching written.
 
 Everything described here is built.
 
-**Last updated:** end of Phase 7 (feedback on reference recordings, what the feedback adds
-up to, a third kind of job, and `run.sh`: two new endpoints, one new table).
+**Last updated:** end of Phase 8 (a take remembers the monologue it was recorded for; the
+monologues as a list; deleting a monologue with its takes: two new endpoints, two new
+columns, no new table).
 
 ## Contents
 
@@ -21,6 +22,7 @@ up to, a third kind of job, and `run.sh`: two new endpoints, one new table).
 3. [The API list](#3-the-api-list)
 4. [Background jobs (and why there is no Celery)](#4-background-jobs-and-why-there-is-no-celery)
    - [4a. Feedback, calibration and revisions](#4a-feedback-calibration-and-revisions)
+   - [4b. Monologues and their takes](#4b-monologues-and-their-takes)
 5. [The database](#5-the-database)
 6. [Audio files on disk](#6-audio-files-on-disk)
 7. [Settings](#7-settings)
@@ -88,6 +90,7 @@ backend/
 │   ├── schemas.py        The shapes of all JSON sent and received
 │   ├── job_queue.py      Every change to a job's status
 │   ├── history.py        Listing and deleting stored analyses
+│   ├── monologues.py     A monologue: a reference recording and the takes recorded for it
 │   ├── feedback.py       Saving feedback, and working out what each piece of it does
 │   ├── feedback_summary.py   What all the feedback adds up to: the facts, the notes, and
 │   │                     the few notes the AI model picks out
@@ -104,6 +107,7 @@ backend/
 │   │   ├── analyses.py   Submit, read, list and delete analyses; kept audio; form options;
 │   │   │                 ask for coaching to be written again
 │   │   ├── jobs.py       GET /api/jobs/{id}, POST …/cancel, POST …/retry
+│   │   ├── monologues.py GET /api/monologues, DELETE /api/monologues/{id}
 │   │   └── feedback.py   Feedback on an analysis; the calibration: read, undo, reset, on/off;
 │   │                     what the feedback adds up to
 │   ├── calibration/      The settings feedback may adjust (explained in the science document)
@@ -140,7 +144,8 @@ backend/
 │       ├── 0002_coaching.py                         Adds the four coaching columns
 │       ├── 0003_references_and_waveforms.py         Adds role, title and the waveform outline
 │       ├── 0004_feedback_and_calibration.py         Adds feedback, calibration and revisions
-│       └── 0005_feedback_summary.py                 Adds the notes the AI model picked out
+│       ├── 0005_feedback_summary.py                 Adds the notes the AI model picked out
+│       └── 0006_monologue_takes.py                  Adds the monologue a take was recorded for
 ├── tests/                See section 10
 └── data/                 Created on first run; not in git
     ├── monologue_coach.db    The database
@@ -174,6 +179,8 @@ Which file to open for which question:
 | What is the AI model asked about my notes, and what is done with its answer? | `app/feedback_summary.py` (`build_prompt`, `read_answer`) |
 | How is WPM worked out again after a transcript correction? | `app/transcript_correction.py` |
 | How does a recording get a second result? | `app/revisions.py` |
+| What is a monologue made of, and what goes when one is deleted? | `app/monologues.py` |
+| Why is this take not in the General Practice history? | `app/history.py` (`_scope`) |
 | What do the delivery profiles say? | `app/profiles.py` |
 | What columns does a table have? | `app/models.py` |
 
@@ -188,7 +195,7 @@ interactive version of this list is at `http://localhost:4321/docs`.
 | Method | Path | What it does | Defined in |
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | Is the API up, can it reach the database, is a worker alive, is the speech model present, is the AI model available | `routes/health.py` |
-| `POST` | `/api/analyses` | Accepts a recording (a take or a reference), queues a job, answers at once with the job | `routes/analyses.py` |
+| `POST` | `/api/analyses` | Accepts a recording (a take, a take of a monologue, or a reference), queues a job, answers at once with the job | `routes/analyses.py` |
 | `GET` | `/api/jobs/{jobId}` | Where a job has got to. Made to be polled | `routes/jobs.py` |
 | `POST` | `/api/jobs/{jobId}/cancel` | Asks for a job to stop | `routes/jobs.py` |
 | `POST` | `/api/jobs/{jobId}/retry` | Puts a failed job back in the queue | `routes/jobs.py` |
@@ -197,9 +204,11 @@ interactive version of this list is at `http://localhost:4321/docs`.
 | `GET` | `/api/analysis-options` | What the form offers: profiles, languages, upload limits | `routes/analyses.py` |
 | `GET` | `/api/analyses/{analysisId}/comparison/{referenceId}` | Sets an analysis against a reference recording | `routes/analyses.py` |
 | `GET` | `/api/analyses/{analysisId}/waveform` | The outline of the recording's sound wave, for drawing | `routes/analyses.py` |
-| `GET` | `/api/analyses` | Past takes, newest first, with their headline numbers; or the reference recordings with `?role=reference` | `routes/analyses.py` |
+| `GET` | `/api/analyses` | Past takes, newest first, with their headline numbers: all of them, one monologue's with `?monologue=<id>`, or those of no monologue with `?monologue=none`. The reference recordings with `?role=reference` | `routes/analyses.py` |
 | `DELETE` | `/api/analyses/{analysisId}` | Deletes one analysis (take or reference), its kept recording and its job | `routes/analyses.py` |
-| `DELETE` | `/api/analyses` | Clears the history of takes; or the references with `?role=reference` | `routes/analyses.py` |
+| `DELETE` | `/api/analyses` | Clears the history of takes, narrowed the same way by `?monologue=`; or the references with `?role=reference` | `routes/analyses.py` |
+| `GET` | `/api/monologues` | The monologues: each a reference recording in its newest revision, with a count of its takes | `routes/monologues.py` |
+| `DELETE` | `/api/monologues/{monologueId}` | Deletes a monologue: its reference in every revision, and all its takes | `routes/monologues.py` |
 | `GET` | `/api/analyses/{analysisId}/audio` | The recording itself, if it was kept | `routes/analyses.py` |
 | `DELETE` | `/api/analyses/{analysisId}/audio` | Deletes only the kept recording | `routes/analyses.py` |
 | `GET` | `/api/analyses/{analysisId}/feedback` | The feedback given on one analysis, with what each piece does, and the calibration | `routes/feedback.py` |
@@ -218,7 +227,7 @@ Submitting, jobs, results and coaching are tested in `tests/test_api.py`; lists,
 kept audio, references, waveforms and the comparison in `tests/test_history_api.py`;
 feedback and calibration in `tests/test_feedback_api.py`; corrected transcripts and fresh
 analyses in `tests/test_revisions.py`; what the feedback adds up to in
-`tests/test_feedback_summary.py`.
+`tests/test_feedback_summary.py`; monologues and their takes in `tests/test_monologues.py`.
 
 ### `GET /api/health`
 
@@ -292,6 +301,17 @@ A reference is checked, queued and measured exactly like a take. The differences
 gets no coaching (its job ends after `measuring_audio`), it is listed separately, and
 clearing the history of takes does not touch it.
 
+**A take of a monologue.** One more optional field says which monologue a take was
+recorded for:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `monologueId` | The ID of a monologue, or of its reference recording in any revision | The take is stored under that monologue: listed with `?monologue=<id>`, and no longer in the General Practice history. Ignored for a reference |
+
+It is checked before the file is saved, so an unknown one costs nothing: `404`
+`monologue_not_found`. The job's status carries it back as `monologueId`, and so does the
+result. Section 4b explains what a monologue is.
+
 **The `Idempotency-Key`.** "Idempotent" means doing something twice has the same effect as
 doing it once. The browser makes up a random key for each recording it submits. If the
 button is clicked twice, or the request is sent again after a network hiccup, the same key
@@ -327,6 +347,7 @@ arrives twice and only one job is created. A new recording must use a new key.
 | `cancelRequested` | `true` between asking a running job to stop and the worker actually stopping |
 | `error` | Only when failed: `{ code, message, retryable }` |
 | `analysisId` | Where to fetch the result. An analysis job has it once it has succeeded; a coaching job has it from the start |
+| `monologueId` | The monologue the take being analysed was recorded for. `null` for a reference and for a take of none. Not in the example above, which is a General Practice take |
 | `canRetry`, `canCancel` | Whether those buttons should be offered right now |
 | `queuePosition` | Only while queued: how many jobs are ahead |
 | `workerAlive` | `false` means no worker is running, so nothing will progress |
@@ -417,6 +438,10 @@ Since Phase 6 a result also carries:
 | `revisions` | Every result made from the same recording, oldest first: `analysisId`, `revision`, `reason`, `createdAt`, `calibrationVersion`. Looked up when the result is read, so an older result also lists the ones made after it |
 | `coaching.labelsUsed` | The pause labels the coaching took into account, e.g. `{ "pause-2": "accidental" }` |
 
+Since Phase 8 a result also carries `monologueId`: the monologue the take was recorded for,
+or `null`. It is read from its own column when the result is asked for, and is not part
+of the stored measurements (decision B58).
+
 ### `GET /api/analyses/{analysisId}/comparison/{referenceId}`
 
 Sets one analysis (normally a take) against a reference recording. Worked out on the spot
@@ -471,6 +496,10 @@ measured here, which is why it is an ordinary request and not a job.
 
 Errors: `404` `analysis_not_found`; `404` `reference_not_found` if the second ID is not a
 reference (one of your own takes cannot stand in for one); `400` `same_recording`.
+
+The endpoint itself compares any analysis with any reference, as it always has. That a
+take is compared only with the original of its own monologue is the screens' doing: the
+frontend asks for no other pair (frontend document, 6.14).
 
 Since Phase 6 the comparison also has `settingsNote`. It is `null` when the two recordings
 were analysed with the same minimum pause. Otherwise it is a sentence saying so, with both
@@ -742,9 +771,19 @@ metric in the result; a test fails if a profile points at a metric that does not
 
 ### `GET /api/analyses`
 
-Query parameters: `limit` (1–100, default 20), `offset` (default 0) and `role` (`take` by
-default, or `reference`). Takes and references are never mixed in one list. Each item also
-carries its `role`, and a reference its `title`.
+Query parameters: `limit` (1–100, default 20), `offset` (default 0), `role` (`take` by
+default, or `reference`) and `monologue`. Takes and references are never mixed in one
+list. Each item also carries its `role`, a reference its `title`, and a take its
+`monologueId`.
+
+| `monologue` | Lists |
+| --- | --- |
+| left out | Every take, as before Phase 8 |
+| `none` | The takes that belong to no monologue: the General Practice history |
+| a monologue's ID, or the ID of its reference in any revision | The takes recorded for that monologue |
+
+An ID that names no monologue is `404` `monologue_not_found`. The parameter means nothing
+for `role=reference` and is ignored there.
 
 ```json
 { "items": [ { "analysisId": "…", "createdAt": "…", "profile": "joker", "language": "en",
@@ -766,11 +805,55 @@ them. The full result is one more request away.
 | `DELETE /api/analyses/{id}` | The result, its kept recording, the job that produced it, and the feedback given on it | Everything else, including other revisions of the same recording and any setting the feedback has already moved |
 | `DELETE /api/analyses/{id}/audio` | Only the kept recording | The measurements |
 | `DELETE /api/analyses` | Every take's result, kept recording and finished job, and any audio a failed take was holding for a retry | Every reference; jobs still queued or running, and their uploads |
-| `DELETE /api/analyses?role=reference` | The same, for the references | Every take |
+| `DELETE /api/analyses?monologue=none` | The same, but only for takes that belong to no monologue. This is what "Clear all history" on General Practice sends | Every monologue's takes, as well |
+| `DELETE /api/analyses?monologue=<id>` | The same, but only for that monologue's takes | The monologue itself, and every other take |
+| `DELETE /api/analyses?role=reference` | The same, for the references. Their takes are kept and become takes of no monologue | Every take |
+| `DELETE /api/monologues/{id}` | A monologue whole: every revision of its reference, every take recorded for it, their kept recordings, jobs and feedback | Everything else |
+
+Deleting a reference with `DELETE /api/analyses/{id}` removes that one revision. While
+another revision remains, the monologue remains, under the same ID. When the last one
+goes, its takes are not deleted: they become takes of no monologue, and show in the
+General Practice history. To delete a monologue *with* its takes, use
+`DELETE /api/monologues/{id}`.
 
 Clearing answers with what it removed: `{ "deletedAnalyses": 2, "deletedJobs": 3 }`.
 The single-item deletes answer `204` with no body, or `404` (`analysis_not_found`,
 `audio_not_kept`).
+
+### `GET /api/monologues`
+
+```json
+{ "items": [ { "monologueId": "16bb16d4…", "referenceId": "ae81ea40…",
+               "title": "The one who knocks", "createdAt": "2026-10-11T16:25:02Z",
+               "language": "en", "durationSeconds": 14.538, "audioRetained": true,
+               "revision": 2, "revisionCount": 2,
+               "takeCount": 3, "lastTakeAt": "2026-10-11T16:29:41Z",
+               "settings": { "version": 1, "min_pause_ms": 500, "…": 0 } } ] }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `monologueId` | Names the monologue. It is the ID of the first analysis of its reference recording, and never changes |
+| `referenceId` | The reference to compare takes with: the newest revision. Equal to `monologueId` until the reference is corrected or measured again |
+| `title`, `language`, `durationSeconds`, `audioRetained`, `settings` | Those of that newest revision |
+| `createdAt` | When the reference was first added |
+| `revision`, `revisionCount` | The newest revision's number, and how many revisions are stored |
+| `takeCount` | How many takes were recorded for it. A take with a corrected transcript, or analysed again, is still one take |
+| `lastTakeAt` | When the newest of them was analysed. `null` with no takes |
+
+The one practised or added most recently comes first. There is no paging: a list of
+monologues is short. There is also no endpoint that *adds* a monologue: submitting a
+recording with `role=reference` is what adds one.
+
+### `DELETE /api/monologues/{monologueId}`
+
+Answers `200` with what went: `{ "deletedReferences": 2, "deletedTakes": 3 }`. The ID may
+be the monologue's own or that of any revision of its reference.
+
+| Refusal | When |
+| --- | --- |
+| `404 monologue_not_found` | No such monologue. The ID of a take is not one |
+| `409 monologue_busy` | A recording of this monologue is still queued or being analysed: a take of it, a fresh analysis of its reference, or new coaching for one of its takes. Nothing is deleted. Wait, or cancel the job, and ask again |
 
 ### `GET /api/analyses/{analysisId}/audio`
 
@@ -1197,6 +1280,92 @@ job's status in one transaction).
 | `build_prompt`, `read_answer`, `pick` | `feedback_summary.py` | What the AI model is asked about the notes, and what is made of its answer |
 | `describe` | `feedback_summary.py` | Everything `GET /api/feedback-summary` returns |
 
+## 4b. Monologues and their takes
+
+Phase 8 joined the Monologue screen and Daily Practice: the user picks a monologue and
+practises it, and each take recorded on the way belongs to that monologue. This section
+explains how the backend keeps the two together. All of it is in `app/monologues.py`, a
+few lines of `app/history.py`, and one check in `app/job_queue.py`.
+
+### A monologue is not a table
+
+```
+ analyses
+ ┌──────────┬───────────┬──────────┬──────────┬──────────────┐
+ │ id       │ role      │ root_id  │ revision │ monologue_id │
+ ├──────────┼───────────┼──────────┼──────────┼──────────────┤
+ │ R1       │ reference │ R1       │ 1        │              │ ┐ one monologue: "R1"
+ │ R2       │ reference │ R1       │ 2        │              │ ┘ (its original, corrected once)
+ │ T1       │ take      │ T1       │ 1        │ R1           │ ┐
+ │ T2       │ take      │ T2       │ 1        │ R1           │ │ its takes
+ │ T3       │ take      │ T2       │ 2        │ R1           │ ┘ (T3 is T2 with corrected words)
+ │ F1       │ take      │ F1       │ 1        │              │   a General Practice take
+ └──────────┴───────────┴──────────┴──────────┴──────────────┘
+```
+
+- A **monologue** is a reference recording in all its revisions. Its ID is that
+  recording's `root_id`: the ID of the first analysis of it. Nothing else is stored.
+- A **take of a monologue** is a take whose `monologue_id` is that ID.
+- A take whose `monologue_id` is empty belongs to none.
+
+`GET /api/monologues` groups the references by root, takes the newest revision of each
+for the title and the figures, and counts the takes that point at it.
+
+### How a take gets its monologue
+
+```
+ POST /api/analyses  (monologueId = R2)
+        │
+        ▼
+ monologues.resolve("R2")  ──▶  "R1"      any revision's ID, or the monologue's own, is accepted
+        │                                  and turned into the monologue's ID. Unknown: 404.
+        ▼
+ jobs row:  monologue_id = "R1"
+        │   … the worker measures the recording …
+        ▼
+ job_queue.complete_job:  is there still a reference with root "R1"?
+        │        yes ─▶ analyses row:  monologue_id = "R1"
+        │        no  ─▶ analyses row:  monologue_id empty   (a take of no monologue)
+```
+
+The worker needed no change for this: it hands the job to `complete_job`, which is where
+a result has always been given its identity (role, title, revision). A later revision of
+the take (a corrected transcript, a fresh analysis) copies the `monologue_id` of the take
+it was made from.
+
+### What is linked to what, and why it is the monologue
+
+A take points at the **monologue**, not at the revision of the reference that was newest
+when it was recorded. So when the user corrects a word in the original, every take of
+that monologue is at once compared with the corrected words, with nothing to update. The
+comparison is still asked for with two analysis IDs; the frontend takes the second from
+`referenceId`.
+
+### Deleting
+
+| What is deleted | What happens to the rest |
+| --- | --- |
+| A take | Nothing else |
+| One revision of a reference, others remain | The monologue stays, with the same ID and takes |
+| The last revision of a reference (`DELETE /api/analyses/{id}`, or clearing the references) | Its takes are **freed**: `history.unlink_orphaned_takes` empties their `monologue_id`, so they show in the General Practice history |
+| A monologue (`DELETE /api/monologues/{id}`) | Its references, its takes, their kept audio, their jobs and (through the database) their feedback all go. Refused while one of its recordings is still in the queue |
+
+Freeing is the safety net, and deleting the monologue is the deliberate act. Without the
+first, a take could end up pointing at a monologue that no longer exists, and so be
+listed nowhere: not under any monologue, and not in the General Practice history, which
+only lists takes with no monologue.
+
+### Which function does what
+
+| Function | File | Does |
+| --- | --- | --- |
+| `resolve` | `monologues.py` | Turns a monologue's ID, or any revision of its reference, into the monologue's ID. `None` if it names none |
+| `list_monologues` | `monologues.py` | Everything `GET /api/monologues` returns |
+| `delete_monologue` | `monologues.py` | Deletes a monologue whole, or raises `MonologueBusy` |
+| `monologue_exists` | `job_queue.py` | Whether any revision of a monologue's reference is still stored |
+| `_scope` | `history.py` | The condition "takes of this monologue" / "takes of none" / "every take", for listing and for clearing |
+| `unlink_orphaned_takes` | `history.py` | Frees the takes of a monologue whose reference is gone |
+
 ## 5. The database
 
 One SQLite file: `backend/data/monologue_coach.db`, created the first time the migration
@@ -1222,6 +1391,7 @@ command runs. It is listed in `.gitignore`, so it is never committed.
 | `error_code`, `error_message`, `error_retryable` | Why it failed |
 | `analysis_id` | The result, once succeeded. For a coaching job: the analysis it is for, from the start |
 | `source_analysis_id` | For a fresh analysis of a kept recording: the result it started from. Empty otherwise. Added in Phase 6 |
+| `monologue_id` | For a take recorded for a monologue: that monologue's ID. Empty for a reference and for a take of none. Added in Phase 8 |
 | `created_at`, `updated_at`, `started_at`, `finished_at`, `heartbeat_at` | Times, stored in UTC |
 
 **`analyses`** — one row per successful job.
@@ -1236,6 +1406,7 @@ command runs. It is listed in `.gitignore`, so it is never committed.
 | `calibration_version` | Version of the user's calibration that was in force. Added in Phase 6; every earlier row became 1, the defaults |
 | `root_id` | The ID of the first result made from the same recording. A first result's root is itself. Indexed |
 | `revision`, `revision_reason` | 1 and empty for a first result. 2, 3, … with `transcript_corrected` or `reanalysed` for a later one, which is always a new row and never written over an earlier one |
+| `monologue_id` | The monologue a take was recorded for: the `root_id` of that monologue's reference recording. Empty for a reference, and for a take made in General Practice. Indexed, because a monologue's takes are listed by it. Added in Phase 8; every earlier row has it empty |
 | `result` | The whole measured result, as JSON. Written once |
 | `coaching` | The coaching for this result, as JSON. Can be replaced by a coaching job. Empty for results from before Phase 4 |
 | `waveform` | The outline of the sound wave, as JSON, for drawing only. Read by no measurement. Empty for results from before Phase 5 |
@@ -1310,6 +1481,7 @@ and the migrations ever disagree.
 | `0003_references_and_waveforms` | Adds `role` and `title` to `jobs` and `analyses`, and `analyses.waveform`. Existing rows are kept: everything stored so far becomes a `take`, with no waveform |
 | `0004_feedback_and_calibration` | Creates `feedback`, `calibration_versions` and `calibration_state`. Adds `jobs.source_analysis_id` and, to `analyses`, `calibration_version`, `root_id` and `revision_reason`. Existing rows are kept: every stored result becomes calibration version 1 and the first result of its own recording |
 | `0005_feedback_summary` | Creates `feedback_summary`. Changes no existing table. The new kind of job, `summary`, needed no migration: `jobs.kind` is text |
+| `0006_monologue_takes` | Adds `monologue_id` to `jobs` and to `analyses`, with an index on the second. Existing rows are kept and have it empty: every take stored so far belongs to no monologue, and every reference stored so far is a monologue, because a monologue is nothing but its reference |
 
 **After updating the code to a new phase, run `uv run alembic upgrade head` once.** Until then
 the API reports `"database": "error"`, because the code expects columns the file does not
@@ -1341,7 +1513,8 @@ All file handling is in `app/uploads.py`. Nothing else creates or deletes audio.
 | The user deletes an analysis, or only its recording | The kept file is deleted |
 | A transcript is corrected and the recording was kept | The new revision gets `data/audio/<newAnalysisId>.<ext>`: a second name for the same file on disk (a hard link), which takes no extra space. Deleting either leaves the other playable. Where the disk cannot do that, the file is copied |
 | A kept recording is analysed again | It is copied to `data/uploads/<jobId>.<ext>`, so that nothing the job does to its upload can touch the kept recording. When the job succeeds the copy becomes the new revision's kept recording; if it is cancelled or fails for good, the copy is deleted |
-| The user clears all history | Every kept file is deleted, and any upload a failed job was holding |
+| The user clears the General Practice history | Every kept file of a take that belongs to no monologue is deleted, and any upload a failed job of one was holding |
+| The user deletes a monologue | The kept files of its reference, in every revision, and of all its takes are deleted, and any upload a failed job of one was holding |
 
 Paths in the database are relative to the data folder, and `uploads.absolute()` refuses any
 path that would lead outside it.
@@ -2027,14 +2200,99 @@ How it is built, and what each choice avoids:
 
 What was checked on this machine is in the table at the end of section 10.
 
+### B57. A monologue is a view of the analyses, not a table of its own
+
+- **Chosen:** a monologue is a reference recording in all its revisions, named by that
+  recording's `root_id`. `GET /api/monologues` works the list out from the `analyses`
+  table each time. There is no `monologues` table.
+- **Why:** everything a monologue has, the reference already had: a title, a recording, a
+  language, revisions. A table would hold one row per reference and say nothing new, and
+  it would be a second place for "does this monologue exist" to disagree with the first.
+  It also means every reference added before Phase 8 is a monologue with no migration of
+  data at all.
+- **Decided against:** *a `monologues` table with the reference and the takes pointing at
+  it*: the right shape if a monologue ever needs something of its own (a script typed by
+  hand, notes, more than one original). Nothing asks for that yet.
+- **When to revisit:** when a monologue needs a property that is not a property of its
+  reference recording.
+
+### B58. A take's monologue is a column, not part of the measured result
+
+- **Chosen:** `analyses.monologue_id`. It is left out of the stored `result` document
+  (`job_queue.STORED_APART`) and filled in when the result is read, as the list of
+  revisions and the coaching are.
+- **Why:** it is not a measurement, and unlike a measurement it can change: when a
+  monologue's last reference is deleted its takes are freed (B61). The `result` is
+  written once and never changed (B16), so anything that can change must live beside it.
+  A column also lets the takes of a monologue be listed with an index, without opening
+  any JSON.
+- **Decided against:** storing it in both places. Two copies of one fact, one of which may
+  not be updated, is how they come to disagree.
+
+### B59. A take points at its monologue, not at one revision of the reference
+
+- **Chosen:** `monologue_id` holds the reference's root ID. `POST /api/analyses` accepts
+  the ID of any revision and stores the root.
+- **Why:** correcting a misheard word in the original makes a new revision. Takes
+  recorded before the correction are takes of the same monologue, and should be compared
+  with the corrected words without anyone updating them.
+- **Decided against:** *pointing at the revision that was newest at the time*. Every
+  correction of the reference would leave the earlier takes behind, attached to a
+  revision nobody looks at any more.
+- **What is not recorded, as a result:** which revision of the reference a take was first
+  compared with. Nothing needs it: a comparison is worked out on request (B34) and says
+  which two results it used.
+
+### B60. `monologue=none` asks for the takes of no monologue; leaving it out still means all
+
+- **Chosen:** one query parameter on the list and on the clear: a monologue's ID, the
+  word `none`, or nothing.
+- **Why a word and not a second parameter:** the three cases exclude each other, so one
+  parameter cannot be given a contradictory value.
+- **Why "nothing" still means every take:** it is what the endpoint did before Phase 8,
+  and every script and test written against it keeps working. The General Practice
+  screen asks for `none` explicitly.
+- **Decided against:** *making "no monologue" the default.* Quietly changing what an
+  existing request returns is how an old script comes to delete or miss the wrong things.
+
+### B61. Deleting a monologue deletes its takes; deleting only its reference frees them
+
+- **Chosen:** two different acts. `DELETE /api/monologues/{id}` removes the reference in
+  every revision and every take recorded for it. Deleting a reference through the older
+  `DELETE /api/analyses/{id}` removes that one row, and when it was the last revision the
+  takes lose their monologue and become ordinary takes.
+- **Why delete the takes with the monologue:** they are shown only under it. Left behind
+  they would turn up in the General Practice history, which is for something else. The
+  screen says how many takes will go before it asks.
+- **Why free them in the other case:** that endpoint deletes "one analysis", and has
+  never deleted anything the caller did not name. The alternative to freeing is a take
+  that points at nothing and is listed nowhere.
+- **Why refuse while a job is in the queue:** the job would finish after the delete and
+  store a take for a monologue that is gone. `409 monologue_busy` says so; the user waits
+  or cancels.
+- **Decided against:** *a database rule (`ON DELETE CASCADE`) from takes to their
+  monologue*: a monologue is not a row (B57), so there is nothing for such a rule to hang
+  on; and kept audio files have to be deleted by code in any case.
+
+### B62. A take whose monologue went while it waited is stored as a take of none
+
+- **Chosen:** when a job finishes, `complete_job` checks that the monologue still has a
+  reference. If not, the result is stored with no monologue.
+- **Why:** B61 refuses to delete a *monologue* while one of its jobs is waiting, but the
+  older endpoint can still delete the *reference* under a waiting job. The recording has
+  been measured by then, and half a minute of work should not be thrown away or hidden.
+  Stored as a take of none, it is in the General Practice history.
+- **Decided against:** failing the job (the measurements are fine); refusing to delete a
+  reference that has a job waiting (a new refusal on an endpoint that never had one).
+
 ### Decisions already made for later phases
 
 None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 10. Tests
 
-Run with the command in the README. Current result: **646 pass**, 1 skipped (the opt-in
-real-speech test, which also passes when run). 51 of them are new in Phase 7.
+Run with the command in the README. Current result: **665 pass**, 1 skipped (the opt-in
+real-speech test, which also passes when run). 19 of them are new in Phase 8.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
@@ -2049,7 +2307,8 @@ real-speech test, which also passes when run). 51 of them are new in Phase 7.
 | `test_comparison.py` | 26 | Pauses matched, missing, extra and unplaced; a recording against a copy of itself showing no difference even with word times pushed into the pauses; phrase pace over the same words; whole-recording rows; the biggest differences in order and in words; different passages compared only as wholes; neither recording changed |
 | `test_comparison_align.py` | 20 | Word keys, including Hindi spelling variants; dropped, added and misheard words; a repeated line matched to the right repetition; speed on a ten-minute passage |
 | `test_waveform.py` | 6 | The outline's lowest and highest values, its size for long and short recordings, padding, no normalising |
-| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects, `feedback_summary` among them; a database from before Phase 4 upgrades with its rows intact, each result becoming calibration version 1 and the first result of its own recording |
+| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects, `feedback_summary` among them; a database from before Phase 4 upgrades with its rows intact, each result becoming calibration version 1, the first result of its own recording, and a take of no monologue |
+| `test_monologues.py` | 19 | A reference is a monologue and a take is not; **a take recorded for a monologue is listed under it and not in the General Practice history**; the monologue is kept in its column and not inside the measured result; an unknown monologue is refused and nothing is stored; a corrected reference is still the same monologue, now compared with by its new revision; a corrected or re-analysed take stays with its monologue and counts as one take; the one practised most recently comes first. Clearing the General Practice history leaves every monologue's take, and one monologue's takes can be cleared alone. **Deleting a monologue removes its references, its takes, their recordings, jobs and feedback, and nothing of any other**; it is refused while a take of it is waiting; a failed take holding its recording goes with it. Takes are freed when the last revision of their reference is deleted, and when the references are cleared; a take whose monologue went while it waited is stored as a take of none |
 | `test_calibration_engine.py` | 37 | The adjustment rules with no database: one or two reports move nothing; three from one recording are not enough; disagreement and ties change nothing; only recent reports count; the minimum pause is steered by the silences reported and never moves more than 100 ms at once; **no setting ever leaves its allowed range**; a report already answered by an earlier change stops counting; moving back needs five reports; the detection threshold is not adjustable. **Reports on references alone move nothing, however many**; one agreeing report on a take lets them count; a take report pointing the other way does not stand in for one |
 | `test_feedback.py` | 26 | What each kind of feedback is taken to mean: labels speak for no setting; a short false pause for raising the minimum pause; a long one for nothing; a missed pause for lowering it only where a silence of 250 ms or more was heard; one silence can be reported only once; **no feedback speaks for more than one setting** |
 | `test_feedback_api.py` | 34 | Through the API: storing, replacing, noting and removing feedback; a fresh install says it is still calibrating; two reports change nothing; **three agreeing reports from two recordings move only the minimum pause**, with a reason and a confidence; each adjustment needs fresh reports; **undo, reset and switching off**; new analyses use the new value and old ones stay as they were; **labelling a pause changes no measurement**, and reaches the coaching when it is written again; saying a WPM looks wrong changes no number. On a reference: a mistake can be reported; labels and ratings are refused; four reports on two references move nothing and the screen says what is missing; one report on a take then moves the setting; the WPM review does not speak of what "you" said |
@@ -2211,3 +2470,27 @@ Not checked in Phase 7: a real human voice, a real film clip as the reference, a
 written over weeks of use. `run.sh` was run on macOS only, and from a background shell,
 not typed into a terminal window by hand: its `Ctrl+C` tests sent the same signal a
 terminal sends, to the same group of processes a terminal would send it to.
+
+
+Also checked at the end of Phase 8, the same way as Phase 7: the real API, worker and
+speech model, in a complete copy of the project in a temporary folder with its own
+database, on other ports. The recordings were synthesised with pauses of known length. All
+16 checks in the script passed, and the copy was left with nothing in it.
+
+| Check | Result |
+| --- | --- |
+| The new migration, on a copy of the project's own database, then on the database itself | `5c2a9e7b1d43 -> 7d4b2c9a6e15`; the API, which was running, answered `"database":"ok"` before and after |
+| Add a reference with a title | 23 s (first run, the speech model loading). `GET /api/monologues`: one monologue, its ID and its `referenceId` both the new analysis, `takeCount` 0 |
+| Submit **the same file** as a take of it | The job and the result both carry `monologueId`. Compared with the reference: 31 of 31 words lined up, 3 of 3 pauses in both with a difference of zero, **no differences listed**. This is the check with a known answer: a recording against itself |
+| Submit a different take of it (other pauses, faster) | Lined up fully; four differences, among them "The reference pauses for 2.3 seconds after “…and you think that of me”. You did not pause there." and "17% faster" |
+| Submit the same file with no monologue | `monologueId` is `null` |
+| The three lists | `?monologue=<id>`: the two takes, newest first. `?monologue=none`: the one free take. The monologue's `takeCount`: 2 |
+| Correct one word of the reference | Revision 2. Still one monologue, same `monologueId`, `referenceId` now the revision, `revisionCount` 2, `takeCount` still 2; its takes listed under either revision's ID |
+| Compare the self-take with the corrected reference | 30 of 31 words lined up: exactly the one word changed |
+| `DELETE /api/analyses?monologue=none` | `{"deletedAnalyses": 2, "deletedJobs": 2}`; the monologue's takes untouched |
+| `DELETE /api/monologues/<id>` | `{"deletedReferences": 2, "deletedTakes": 3}`; no monologue, take or reference left; `data/audio/` and `data/uploads/` empty; no row left in `analyses`, `jobs` or `feedback` |
+
+Not checked in Phase 8: a real human voice or a film clip as the original, as in every
+phase; a monologue with more takes than the 50 the screen lists; and the user's own
+worker, which was started before this phase and has to be restarted to run the new code
+(until then it stores a take without its monologue).

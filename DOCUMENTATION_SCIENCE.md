@@ -12,7 +12,14 @@ adjusts a few settings.
 
 Everything described here is built.
 
-**Last updated:** end of Phase 7. The measurements, the coaching (section 13), the
+**Phase 8 changed no measurement.** It joined the Monologue screen and Daily Practice into
+one flow, which is a matter of screens and storage (frontend and backend documents). What
+it means for this document is small and is marked where it applies: a take is now
+compared only with the original it was recorded for (section 14, decision S73), and the
+original is shown as a script built only from what was measured (section 14, decision
+S74).
+
+**Last updated:** end of Phase 8, for those two points. Before that, the end of Phase 7. The measurements, the coaching (section 13), the
 comparison of a take with a reference recording (section 14) and feedback with calibration
 (section 15) are all built. Phase 7 added to section 15: pointing at a missed pause by a
 word, feedback on a reference recording, and what the feedback adds up to, including three
@@ -977,6 +984,19 @@ makes it possible to say something the delivery profiles never could:
 The three are kept apart on screen and in the code. In particular the comparison does not
 go through the AI model at all, and the profile coaching never mentions the reference.
 
+**Which two recordings are compared (Phase 8).** A reference is the original recording of
+a **monologue**, and a take recorded while practising that monologue belongs to it. A take
+is compared with the original of its own monologue and with no other, and a take made in
+General Practice, which belongs to no monologue, is compared with nothing. Before Phase 8
+any take could be set against any reference the user picked from a menu, including one of
+different words. The arithmetic below is unchanged; what changed is that the pair is now
+always one that was meant.
+
+When the original's words are corrected, or it is measured again, the monologue gets a new
+revision of its reference, and its takes are from then on compared with that one. A
+comparison is worked out when it is asked for and stored nowhere, so nothing has to be
+recalculated: the next time a take is opened, it is set against the newest revision.
+
 ### The idea in one picture
 
 ```
@@ -1195,6 +1215,36 @@ and 23 KB for a 133-second one.
   recorded clip looks thin. An option stretches each to its own loudest point so that its
   shape can be seen; it is off by default and says, when on, that it hides any real
   difference in level.
+
+### The original as a script
+
+Steps 2 and 3 of Daily Practice show the original recording as a script: one line per
+phrase, the pause after it, and the words that stood out.
+
+```
+ 1. I am not in danger, Skyler.
+ ‖ pause 1.6 s
+ 2. I am the danger.
+ ‖ pause 1.1 s
+ 3. A guy opens his door and gets shot, and you think that of me?
+                                            ‾‾‾ ‾‾‾‾‾
+```
+
+Nothing in it is new. It is the reference's stored result, laid out differently:
+
+| On the script | Is | From section |
+| --- | --- | --- |
+| A line | One segment: speech with no pause inside it | 4 |
+| `‖ pause 1.6 s` | The pause between that segment and the next, at its measured length | 4, 7 |
+| `‖‖ long silence` | A pause of 5 seconds or more | 4 |
+| An underlined word | An emphasis candidate: at least 3 dB louder or 2 semitones higher than the speaker's typical word | 10 |
+| ▲ faster, ▼ slower | A phrase at least 25% from the speaker's own typical pace | 6 |
+
+So everything section 10 says about emphasis candidates holds here. An underlined word
+*measured* louder or higher. That does not prove it was stressed on purpose, and a word
+stressed by slowing down or by a pause before it is not underlined at all. The legend
+under the script says so. The words themselves are the recogniser's, and are corrected
+where the original is studied, in step 1.
 
 ## 15. Feedback and calibration
 
@@ -1818,6 +1868,8 @@ What is known, stated plainly.
 | Comparison: a reference with music or other voices | Typical of a clip from a film. Music can be taken for speech, or hide a pause, and it changes the loudness and pitch figures. The comparison cannot tell; a clean recording of the original gives a far better reference. |
 | Comparison: phrase pace | Rests on word times good to about a tenth of a second, so it is an estimate, weakest on short phrases. |
 | Comparison: what it cannot say | Whether a difference matters. It lists where the two recordings differ in pauses and pace. It does not hear emphasis, tone or intention, and it never calls a difference a mistake. |
+| Comparison: which original | Since Phase 8 a take is compared only with the original of the monologue it was recorded for. A take recorded for the wrong monologue (the user chose one and performed another) is still compared, and the line-up will say how few words were found. |
+| The script of the original | A rearrangement of the reference's stored result, so it inherits every limit above: misheard words appear as heard, a pause hidden by music is missing, and only louder or higher words are marked. It is not a transcript checked by a person. |
 | Waveform | A picture. Its height depends on how each recording was made. Nothing is measured from it. |
 | Short silences | Measured 35 to 75 ms shorter than the silence really is, for the same reason pauses are (the 30 ms widening and the 32 ms steps). A real gap of 400 ms shows as about 350 ms. This is what the minimum pause is compared with, so "500 ms" means about 550 ms of true silence. |
 | Calibration: what it can adjust | One measuring setting, the minimum pause, between 250 and 800 ms, and the order of corrections. It cannot make the detector hear speech it missed, fix a misheard word, or change how pitch and loudness are measured. |
@@ -1898,6 +1950,21 @@ Whether five notes is the right minimum, three the right number to pick, and thr
 the right length for a note worth offering is not known; like the limits above, they are
 first choices. Picking a word for a missed pause was measured on six silences in clean
 synthesised speech and no others.
+
+**How Phase 8 has been tested.** No measuring code was changed, so the tests of the
+measurements, the comparison and the calibration are as they were and all still pass.
+What is new was checked for the two things it could have got wrong. That a take is tied
+to the right original: automated tests of the backend (a take is listed under its
+monologue and nowhere else; a corrected original is still the same monologue) and of the
+screen's store (a take is never compared with another monologue's original, which caught
+a real fault: frontend decision F75). And that the pairing changes no figure: on the real
+pipeline, the same file was submitted as a monologue's original and as a take of it, and
+the comparison lined up 31 of 31 words, found all 3 pauses in both with a difference of
+zero, and listed no differences. A second, different take then gave four differences. The
+script is covered by tests of its own (one line per phrase, the pause after each, a
+repeated word marked only where it stood out) and was read in the browser for an English
+and a Hindi recording. It has **not** been tried on a real performance; both originals
+were synthesised speech.
 
 **How the coaching has been tested.** Its logic is covered by automated tests that replace
 the AI model with a scripted stand-in, including one that invents figures, misquotes, names
@@ -2720,7 +2787,7 @@ worth understanding.
   the same evidence, and one more condition before a setting moves.
 - **Why they count at all:** the alternative, refusing them (the Phase 6 choice), left the
   user unable to say that the original performance pauses where the app saw none, which is
-  the very thing the Monologue screen is for.
+  the very thing the Monologue screen (since Phase 8: step 1 of Daily Practice) is for.
 - **Why not alone:** music, sound effects and edits make a film clip mislead the detector
   in ways a practice recording does not. A setting tuned on those would be tuned to the
   film.
@@ -2797,6 +2864,37 @@ worth understanding.
   to keep the old ones. And the facts beside it never go out of date, which is where the
   eye should go first.
 
+### S73. A take is compared only with the original it was recorded for
+
+- **Chosen:** a take belongs to one monologue and is compared with that monologue's
+  reference. A take of no monologue is compared with nothing.
+- **Why:** the comparison lines two recordings up by their words (S36), so it only means
+  something for two recordings of the same text. Asking the user to pick a reference
+  each time left "the same text" to chance; recording the take *for* a monologue settles
+  it when the take is made. It also completes G6 in the main document: the comparison
+  with a real recording now has one place, and the profile coaching another.
+- **Decided against:** *guessing the monologue from the words* (line a new take up with
+  every reference and keep the best match). It would usually be right, and when wrong it
+  would file a take under a monologue the user never chose. The user knows which
+  monologue they are practising; the app asks.
+- **What did not change:** the endpoint still compares any analysis with any reference.
+  The restriction is in which pairs the screens ask for.
+- **Honest limit:** nothing checks that the take really is of that monologue. A take of
+  other words is compared anyway, and the result says "only 12% of the reference's words
+  were found", as it always has.
+
+### S74. The script shows only what was measured
+
+- **Chosen:** the script of the original is its segments, its pauses and its emphasis
+  candidates, rearranged. No pause is added, moved or named, and no word is marked that
+  is not already a candidate.
+- **Why:** step 2 of the routine is "mark the delivery": the actor decides what the
+  pauses and stresses are *for*. The app can say where the original paused and for how
+  long. It cannot say why, and section 4 already rules out guessing.
+- **Decided against:** *marking "dramatic" pauses or "key" words*, which would be the
+  app's opinion printed in the same ink as a measurement; *having the AI model annotate
+  the script*, for the same reason and because nothing could check it.
+
 ## 18. Glossary
 
 | Term | Meaning |
@@ -2842,6 +2940,8 @@ worth understanding.
 | **JSON schema / structured output** | A description of the exact shape an answer must have; Ollama can refuse to generate anything that does not fit it. |
 | **Reference** | A recording you supply to compare your takes with, such as the original performance. Measured like any take. |
 | **Take** | One of your own recordings. |
+| **Monologue** | One piece being practised: its reference recording (the original) and the takes recorded for it. A take is compared with the original of its own monologue. |
+| **Script (of the original)** | The reference's phrases, pauses and emphasis candidates laid out as lines to read. Nothing in it is measured anew. |
 | **Line-up (alignment)** | Working out which word of one recording is which word of the other. |
 | **Match key** | A word with case, punctuation and combining marks removed, so two spellings of one spoken word compare as equal. |
 | **Longest common subsequence** | The longest list of items that appears in two lists in the same order, not necessarily next to each other. |

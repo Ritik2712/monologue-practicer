@@ -1,16 +1,17 @@
 # Monologue Coach — Frontend Documentation
 
-Everything that runs in the browser: the pages, the Daily Practice checklist and its timer,
+Everything that runs in the browser: the pages, the Monologues list, Daily Practice on a
+monologue (the checklist, its timer, and the tools of each step), a take's full analysis,
 the General Practice screen (recording, uploading, results, coaching, history, feedback
-and calibration), the Monologue screen (reference recordings, comparison, waveforms), and
-what is saved in the browser. Start with [DOCUMENTATION.md](DOCUMENTATION.md) for the big
-picture and the glossary. The Python side is in
-[DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md).
+and calibration), and what is saved in the browser. Start with
+[DOCUMENTATION.md](DOCUMENTATION.md) for the big picture and the glossary. The Python side
+is in [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md).
 
 Everything described here is built.
 
-**Last updated:** end of Phase 7 (picking the word a missed pause came after, feedback on
-a reference recording, and "What your feedback adds up to" in the calibration panel).
+**Last updated:** end of Phase 8 (the Monologues list, Daily Practice done on a chosen
+monologue with each step's tools under it, rounds, the script of the original, a page for
+a take's full analysis, and General Practice without the reference comparison).
 
 ## Contents
 
@@ -41,37 +42,53 @@ frontend/
     │   ├── layout.tsx        The frame around every page: header and navigation
     │   ├── globals.css       Global styles and colours
     │   ├── page.tsx          Home page  →  /
+    │   ├── monologue/
+    │   │   ├── page.tsx      The Monologues list  →  /monologue
+    │   │   └── take/
+    │   │       └── page.tsx  A take's full analysis  →  /monologue/take?analysis=<id>
     │   ├── practice/
-    │   │   └── page.tsx      Daily Practice page  →  /practice
+    │   │   └── page.tsx      Daily Practice  →  /practice?monologue=<id>
     │   └── general/
     │       └── page.tsx      General Practice page  →  /general
     ├── components/       Small building blocks shared by all pages
-    │   ├── Button.tsx        The app's button
+    │   ├── Button.tsx        The app's button, and its look for links
     │   ├── ConfirmDialog.tsx "Are you sure?" pop-up
     │   ├── MainNav.tsx       Links in the header
     │   └── BackendStatus.tsx Shows whether the backend is running
     ├── lib/
     │   └── api.ts            Builds backend URLs (one place to change the address)
     └── features/
-        ├── practice/     Everything for the Daily Practice checklist
-        │   ├── config.ts             The five steps and their durations
+        ├── practice/     The daily routine: its checklist, timer and history
+        │   ├── config.ts             The five steps, their durations and what their tools are called
         │   ├── types.ts              The shapes of the data
-        │   ├── practiceState.ts      The rules (start, pause, skip, complete…)
+        │   ├── practiceState.ts      The rules (start, pause, skip, complete, monologue, rounds…)
         │   ├── practiceStore.ts      Holds the state, saves it, handles new days
         │   ├── storage.ts            Reads and checks saved data
         │   ├── localDate.ts          "What day is it here?" helpers
         │   ├── format.ts             Turns numbers into text like 03:00
         │   ├── usePracticeChecklist.ts  Connects the store to React
         │   ├── components/
-        │   │   ├── PracticeChecklist.tsx  The whole page, assembled
-        │   │   ├── TimerPanel.tsx         Big timer and its four buttons
-        │   │   ├── StepList.tsx           The five steps with checkboxes
+        │   │   ├── PracticeChecklist.tsx  The whole Daily Practice page, assembled
+        │   │   ├── TimerPanel.tsx         Big timer, its four buttons, "Practise again"
+        │   │   ├── StepList.tsx           The five steps, each with its tools underneath
         │   │   └── PracticeHistory.tsx    The last-7-days table
         │   └── *.test.ts             Tests for the files above
-        └── general/      Everything for the General Practice screen
+        ├── monologue/    The Monologues list, the tools of each step, a take's page
+        │   ├── script.ts             The original as a script: phrases, pauses, marked words
+        │   ├── links.ts              The addresses of the monologue screens
+        │   ├── components/
+        │   │   ├── MonologueList.tsx     The whole Monologues page, assembled
+        │   │   ├── AddMonologue.tsx      The form that adds a monologue from its original recording
+        │   │   ├── ListenTools.tsx       Step 1: the original, to play and study
+        │   │   ├── ScriptView.tsx        Steps 2 and 3: the script of the original
+        │   │   ├── RecordTools.tsx       Step 4: record or upload, the comparison, the takes
+        │   │   ├── CorrectTools.tsx      Step 5: the two biggest differences
+        │   │   └── TakeAnalysis.tsx      The whole take page, assembled
+        │   └── script.test.ts        Tests for script.ts
+        └── general/      Everything that measures and shows a recording
             ├── types.ts              The shapes of the backend's JSON
-            ├── api.ts                Every request this screen makes to the backend
-            ├── generalStore.ts       The screen's state: the run, the result on view, the history
+            ├── api.ts                Every request the app makes to the backend
+            ├── generalStore.ts       The run, the result on view, the history, the monologues
             ├── recorder.ts           Recording from the microphone
             ├── healthMonitor.ts      Watches whether the API, worker and model are available
             ├── validation.ts         Checks a chosen file before sending it
@@ -85,7 +102,7 @@ frontend/
             ├── format.ts             Turns numbers into text like 0:04.7
             ├── useGeneralPractice.ts Connects the stores to React; segment playback
             ├── components/
-            │   ├── GeneralPractice.tsx   The whole page, assembled
+            │   ├── GeneralPractice.tsx   The whole General Practice page, assembled
             │   ├── SetupForm.tsx         Profile picker, record/upload, language, keep-audio
             │   ├── RunPanel.tsx          Progress, cancel, retry, failure
             │   ├── Results.tsx           Everything shown for one analysis
@@ -95,8 +112,6 @@ frontend/
             │   ├── CalibrationPanel.tsx  The settings in force; undo, reset, on/off
             │   ├── FeedbackSummaryPanel.tsx  What the feedback adds up to; the notes; the
             │   │                             button that asks the AI model to pick some out
-            │   ├── MonologuePractice.tsx The whole Monologue page, assembled
-            │   ├── ReferenceLibrary.tsx  Choose, add and delete reference recordings
             │   ├── ReferenceComparison.tsx  A take against a reference, with both to play
             │   ├── WaveformComparison.tsx   The two sound waves on one timeline
             │   ├── BackendNotice.tsx     Says which part of the backend is missing
@@ -106,9 +121,16 @@ frontend/
             └── *.test.ts             Tests for the files above
 ```
 
-Why `features/practice/` and `features/general/`, and not everything in `components/`: each
-feature keeps its own logic, storage and screens together in one folder. `components/` is
-only for things several features share.
+Why `features/practice/`, `features/monologue/` and `features/general/`, and not everything
+in `components/`: each feature keeps its own logic, storage and screens together in one
+folder. `components/` is only for things several features share.
+
+The three lean on each other in one direction. `general/` knows how to send a recording,
+follow its job and show a result, and knows nothing about the other two. `monologue/`
+builds its screens out of those pieces. `practice/` owns the routine and puts
+`monologue/`'s tools under its steps. Two files left in Phase 8: `MonologuePractice.tsx`
+(the old Monologue screen) and `ReferenceLibrary.tsx` (its menu of references), both in
+`general/components/`.
 
 The development server runs on port **1234** by default (`npm run dev`). A fixed port
 matters more than usual here: the browser keeps saved data per address, so a changing port
@@ -118,13 +140,21 @@ would hide the checklist's history (decision F16).
 
 | Address | What you see | Page file | Main code | Uses the backend? |
 | --- | --- | --- | --- | --- |
-| `/` | Home: links to the three features and the backend status | `src/app/page.tsx` | `components/BackendStatus.tsx` | Yes, `GET /api/health` |
-| `/practice` | Daily Speaking Practice checklist | `src/app/practice/page.tsx` | `features/practice/` | No |
+| `/` | Home: links to the three places and the backend status | `src/app/page.tsx` | `components/BackendStatus.tsx` | Yes, `GET /api/health` |
+| `/monologue` | Monologues: the list, "Practise" and "Delete" on each, and the form that adds one | `src/app/monologue/page.tsx` | `features/monologue/components/MonologueList.tsx` | Yes, for everything |
+| `/practice?monologue=<id>` | Daily Speaking Practice on that monologue: the checklist, the timer, and each step's tools | `src/app/practice/page.tsx` | `features/practice/`, with the tools from `features/monologue/` | The timer and checklist: no. The tools: yes |
+| `/practice` | The same for the monologue today's round is on; or, when there is none yet, a list to choose from | the same | the same | The list: yes |
+| `/monologue/take?analysis=<id>` | The full analysis of one take of a monologue | `src/app/monologue/take/page.tsx` | `features/monologue/components/TakeAnalysis.tsx` | Yes, for everything |
 | `/general` | General Practice: record or upload, analyse, results, history | `src/app/general/page.tsx` | `features/general/` | Yes, for everything |
-| `/monologue` | Monologue: add the original recording, study it, record a take, see where the two differ | `src/app/monologue/page.tsx` | `features/general/` (the same folder: it shares the store and most components) | Yes, for everything |
 
-`/general?analysis=<id>` opens that analysis straight away. The Monologue screen uses it for
-its "full measurements and coaching" link.
+`/general?analysis=<id>` opens that analysis straight away, if it belongs to no monologue.
+For a take that was recorded for one, the page says so and links to the take's own page.
+
+**The address says which monologue or take.** `/practice` and `/monologue/take` read it
+with Next.js's `useSearchParams`. That value exists only in the browser, so each of the two
+page files wraps its component in `<Suspense>`, which is what Next.js asks for: the rest
+of the page can still be prepared in advance. The addresses are built in one file,
+`features/monologue/links.ts`.
 
 In Next.js the folder name is the address: `src/app/practice/page.tsx` becomes `/practice`.
 The page files are deliberately tiny. They only pick which feature to show; the real work is
@@ -137,7 +167,7 @@ navigation links from `components/MainNav.tsx`.
 
 | Component | What it is | Worth knowing |
 | --- | --- | --- |
-| `Button.tsx` | The one button style used everywhere, in three looks: primary, secondary, danger | An unavailable button is greyed out but can still be reached with the keyboard (decision F12) |
+| `Button.tsx` | The one button style used everywhere, in three looks: primary, secondary, danger | An unavailable button is greyed out but can still be reached with the keyboard (decision F12). `buttonClasses()` gives a link the same look, for a move to another page such as "Practise" |
 | `ConfirmDialog.tsx` | A pop-up with Cancel and a confirm button | Opens on the Cancel button, closes on Escape, and returns you to the button you pressed (decision F11) |
 | `MainNav.tsx` | The header links; underlines the page you are on | New pages are added to the `LINKS` list at the top of the file |
 | `BackendStatus.tsx` | A coloured dot and a sentence saying whether the backend answered | Used on the home page. General Practice has its own, more detailed notice |
@@ -152,25 +182,27 @@ navigation links from `components/MainNav.tsx`.
   (decision G2 in the main document).
 - The home page asks `GET /api/health` once when it loads and shows one of four messages:
   checking, running, running but the database check failed, or not reachable.
-- Everything General Practice asks of the backend goes through one object, in
-  `src/features/general/api.ts`:
+- Everything the monologue screens and General Practice ask of the backend goes through
+  one object, in `src/features/general/api.ts`:
 
 | Function | Request | Used for |
 | --- | --- | --- |
 | `getHealth` | `GET /api/health` | The notice when the API, worker, speech model or AI model is missing |
 | `getOptions` | `GET /api/analysis-options` | Profiles, languages and upload limits for the form |
-| `submitAnalysis` | `POST /api/analyses` | Sending a recording: a take, or with `role: "reference"` and a `title`, a reference |
+| `submitAnalysis` | `POST /api/analyses` | Sending a recording: a take; a take of a monologue, with `monologueId`; or, with `role: "reference"` and a `title`, the original of a new monologue |
 | `getJob` | `GET /api/jobs/{id}` | Following a job, once a second |
 | `cancelJob` | `POST /api/jobs/{id}/cancel` | Cancel, or discard a failed job's audio |
 | `retryJob` | `POST /api/jobs/{id}/retry` | Retry a failed job |
 | `getAnalysis` | `GET /api/analyses/{id}` | The full result, including its coaching |
 | `requestCoaching` | `POST /api/analyses/{id}/coaching` | Asking the AI model to write the coaching again |
-| `listAnalyses` | `GET /api/analyses?limit=20`, or `…&role=reference` | The history of takes; the reference recordings |
+| `listAnalyses` | `GET /api/analyses?limit=20&role=take&monologue=none`, or `…&monologue=<id>` | The General Practice history (takes that belong to no monologue); the takes of one monologue |
+| `listMonologues` | `GET /api/monologues` | The monologues, each with its original's ID and a count of its takes |
+| `deleteMonologue` | `DELETE /api/monologues/{id}` | Deleting a monologue with its original and its takes |
 | `getComparison` | `GET /api/analyses/{id}/comparison/{referenceId}` | A take set against the chosen reference |
 | `getWaveform` | `GET /api/analyses/{id}/waveform` | The outline of a sound wave. Only called when the waveform picture is switched on |
 | `deleteAnalysis` | `DELETE /api/analyses/{id}` | Delete one analysis |
 | `deleteAnalysisAudio` | `DELETE /api/analyses/{id}/audio` | Delete only a kept recording |
-| `clearAnalyses` | `DELETE /api/analyses` | Clear the history of takes. References are not touched |
+| `clearAnalyses` | `DELETE /api/analyses?monologue=none` | Clear the General Practice history. Monologues and their takes are not touched |
 | `analysisAudioUrl` | `GET /api/analyses/{id}/audio` | Address of a kept recording, for the player |
 | `getFeedback` | `GET /api/analyses/{id}/feedback` | The feedback on the result on view, and the calibration |
 | `giveFeedback` | `POST /api/analyses/{id}/feedback` | Saving one piece of feedback, or changing its note |
@@ -190,21 +222,27 @@ navigation links from `components/MainNav.tsx`.
 
 ### 5.1 What it does
 
-Five steps, 15 minutes in total. One step at a time is the **current step** and has a
-countdown. You can start, pause, resume, reset or skip it, tick any step by hand, and see the
-last seven days.
+Five steps, 15 minutes in total, done on one monologue. One step at a time is the
+**current step** and has a countdown. You can start, pause, resume, reset or skip it, tick
+any step by hand, and see the last seven days. Since Phase 8 each step has its **tools**
+underneath it, so nothing in the routine sends you to another screen (5.12).
 
-| # | Step | Time |
-| --- | --- | --- |
-| 1 | Listen and observe | 3 min |
-| 2 | Mark the delivery | 3 min |
-| 3 | Perform the monologue | 4 min |
-| 4 | Record and compare | 3 min |
-| 5 | Correct and repeat | 2 min |
+| # | Step | Time | Its tools |
+| --- | --- | --- | --- |
+| 1 | Listen and observe | 3 min | The original recording: a player, and everything measured about it |
+| 2 | Mark the delivery | 3 min | The original as a script, with its measured pauses and the words that stood out |
+| 3 | Perform the monologue | 4 min | The same script, to perform from |
+| 4 | Record and compare | 3 min | The recorder, the comparison of your take with the original, and your takes of this monologue |
+| 5 | Correct and repeat | 2 min | The two biggest differences, and the way back to recording |
 
 To change a title, a duration or the number of steps, edit the one object in
 `src/features/practice/config.ts`. Nothing else needs changing: the "15-minute" label, the
-progress bar and the history all work from that list.
+progress bar and the history all work from that list. Which tools a step gets is decided
+by its `id`, in `PracticeChecklist.tsx`.
+
+The checklist, the timer and the history are the same code as before Phase 8 and still
+make no request to the backend. What is new is that a round is *on a monologue*, that a
+day can hold more than one round, and the tools, which do use the backend.
 
 ### 5.2 The files, in the order data flows through them
 
@@ -249,19 +287,30 @@ The functions inside `practiceState.ts`:
 | `remainingMs` | Time left on the current step |
 | `summarize` | Completed, skipped, total, percentage, full routine or not |
 | `isPristine` | Is this record identical to a brand-new day? (Then it is not worth saving.) |
+| `isRoundUntouched`, `isRoundFinished` | Has nothing been done in the round on screen? Has it no step left to do? |
+| `setMonologue` | Says which monologue the round is on. Ignored once the round is under way on another (5.10) |
+| `switchMonologue` | Abandons the round on screen and starts it again on another monologue |
+| `startNextRound` | Files a finished round under "earlier today" and starts another (5.11) |
+| `summarizeDay` | A whole day for the history: its rounds, its best round, its monologues |
 | `closeOut` | Prepares a record to become history: no live timer |
 | `syncWithConfig` | Updates a saved record if the step list in `config.ts` has been edited |
 
 The actions the page can send to the store (`PracticeAction` in `practiceStore.ts`):
 `start`, `pause`, `resume`, `reset_step`, `skip_step`, `set_completed`, `select_step`,
-`reset_today`, `clear_history`, `dismiss_warning`.
+`set_monologue`, `switch_monologue`, `start_round`, `reset_today`, `clear_history`,
+`dismiss_warning`.
 
 ### 5.3 What one day's record looks like
 
 ```ts
 {
   localDate: "2026-10-11",            // the day, in the device's own timezone
-  steps: [
+  monologue: { id: "16bb16d4…", title: "The one who knocks" },   // what this round is on
+  earlierRounds: [                    // rounds finished earlier today; empty on most days
+    { monologue: { id: "16bb16d4…", title: "The one who knocks" },
+      completed: 5, skipped: 0, total: 5, finishedAtEpochMs: 1791658400000 },
+  ],
+  steps: [                            // the round on screen
     { id: "listen", title: "Listen and observe", durationSeconds: 180, status: "completed" },
     { id: "mark",   title: "Mark the delivery",  durationSeconds: 180, status: "skipped" },
     { id: "perform", ...,                                              status: "not_started" },
@@ -276,6 +325,11 @@ The actions the page can send to the store (`PracticeAction` in `practiceStore.t
 ```
 
 A step is always in exactly one of three states: `not_started`, `completed` or `skipped`.
+
+`monologue` keeps the title as well as the ID, so that the history can still name a
+monologue after it has been deleted. Both new fields are missing from a day saved before
+Phase 8; such a day loads with no monologue and no earlier rounds, and is otherwise
+unchanged.
 
 The timer is in exactly one of three states:
 
@@ -331,7 +385,10 @@ The clock is checked:
 | **Skip step** | Marks the current step *skipped* and moves to the next unfinished step | There is a current step |
 | **Checkbox** | Ticks a step complete, or unticks it. Ticking the current step stops its timer | Always |
 | **Make current** / **Do this step now** | Switches the current step (un-skips a skipped one). Stops the timer of the step you leave | On steps that are not current and not completed |
-| **Reset today's checklist** | Asks first, then clears today only | Today has any progress |
+| **Show / Hide** a step's tools | Opens or closes what the step is done with. Changes nothing in the checklist | On every step, once a monologue is chosen |
+| **Practise again** | Starts another round of the five steps. The finished round stays in today's record | The round has no step left to do |
+| **Choose another monologue** | Goes to the Monologues list | Always |
+| **Reset today's checklist** | Asks first, then clears today only: every round of it. It stays on its monologue | Today has any progress |
 | **Clear history** | Asks first, then deletes previous days only | There is at least one previous day |
 
 When a countdown reaches zero the step is completed and the next unfinished step becomes
@@ -354,6 +411,9 @@ round to the top of the list. Skipped steps are not revisited automatically.
 - The table shows the last 7 calendar days. Older saved days appear under "Older days".
   At most 120 days are kept.
 - "Full routine" means all five steps completed. A skipped step never counts as completed.
+- A day's row shows the monologue (or monologues) practised, and the figures of the round
+  that got furthest: "5 of 5 · best of 2 rounds". One round with every step completed is
+  what makes the day a full routine; further rounds are extra.
 
 ### 5.7 When saved data is damaged
 
@@ -386,9 +446,133 @@ end time.
   two-by-two grid on a phone and in one row on wider screens. Light and dark appearance
   follow the device setting.
 
+### 5.10 The monologue a round is on
+
+The routine is always done on a monologue, and the page learns which from two places:
+
+| Where | What it says |
+| --- | --- |
+| The address: `/practice?monologue=<id>` | The monologue the user asked for, by pressing "Practise" on it |
+| Today's saved record: `record.monologue` | The monologue the round on screen is already on |
+
+They usually agree. When they do not, one rule decides: **a round that is under way stays
+on its monologue.**
+
+| Situation | What happens |
+| --- | --- |
+| Nothing done yet in the round | It follows the address, silently |
+| No address, and the record has a monologue | That monologue is shown. This is the "Daily Practice" link in the header on a day already begun |
+| No address, no monologue in the record | A list to choose from, the one practised most recently first. The checklist is not shown until one is chosen |
+| The round is under way on A, the address asks for B | A notice: "Carry on with this one" (the address is put back to A) or "Switch to the other" (asks first, then clears this round's steps and starts it on B) |
+| The round on A is finished, the address asks for B | A notice with "Start a new round on it" |
+| The address names a monologue that does not exist | A notice, and the list to choose from |
+| The record's monologue has since been deleted | A notice. The timer still works; the tools have nothing to show |
+
+The rule itself is one function, `setMonologue` in `practiceState.ts`, which simply returns
+the record unchanged when the round is under way on another monologue. The page calls it
+whenever the address or the list of monologues changes, and reads the outcome back from
+the record. It never has to work out for itself whether a switch is allowed.
+
+**Choosing a monologue is not progress.** A day is saved only once something has been done
+(decision F8), and that is still true: opening a monologue and leaving saves nothing.
+
+### 5.11 Rounds: practising again the same day
+
+One pass through the five steps is a **round**. One round is the day's routine. When the
+round on screen has no step left to do, the timer panel shows **Practise again**.
+
+```
+ round 1 (on screen)                    after "Practise again"
+ ─────────────────────                  ───────────────────────────────────────────
+ steps: 5 completed          ──▶        earlierRounds: [ { completed 5, skipped 0, total 5,
+                                                          monologue, finishedAt } ]
+                                        steps: 5 not started      ← round 2, on screen
+```
+
+- A finished round is reduced to a few numbers and kept in `earlierRounds`. The steps on
+  screen are always the current round.
+- The heading says "Round 2: 1 of 5 steps completed", and a line under the bar says that
+  today's routine is already done and this round is extra.
+- A round with skipped steps is finished too, and can be followed by another; it is just
+  not a full routine.
+- The next round can be on another monologue: open that one from Monologues, and the
+  notice in 5.10 offers "Start a new round on it".
+- A day with a finished round is worth saving even if the next round is never begun.
+
+### 5.12 The tools of each step
+
+`StepList.tsx` draws, under each step, a button "Show …" / "Hide …" and, when open, a box
+with that step's tools. The tools themselves are components from `features/monologue/`,
+handed to the list by `PracticeChecklist.tsx`:
+
+| Step | Component | What it shows | Where its data comes from |
+| --- | --- | --- | --- |
+| 1 | `ListenTools.tsx` | The original in the ordinary results view (`<Results mode="reference">`): player, chart, pace, pauses, voice, and the feedback controls for a reference (6.22). An offer to measure it again when the minimum pause has moved | `referenceDetail` in the store |
+| 2, 3 | `ScriptView.tsx` | The script of the original (5.13) | The same |
+| 4 | `RecordTools.tsx` | Record or upload, language, keep; "Analyse and compare"; the progress of the job; then the take's headline figures, the comparison with the original (6.15), a link to the take's full analysis; and the list of your takes of this monologue | `viewed`, `comparison` and `takes` in the store |
+| 5 | `CorrectTools.tsx` | The two largest differences from the comparison, each with **Original** and **Yours** to play; "Record another take", which opens step 4 and scrolls to it | `comparison` in the store |
+
+**When tools are open.** Nothing about this is saved; it is worked out each time the page
+is drawn:
+
+```
+ open  =  what the user last chose for this step, if they pressed Show or Hide
+          otherwise:  it is the current step,  or  something of its own is going on
+```
+
+"Something of its own is going on" matters for step 4. Its timer is three minutes, and an
+analysis with AI coaching can take longer than what is left of it. When the timer runs
+out, the checklist moves on to step 5, as it always did. Step 4's tools stay open all the
+same, because a recording is being made, a take is being analysed, or a take is on view.
+A step's tools can also be opened at any time, whether or not it is the current step and
+whether or not its timer is running: the timer is a guide, not a lock.
+
+**Which take is "on view".** The take that was just analysed, or one opened with
+**Compare** in the list of takes. The page only ever treats a take as on view if it was
+recorded for the monologue being practised: the store is shared with the other screens
+(decision F36), so it may be holding something from one of them.
+
+**Feedback on this page** is about the original recording, in step 1. Feedback on a take
+is given on the take's own page (6.14), where its coaching is.
+
+### 5.13 The script of the original
+
+`ScriptView.tsx`, with its logic in `features/monologue/script.ts`.
+
+```
+ 1. I am not in danger, Skyler.                         159 WPM   Play
+ ‖ pause 1.6 s   at 0:02.3
+ 2. I am the danger.                                    198 WPM   Play
+ ‖ pause 1.1 s   at 0:05.1
+ 3. A guy opens his door and gets shot, and you think that of me?     217 WPM   Play
+                                               ‾‾‾ ‾‾‾‾‾
+ ‖ pause 2.3 s   at 0:10.0
+ 4. No, I am the one who knocks.                        206 WPM   Play
+```
+
+| What is shown | Where it comes from |
+| --- | --- |
+| One line per phrase | The original's segments, in order |
+| The words | The recognised words of that phrase; a phrase with no timed words falls back to its own text |
+| `‖ pause 1.6 s` after a line | The measured pause that follows that phrase. A long silence (5 s or more) is marked `‖‖` |
+| An underlined word | An emphasis candidate: a word that measured louder or higher than the speaker's typical word. A screen reader hears "(louder)" or "(higher)" after it |
+| ▲ faster / ▼ slower | The phrase's pace against the speaker's own typical pace |
+| **Play** | Plays that phrase of the original, when its recording is available |
+
+`buildScript` only rearranges a stored result. It measures nothing and infers nothing: a
+pause is there because the analysis found one, a word is marked because it is in the
+list of emphasis candidates. A marked word is matched to its candidate by phrase and
+start time, not by its text, so that the same word said twice is marked only where it
+stood out. The legend under the script says what is not detected (emphasis made by slowing
+down) and where to correct a misheard word (step 1).
+
 ## 6. Deep dive: General Practice
 
 ### 6.1 What it does
+
+General Practice is for any speaking you want measured that has no original recording to
+set it against: a talk, a reading, a test of how you sound today. A take of a monologue
+is recorded in Daily Practice instead (5.12), and is not listed here.
 
 You pick a delivery profile, record yourself or choose an audio file, and press **Analyse
 recording**. The page then follows the analysis job, shows the results with coaching on what
@@ -437,6 +621,10 @@ it rests on.
 | `audioDuration.ts` | Works out the length of a browser-made recording so it can be seeked. |
 | `format.ts` | Text for times, numbers, changes, profile names, stage names. |
 | `useGeneralPractice.ts` | Creates one of each store for the page and exposes them as hooks, plus the segment player. |
+
+This section describes the machinery as General Practice uses it. The monologue screens
+use the same store, the same recorder, the same run panel and the same results view; what
+they add is in 5.12, 5.13 and 6.14.
 
 Like the checklist, the logic lives in plain files that receive what they need from outside
 (the backend client, the timer, the microphone). That is what lets the tests script a
@@ -690,7 +878,9 @@ How it was built to be readable and usable:
 ### 6.11 Comparing with an earlier attempt
 
 `compare.ts` lines up nine headline metrics of this attempt and an earlier one. The earlier
-attempt defaults to the one just before, and any earlier one can be chosen.
+attempt defaults to the one just before, and any earlier one can be chosen. In General
+Practice the earlier attempts are the other analyses in its history; on a take's own page
+they are the other takes of the same monologue.
 
 - Only the **change** is shown: "+16.5 WPM", "−0.48 s". Never "better" or "worse". Whether a
   slower pace or a longer pause is an improvement depends on what you were going for.
@@ -703,10 +893,12 @@ attempt defaults to the one just before, and any earlier one can be chosen.
 
 ### 6.12 History
 
-The list comes from the backend (`GET /api/analyses`), newest first, 20 at a time. Each row
-has View, Delete, and — if the recording was kept — "Delete recording", which removes only
-the audio. "Clear all history" deletes every analysis and kept recording. All three ask for
-confirmation, and none of them touches the Daily Practice checklist.
+The list comes from the backend (`GET /api/analyses?monologue=none`), newest first, 20 at
+a time. It holds the analyses made in General Practice: the takes that belong to no
+monologue. Each row has View, Delete, and — if the recording was kept — "Delete recording",
+which removes only the audio. "Clear all history" deletes every analysis in this list and
+its kept recording. All three ask for confirmation, and none of them touches the Daily
+Practice checklist, a monologue, or a take recorded for one.
 
 A later result made from the same recording is its own row, marked "Revision 2: transcript
 corrected" or "Revision 3: analysed again" (6.20). Deleting an analysis also deletes the
@@ -729,76 +921,110 @@ The last one is the only notice that does not stand in the way of anything: it i
 ordinary notice, not a warning, and it is not shown at all if AI coaching was switched off
 on purpose (`AI_COACHING=off`).
 
-### 6.14 Reference recordings and the Monologue screen
+### 6.14 Monologues, their takes, and a take's own page
 
-A **reference** is a recording you supply to compare your takes with, such as the original
-performance. Phase 5 adds three things built on it: a library of references, a comparison
-of a take with the chosen reference, and a picture of the two sound waves. All three appear
-in two places:
+A **monologue** is one piece you practise. To the backend it is a reference recording (the
+original performance) together with the takes recorded for it. On screen the reference is
+called "the original".
+
+Three screens are built on it:
 
 | Where | What it is for |
 | --- | --- |
-| `/monologue` | Practising one monologue against its original. Three numbered steps: the reference, your take, the comparison |
-| Inside the results on `/general` | The same comparison for any take, as one more section under the coaching |
+| `/monologue` | The list. Add a monologue, open one to practise, delete one |
+| `/practice?monologue=<id>` | Daily Practice on it (section 5) |
+| `/monologue/take?analysis=<id>` | The full analysis of one of its takes |
 
-Both screens use **the same store**. `useGeneralPractice.ts` creates one for the whole app,
-so a reference chosen on one screen is the chosen one on the other, and a take analysed on
-the Monologue screen is already open when you follow its link to General Practice.
+All of them, and General Practice, use **the same store**. `useGeneralPractice.ts` creates
+one for the whole app, so a job started on one screen is followed on the others, and there
+is one place where "only one run at a time" is enforced.
 
-**What the store gained** (`generalStore.ts`):
+**What the store holds for monologues** (`generalStore.ts`):
 
 | State | Meaning |
 | --- | --- |
-| `references` | The reference recordings, fetched with `role=reference` |
-| `selectedReferenceId` | The chosen one. Saved in `localStorage`, so it is still chosen tomorrow |
-| `referenceDetail` | The chosen reference's own full result, for studying it |
-| `comparison` | The take on view against the chosen reference: `none`, `loading`, `ready` or `error` |
+| `monologues` | The list, from `GET /api/monologues`. Each item has `monologueId`, `referenceId` (its original, in the newest revision), `title`, `takeCount`, `lastTakeAt` |
+| `monologueId` | The monologue the screen on view is about. `null` on a screen that is about none |
+| `takes` | That monologue's takes, newest first, from `GET /api/analyses?monologue=<id>` |
+| `selectedReferenceId` | The reference on view: the watched monologue's newest, unless an earlier revision was opened |
+| `referenceDetail` | That reference's own full result, for studying it and for the script |
+| `comparison` | The take on view against that reference: `none`, `loading`, `ready` or `error` |
+| `history` | The General Practice history: takes that belong to no monologue |
 | `waveforms` | Sound-wave outlines by analysis ID. Empty until one is asked for |
 | `runRole` | Whether the run in progress is for a take or a reference |
 
 | Action | What it does |
 | --- | --- |
-| `selectReference(id)` | Chooses a reference, or none |
-| `deleteReference(id)` | Deletes one, after a confirmation |
-| `submit({ …, role: "reference", title })` | Adds one. It is the ordinary `submit`, so it is followed, cancelled and recovered like any analysis |
+| `watchMonologue(id)` | Says which monologue the screen is about. Loads its takes and chooses its original. `null` lets go of both |
+| `submit({ …, monologueId })` | Sends a take of that monologue. It is the ordinary `submit`, followed, cancelled and recovered like any analysis |
+| `submit({ …, role: "reference", title })` | Adds a monologue |
+| `selectReference(id)` | Opens another revision of the original |
+| `deleteMonologue(id)` | Deletes a monologue, its original and its takes, after a confirmation that says how many takes go with it |
 | `loadWaveform(id)` | Fetches one outline, once |
 
-**The comparison keeps itself up to date.** No component asks for it. Whenever the take on
-view or the chosen reference changes, the store works out which pair is now wanted and
-fetches that comparison, unless it already has it. This lives in one function,
-`syncWithSelection`, called from the one place where state is set. A slow answer for a pair
-that is no longer wanted is thrown away.
+**A screen says which monologue it is about; the store does the rest.** Daily Practice
+calls `watchMonologue` with the monologue of the round. The take page calls it with the
+monologue its take belongs to. From then on the store keeps three things in step without
+being asked: the takes of that monologue, its original for study, and the comparison.
 
-**Adding a reference does not disturb what you are looking at.** When a reference job
-finishes, the take on view stays on view; the new reference joins the list, becomes the
-chosen one, and the take is at once compared with it.
+**The comparison keeps itself up to date.** No component asks for it. Whenever the take
+on view, the watched monologue or the chosen reference changes, one function,
+`syncWithSelection`, works out which pair is now wanted and fetches that comparison,
+unless it already has it. A slow answer for a pair that is no longer wanted is thrown
+away. Two rules are built into it:
 
-**The Monologue page** (`MonologuePractice.tsx`), top to bottom:
+- a take is compared only if it was recorded for the monologue being watched;
+- a take that belongs to no monologue is compared with nothing.
 
-1. **The reference recording.** `ReferenceLibrary`: a menu of your references, "Add a
-   reference recording" (name, file, language, keep), and delete. If the chosen reference
-   was measured before the minimum pause moved, a notice offers "Measure this reference
-   again" (6.20). Under it, folded away,
-   "Study this reference": the ordinary results view in a lighter mode
-   (`<Results mode="reference">`) with its player, timeline chart, pace, pauses and voice
-   sections, and without coaching or comparisons. Since Phase 7 it also carries the
-   feedback controls that make sense for a reference (6.22).
-2. **Your take.** The same record-or-upload picker as General Practice. There is no profile
-   to choose: this screen is about matching the reference, so the take is analysed with the
-   neutral profile.
-3. **Your take against the reference.** A menu of your takes (a later revision of a
-   recording says which it is), then `ReferenceComparison`, then a link to the take's full
-   measurements and coaching in General Practice, which is also where feedback on a take
-   is given. When the take and the reference were analysed with a different minimum pause,
-   the comparison opens with a warning saying so.
-4. **Feedback and calibration.** The same panel as at the bottom of General Practice
-   (6.19), so that a notice saying "your feedback has just changed a setting" has
-   somewhere on this page to point to.
+**The original follows its monologue.** When a monologue is first watched, its newest
+reference is chosen. It is chosen again only when that reference itself changes: its words
+were corrected, or it was measured again. In between, an earlier revision the user has
+opened (from the links in the header of step 1) stays open; refreshing the list does not
+take it away.
+
+**The Monologues page** (`MonologueList.tsx`), top to bottom:
+
+1. **Your monologues.** One row each, the one practised most recently first: its name,
+   length, language and when it was added; how many takes it has and when the last was;
+   **Practise**, a link to `/practice?monologue=<id>`; and **Delete**, which asks first
+   and names the number of takes that will go with it.
+2. **Add a monologue** (`AddMonologue.tsx`): a name, the original recording as a file, the
+   language, and "Keep this recording", ticked by default (decision F39). Open from the
+   start when there is no monologue yet.
+3. **The run panel**, while the original is being measured: four stages, then "Monologue
+   added".
+
+**A take's own page** (`TakeAnalysis.tsx`). The link "Full analysis" beside a take, in
+step 4 of Daily Practice, leads here.
+
+- It is the ordinary results view (6.9): summary, recording, coaching, pace, pauses,
+  voice, feedback, and "compare with an earlier attempt", where the earlier attempts are
+  the other takes of the same monologue.
+- Between the coaching and the pace tables sits **Against the original**: the comparison
+  of this take with its monologue's original (6.15).
+- The feedback controls (6.18) are here, and the calibration panel (6.19) is at the
+  bottom.
+- "← Back to practising …" at the top, and **Close results**, go back to Daily Practice
+  for that monologue. Deleting the take does the same.
+- The address is read when the page opens and when it changes. After that the page shows
+  whatever the store has on view, so a new revision of the take (a corrected transcript,
+  a fresh analysis) takes its place without a second request.
+- Opened with the ID of something that is not a take of a monologue, it says what that
+  thing is and where it is shown.
+
+**What General Practice no longer has.** Until Phase 8 its results carried a section
+"Compare with a reference recording", with a menu of references. That section is gone
+(decision G14 in the main document). If a take recorded for a monologue is on view in the
+shared store when General Practice is opened, it is not shown there; a notice links to
+its own page.
 
 ### 6.15 The comparison section
 
 Drawn by `ReferenceComparison.tsx` from the `comparison` in the store. The comparing itself
-is done by the backend (science document, section 14); this component only shows it.
+is done by the backend (science document, section 14); this component only shows it. It
+appears in two places: under step 4 of Daily Practice, for the take on view, and on a
+take's own page. The tables say "reference" for the original, which is the word the
+measurements use.
 
 | Part | What it shows |
 | --- | --- |
@@ -881,8 +1107,9 @@ the recording is.
 ### 6.18 Feedback on a result
 
 Feedback is optional. A result is complete without it, and nothing on the page waits for
-it. This section describes it on one of your own takes, in General Practice. A reference
-recording takes a smaller set of the same controls, on the Monologue screen (6.22).
+it. This section describes it on one of your own takes: in General Practice, or on the
+page of a take of a monologue (6.14), which shows the same results view. A monologue's
+original takes a smaller set of the same controls, in step 1 of Daily Practice (6.22).
 
 There is no separate "feedback form". Each control sits next to the thing it is about, so
 that "which pause?" never has to be asked:
@@ -971,8 +1198,8 @@ belongs to the whole app.
 ### 6.19 The calibration panel
 
 At the bottom of the General Practice page, under the history, and at the bottom of the
-Monologue page: **Feedback and calibration**. It is there whether or not a result is on
-view.
+Daily Practice page and of a take's own page: **Feedback and calibration**. It is there
+whether or not a result is on view.
 
 | Part | Shows |
 | --- | --- |
@@ -1008,9 +1235,10 @@ own row in the history; the screen only has to say how they are related.
   upload, under the headings "Analysing the recording again" and "New revision ready". It
   needs the recording to have been kept; when it was not, the notice says so instead of
   offering the button.
-- **A reference** made with older settings gets the same offer in the reference library
-  ("Measure this reference again"). The new revision joins the library and becomes the
-  chosen one; the earlier one stays listed until deleted.
+- **A monologue's original** measured with older settings gets the same offer in step 1 of
+  Daily Practice ("Measure the original again"). The new revision becomes the one takes
+  are compared with; the earlier one is kept, and can be opened from the links in the
+  header of step 1. The monologue is still one row in the list.
 
 ### 6.21 Accessibility of the feedback controls
 
@@ -1037,8 +1265,8 @@ own row in the history; the screen only has to say how they are related.
 
 ### 6.22 Feedback on a reference recording
 
-Opened under "Study this reference" on the Monologue screen, a reference shows the same
-results view as before with a smaller set of the feedback controls:
+Shown in step 1 of Daily Practice ("Listen and observe"), a monologue's original shows the
+ordinary results view with a smaller set of the feedback controls:
 
 | Where | On a take | On a reference |
 | --- | --- | --- |
@@ -1055,11 +1283,12 @@ them (`REFERENCE_PAUSE_CHOICES` in `feedback.ts`).
 the reference spoils the line-up of every take compared with it. It works as on a take,
 with three differences in what happens afterwards (`store.correctTranscript`):
 
-- the corrected reference **becomes the chosen one**, so the comparison on screen is at
-  once with the corrected words;
+- the corrected reference **becomes the one its monologue's takes are compared with**, so
+  the comparison on screen, and the script in steps 2 and 3, are at once in the corrected
+  words;
 - the take on view stays on view;
-- the notice says "Saved as revision 2 of this reference, and chosen… The earlier one is
-  still in the list, unchanged, until you delete it."
+- the notice says "Saved as revision 2 of the original recording… your takes are now
+  compared with this revision. The earlier one is kept, unchanged."
 
 The header of a reference with more than one revision says which it is and links to the
 others; following a link chooses that revision as the reference.
@@ -1071,9 +1300,10 @@ a setting moves only once a take of your own shows the same thing"), and in "How
 gets adjusted" in the panel.
 
 How it is wired: there is one feedback store for the whole app, and it watches one
-analysis at a time. On General Practice that is the take on view. On the Monologue screen
-it is the reference being studied (`useFeedback(referenceDetail?.analysisId ?? null)`).
-The two screens are never on view together, so one store is enough.
+analysis at a time. On General Practice and on a take's own page that is the take on
+view. On Daily Practice it is the original being studied
+(`useFeedback(reference?.analysisId ?? null)`). The screens are never on view together,
+so one store is enough.
 
 ### 6.23 What your feedback adds up to
 
@@ -1135,13 +1365,17 @@ request carries a number, and only the answer to the latest one is used.
 
 ## 7. What is saved in the browser
 
-Three `localStorage` keys, and nothing else:
+Two `localStorage` keys, and nothing else:
 
 | Key | Written by | Holds |
 | --- | --- | --- |
-| `monologue-coach.practice.v1` | Daily Practice | All saved checklist days, as JSON |
-| `monologue-coach.general.active-job` | General Practice, Monologue | The ID of an analysis still in progress, so a refresh can pick it up. Removed when the job ends |
-| `monologue-coach.reference.selected` | General Practice, Monologue | The ID of the chosen reference recording. Removed when none is chosen, or when that reference no longer exists |
+| `monologue-coach.practice.v1` | Daily Practice | All saved checklist days, as JSON: each day's steps, the monologue its round is on, and the rounds finished earlier that day |
+| `monologue-coach.general.active-job` | Daily Practice, Monologues, General Practice | The ID of an analysis still in progress, so a refresh can pick it up. Removed when the job ends |
+
+A third key, `monologue-coach.reference.selected`, was written until Phase 8: it
+remembered which reference was chosen. The monologue being practised now says which
+reference is meant, so the key is no longer written, and is removed the first time the
+app opens.
 
 The checklist's value looks like this:
 
@@ -1149,10 +1383,10 @@ The checklist's value looks like this:
 { schemaVersion: 1, days: { "2026-10-10": { ...record }, "2026-10-11": { ...record } } }
 ```
 
-General Practice and Monologue save **no results and no audio in the browser**. Feedback
+The monologue screens and General Practice save **no results and no audio in the browser**. Feedback
 and calibration are not saved in the browser either: both live in the backend's database,
 so they are the same whichever browser the app is opened in. The
-reference recordings themselves are in the backend's database and data folder, not here. Results live in the
+monologues, their original recordings and their takes are in the backend's database and data folder, not here. Results live in the
 backend's database. A recording you just made or chose is held in the page's memory so it
 can be played back with its result; it is gone when the tab is closed or refreshed, unless
 you ticked "Keep this recording", in which case the backend stores it.
@@ -1292,10 +1526,12 @@ Each entry says what was chosen, what was considered, and what was decided again
   built yet.
 - **Why:** a link to a page that is not there, or a button that pretends to work, would be
   misleading.
-- **Since Phase 5:** the comparison exists, so step 4 now links to the Monologue screen, and
-  so does step 1 ("Listen and observe"), where the original can be played and its measured
+- **Since Phase 5:** the comparison exists, so step 4 linked to the Monologue screen, and
+  so did step 1 ("Listen and observe"), where the original can be played and its measured
   pauses and pace read. Step 1's note still says what is left to the ear: breathing, and
   emphasis made by slowing down, are not measured.
+- **Since Phase 8:** the steps link nowhere. What each one needs is underneath it
+  (decision F69).
 
 ### F15. Styling with Tailwind CSS
 
@@ -1494,6 +1730,9 @@ Each entry says what was chosen, what was considered, and what was decided again
 
 ### F36. One store for both screens
 
+- **Still true after Phase 8**, for more screens: Monologues, Daily Practice, a take's page
+  and General Practice all share it. What changed is that the screens no longer show the
+  same things, so each one takes from the store only what belongs to it (decision F74).
 - **Chosen:** General Practice and Monologue share the single store created in
   `useGeneralPractice.ts`.
 - **Why:** they show the same things: the same takes, the same references, the same run in
@@ -1515,7 +1754,10 @@ Each entry says what was chosen, what was considered, and what was decided again
 
 ### F38. The Monologue screen reuses the results view, and links to General Practice for the rest
 
-- **Chosen:** the reference is studied in the ordinary results view with a `mode` that
+- **Changed in Phase 8.** The results view is still reused, twice: for the original in
+  step 1, and for a take on its own page. But a take's full results are no longer in
+  General Practice: they have a page under Monologues (decision F73).
+- **Chosen in Phase 5:** the reference is studied in the ordinary results view with a `mode` that
   hides what does not apply. A take's full results stay in General Practice, one link away.
 - **Why:** a second results view would have to be kept in step with the first for ever. The
   Monologue screen can stay about one question: where does my take differ from the original?
@@ -1642,8 +1884,8 @@ Each entry says what was chosen, what was considered, and what was decided again
   report against.
 - **Decided against:** *clicking on the timeline chart to mark the spot*: precise with a
   mouse, hard with a keyboard, and the chart is far up the page from the phrase.
-- **Not built:** choosing a single word in the transcript as the place. The silences are
-  already described by the word they follow.
+- **Not built then; built in Phase 7:** choosing a single word in the transcript as the
+  place (decision F61).
 
 ### F52. The phrase form opens under the table, not inside it
 
@@ -1703,7 +1945,9 @@ Each entry says what was chosen, what was considered, and what was decided again
 
 ### F59. Feedback is given in General Practice; the Monologue screen links to it
 
-- **Chosen:** the Monologue screen shows the comparison only, as before, and its link to
+- **Replaced.** Phase 7 put feedback on a reference where the reference is studied (F64),
+  and Phase 8 gave a monologue's take a page of its own, where its feedback is given (F73).
+- **Chosen in Phase 6:** the Monologue screen shows the comparison only, as before, and its link to
   General Practice now says feedback is given there.
 - **Why:** the brief places the feedback and calibration panel in General Practice, and the
   controls live in the full results view, which the Monologue screen already hands over to
@@ -1754,6 +1998,8 @@ Each entry says what was chosen, what was considered, and what was decided again
 
 ### F64. A reference gets its feedback on the Monologue screen, from the same components
 
+- **Since Phase 8** the place is step 1 of Daily Practice, which is where the original is
+  now studied. The components and the reasoning are unchanged.
 - **Chosen:** the results view already used for studying a reference takes the feedback
   controls, with a flag that changes the choices offered and the wording.
 - **Why:** the place where a wrong word or a missed pause in the reference is noticed is
@@ -1764,6 +2010,8 @@ Each entry says what was chosen, what was considered, and what was decided again
 
 ### F65. The calibration panel is on both screens
 
+- **Since Phase 8** it is on three: Daily Practice, a take's own page, and General
+  Practice. Each is a page on which feedback can be given, for the same reason as below.
 - **Chosen:** the same panel at the bottom of the Monologue page as at the bottom of
   General Practice.
 - **Why:** feedback can now be given on the Monologue page, and when it moves a setting
@@ -1791,21 +2039,150 @@ Each entry says what was chosen, what was considered, and what was decided again
 - **Decided against:** hiding an out-of-date pick (the user would wonder where it went);
   picking again automatically (the model's time is the user's to spend).
 
+### F68. Daily Practice is done on a monologue, chosen from a list
+
+- **Chosen:** the Monologue screen became a list of monologues; "Practise" on one opens
+  Daily Practice for it. See decision G13 in the main document for why the two were
+  joined.
+- **Why a list first:** the user said how they think of it: pick the monologue, then
+  practise. A routine with nothing to practise on has nothing to listen to in step 1.
+- **Decided against:** *a menu of monologues at the top of Daily Practice.* It reads as a
+  filter that can be flipped at any time, and flipping it mid-round is exactly what a
+  round should not allow (F71). *Opening the last monologue automatically:* see F72.
+
+### F69. Each step carries its tools, and they stay open while in use
+
+- **Chosen:** the original, the script, the recorder and comparison, and the biggest
+  differences sit under the step they belong to. A step's tools are open while it is the
+  current step, while something of theirs is going on, or because the user opened them.
+- **Why under the steps:** the step's instruction and the thing it is done with are then
+  in one place, and the page reads top to bottom as the routine.
+- **Why "while in use":** found by thinking through the timer. Step 4 is three minutes; a
+  recording plus its analysis can outlast it. If the tools belonged strictly to the
+  current step, the recorder would vanish mid-analysis when the timer ran out.
+- **Why this is worked out and not stored:** "open" is a fact about the moment (which step
+  is current, is a job running), so it is computed when the page is drawn. Only the
+  user's own Show and Hide presses are kept, and only until the next round.
+- **Decided against:** *one tools area for the current step only* (the problem above);
+  *all five always open* (a very long page, with two copies of the script);
+  *stopping the timer while an analysis runs* (the timer would then mean something
+  different in one step than in the others).
+
+### F70. One round is the day's routine; more are extra, and stay in the same day
+
+- **Chosen:** "Practise again" files the finished round under `earlierRounds` and starts a
+  fresh one. The history shows one row per day, with the figures of the best round.
+- **Why:** the user asked for exactly this: one round a day is what counts, and a second
+  should be possible. Keeping every round in the day's record means the first is not
+  thrown away to make room for the second.
+- **Decided against:** *"Reset today" as the way to practise again* (it erases the round
+  that was just finished); *one history row per round* (seven days would no longer be
+  seven rows); *a checklist per monologue per day* (the user chose one routine a day).
+- **A consequence in the rules:** "all five completed" used to be read from the steps on
+  screen alone. With rounds, the day's routine is done if *any* round was full, which
+  `summarizeDay` works out. The round on screen is summarised on its own, as before.
+
+### F71. A round stays on its monologue; switching is asked for
+
+- **Chosen:** once anything has been done in a round, another monologue in the address
+  does not move it. A notice offers to carry on or to switch, and switching asks first.
+- **Why:** a round's steps are about one piece: the original listened to in step 1 is the
+  one the take in step 4 is compared with. A round that changed monologue half-way would
+  be recorded as practice of the wrong one.
+- **Where the rule lives:** in `setMonologue`, with the other rules, where it is tested
+  without a browser. The page only shows what the rule decided.
+- **Decided against:** *switching silently* (three completed steps would be credited to a
+  monologue they were not done on); *refusing with no way out* (the user may simply have
+  started on the wrong one).
+
+### F72. Choosing a monologue is not progress, and none is remembered between days
+
+- **Chosen:** a monologue chosen with nothing done leaves nothing in storage. With no
+  monologue in the address and none in today's record, the page shows the list to choose
+  from, the one practised most recently first.
+- **Why:** decision F8 says a day with no progress is not saved, and opening a monologue
+  to look at it is not progress. Remembering "the last monologue" would need a second
+  thing in storage that can go stale (the monologue may have been deleted), to save one
+  click on a list that already puts the likeliest choice first.
+- **Decided against:** *saving the chosen monologue as soon as it is chosen* (the history
+  would fill with days on which nothing was practised); *a separate "last monologue" key.*
+
+### F73. A take of a monologue has a page of its own, under Monologues
+
+- **Chosen:** `/monologue/take?analysis=<id>`: the full results view for one take, with
+  the comparison against the original inside it. Step 4 shows the comparison and a few
+  headline figures, and links here.
+- **Why:** the user asked for the comparison in the step and the rest one link away, and
+  for that link not to lead into General Practice, which is now for speaking that has no
+  original. The page reuses `Results` whole, so nothing about a result is drawn twice.
+- **Decided against:** *the full results inside step 4* (coaching, four tables and the
+  feedback controls under a three-minute step); *a new "Analyses" tab listing every
+  result* (a second way to reach the same takes, away from their monologue).
+
+### F74. Each screen shows only what belongs to it, though the store is shared
+
+- **Chosen:** Daily Practice treats a take as on view only if it was recorded for the
+  monologue being practised. A take's page shows only a take of a monologue. General
+  Practice shows only a recording that belongs to none, and says so, with a link, when
+  the store is holding something else.
+- **Why:** the shared store (F36) holds one result "on view" for the whole app. After
+  Phase 8 the screens are about different things, so each has to ask "is this mine?"
+  before showing it. The check is one line in each page, next to where the result is read.
+- **Decided against:** *a store per screen* (each would need its own job tracking, and
+  two could start a run at once); *clearing what is on view whenever a screen opens* (a
+  take being analysed would be lost by looking at another page).
+
+### F75. The store is told which monologue the screen is about, and chooses its original in the same step
+
+- **Chosen:** `watchMonologue(id)`. The store then loads the takes, chooses the newest
+  reference, and keeps the comparison up to date.
+- **Why one call:** before Phase 8 the chosen reference was a choice the user made from a
+  menu and the store remembered. Now it follows from the monologue, so it should not be
+  possible to have one without the other.
+- **A fault the test caught:** the first version changed the monologue and then, a line
+  later, the reference. In between, the comparison was brought up to date, and a take was
+  for one request set against the *previous* monologue's original. A test written to
+  check "never compared with another monologue's original" counted two requests where one
+  was expected. Both now change in a single step.
+- **Decided against:** *each page fetching its own reference and takes* (two pages, two
+  copies, and the comparison would not know when either changed).
+
+### F76. The script shows what was measured and nothing else
+
+- **Chosen:** `buildScript` rearranges the original's stored result: its phrases, its
+  pauses, its emphasis candidates. No new judgement is made.
+- **Why:** step 2 asks the actor to mark the delivery. A script that suggested marks of
+  its own would be coaching the original, which nobody asked for and nothing measures.
+- **Decided against:** *letting the user type marks into the page* (a second place to
+  store things, for what a pencil does; it can be added if asked for); *marking pauses by
+  size with words such as "dramatic"* (the app measures a length and does not name an
+  intention: science document, section 4).
+
+### F77. Clearing the General Practice history keeps what belongs to a monologue
+
+- **Chosen:** "Clear all history" asks the backend to clear only takes that belong to no
+  monologue, and in the page releases only their recordings. A monologue's take that is
+  on view, its finished run and its recording in memory are left alone.
+- **Why:** the button is on General Practice and the history it clears is General
+  Practice's. The store keeps recordings for every screen in one map, so it also keeps a
+  note of which ones belong to a monologue.
+
 ### Decisions already made for later phases
 
 None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 9. Tests
 
-Run with the command in the README. Current result: **250 tests pass**. 22 are new in
-Phase 7.
+Run with the command in the README. Current result: **292 tests pass**. 42 are new in
+Phase 8.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
-| `features/practice/practiceState.test.ts` | 23 | Start, pause/resume, reset, expiry exactly once, skip, manual tick/untick, a stale timer cannot complete a step, progress numbers, config changes |
-| `features/practice/practiceStore.test.ts` | 24 | Saving and restoring after a refresh, new-day rollover, midnight edge cases, reset today vs. clear history, damaged or unavailable storage, two tabs |
+| `features/practice/practiceState.test.ts` | 37 | Start, pause/resume, reset, expiry exactly once, skip, manual tick/untick, a stale timer cannot complete a step, progress numbers, config changes. The monologue of a round: choosing one is not progress; a round that is under way stays on its monologue; a day with none takes one at any point; switching clears only the round on screen. Rounds: not offered while a step is left; a finished round filed with its figures; a round with skipped steps is finished but not a full routine; **the day's routine stays done however little of an extra round is done**; a round never begun is not counted |
+| `features/practice/practiceStore.test.ts` | 34 | Saving and restoring after a refresh, new-day rollover, midnight edge cases, reset today vs. clear history, damaged or unavailable storage, two tabs. A day on which a monologue was only chosen is not saved; the monologue and the rounds survive a refresh; reset today clears every round and stays on the monologue; the next day starts with no monologue; **a day saved before Phase 8 still loads**, and can then be given a monologue; a monologue or round that does not read is dropped without losing the day |
+| `features/monologue/script.test.ts` | 6 | One line per phrase with the measured pause after it and none after the last; each phrase's pace and where to play it from; only the word that stood out is marked, not another saying of the same word; a phrase with no timed words falls back to its text, Hindi included; a recording with no words gives an empty script, not a broken one |
 | `features/practice/format.test.ts` | 9 | `03:00`-style text, durations, local dates vs. UTC |
-| `features/general/generalStore.test.ts` | 58 | Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh. A corrected reference becomes the chosen one, the take on view stays, and the comparison is fetched again with it |
+| `features/general/generalStore.test.ts` | 70 | *(Rewritten in part for Phase 8; the last sentences of this row say what replaced the tests about a chosen reference.)* Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh. A corrected reference becomes the chosen one, the take on view stays, and the comparison is fetched again with it. **Monologues (Phase 8):** the list loaded, and none watched until a screen says so; the history asking only for takes that belong to no monologue; watching one loads its takes and chooses its original, at once or when the list arrives; a late answer for the monologue watched before is ignored; an earlier revision of the original stays open until the original itself changes; a take sent with its monologue, shown, and every list brought up to date; adding a monologue without disturbing the take on view; deleting one with its takes; clearing the General Practice history leaving a monologue's take, run and recording. **The comparison:** fetched for a take of the watched monologue; **never for a take that belongs to none, and never with another monologue's original**; never twice for one pair; an out-of-date answer ignored |
 | `features/general/feedbackStore.test.ts` | 28 | Feedback and calibration loaded together for the result on view; an answer about a result the user has left is dropped, but its calibration kept; saving, removing, and staying busy until every save has finished; an adjustment announced until dismissed; a failed save keeps what was there and says why; undo and reset reword the list on view; the calibration's last good answer survives a failed check. The summary: loaded on request; asking the AI model and checking every two seconds until it has picked; a second click ignored; a refusal shown with the facts still on screen; a failed job shown and the checking stopped; checking carried on while the backend is briefly away; stopping a request; counted again after every change to feedback or settings, and not before the panel has asked; a late answer never replacing a newer one |
 | `features/general/feedback.test.ts` | 27 | Which entry belongs to which pause, phrase or correction (a rating never jumping to another correction); the silences inside a phrase, in order; the word before a moment; labels new, changed and removed since the coaching was written; the minimum pause read from the result and worded; when a result was made with older settings; how each piece of feedback and each revision is named. Picking a word: the gap after every word but the last, in time order, kept inside the phrase; **the silence a report will be about is the nearest within half a second**; words shown without punctuation, a Hindi word kept whole; which word a saved report came after, looking only at its own phrase. A reference is offered the two reports and neither label. The line beside the AI button in every state |
 | `features/general/waveform.test.ts` | 16 | The shared timeline is as long as the longer recording; a shift moves a recording without changing its length; points that share a pixel keep their extremes; a quiet recording stays quiet unless stretched; nothing is drawn beyond full scale; round time-axis values, including before zero; where a moment falls in each recording |
@@ -1964,3 +2341,41 @@ last vowel sign.
 pressed states were read from the page's accessibility tree, not heard); the same controls
 on a take in General Practice, which are the same components and were not clicked through
 again; and notes written by a person over days of use.
+
+
+### Checked by hand in the browser at the end of Phase 8
+
+With the real API, worker, speech model and AI model, in a complete copy of the project
+with its own database on other ports (so the user's own running app was not touched). An
+end-to-end script had first put a monologue, a corrected revision of its original, and
+three takes into it (backend document, section 10).
+
+| Check | Result |
+| --- | --- |
+| `/monologue` | One row: "The one who knocks", 14.5 s, English, "original at revision 2", "2 takes · last practised 11 Oct, 21:56"; **Practise** and **Delete** |
+| Press **Practise** | `/practice?monologue=<id>`; "Practising: The one who knocks"; step 1 is current and its tools are open: the original's results view, with the reference's own feedback choices |
+| Show the tools of step 2 | "The original as it was delivered, 14.5 s long: 4 phrases, 3 pauses, and 2 words that stood out", four lines with the three pauses between them, "you" and "think" underlined |
+| Show the tools of step 4 | Record / upload, the language already set to English (the original's), and the two takes listed with Compare, Full analysis and Delete |
+| Choose a file there and press "Analyse and compare" | The run panel inside step 4 goes through five stages to "Analysis finished… saved under this monologue". Below it: four headline tiles, "97% of the reference's words were found…", four differences, the pause and phrase tables. The list of takes now has three, the new one "Showing"; the header says "3 takes" |
+| Show the tools of step 5 | The first two of those four differences, each with **Original** and **Yours**, and "Record another take" |
+| Tick all five steps | "Routine complete: all 5 steps done", **Practise again**; today's history row: "The one who knocks · 5 of 5 · 100% · full routine" |
+| Press **Practise again**, tick one step | "Round 2: 1 of 5 steps completed", "1 round was finished earlier today, so today's routine is done. This round is extra"; history: "5 of 5 · best of 2 rounds" |
+| Open `/practice?monologue=<a second monologue>` | The notice: "Today's round is under way on “The one who knocks”, and you opened “मैं ही खतरा हूँ”…", with both buttons. The page still shows the first monologue |
+| "Switch to the other", confirm | The confirmation names what is cleared; then "Practising: मैं ही खतरा हूँ", "Round 2: 0 of 5", and its script in Devanagari |
+| `/monologue/take?analysis=<a take>` | "← Back to practising …", the full results, and "Against the original" between the coaching and the pace tables; "Compare with an earlier attempt" offers the other takes of the monologue |
+| `/general?analysis=<the same take>` | Not shown: "The take that is open was recorded for a monologue…", with a link to its page. The history lists only the two recordings that belong to no monologue |
+| Open one of those two | The results have no reference section |
+| `/practice` with nothing saved for today | "Choose the monologue to practise today", both monologues listed |
+| `/practice?monologue=nope` | "The monologue this address points to no longer exists. Choose another below." |
+| Delete a monologue with no takes | The confirmation says "It has no takes"; then "Monologue deleted." and one row left |
+| 375 px wide, every step's tools open | No sideways scrolling of the page |
+| Light mode | The script and the step boxes read clearly |
+| A production build (`npm run build`), in the copy | All six routes built, `/practice` and `/monologue/take` among them |
+
+One fault was found before this, by a test, and fixed: a take compared for one request
+with the original of the monologue watched before (decision F75).
+
+**Not checked:** a real microphone, as in every phase (the recorder in step 4 is the same
+component as in General Practice; the take was sent from a file); a screen reader; the
+checklist left open across midnight with a monologue in the address; and whether three
+minutes is a sensible length for a step that now includes an analysis.

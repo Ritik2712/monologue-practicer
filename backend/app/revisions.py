@@ -110,7 +110,9 @@ def create_corrected(
         root_id=root_id,
         revision=revision,
         revision_reason="transcript_corrected",
-        result=result.model_dump(mode="json", by_alias=True, exclude={"coaching", "revisions"}),
+        # A corrected take still belongs to the monologue it was recorded for.
+        monologue_id=analysis.monologue_id,
+        result=result.model_dump(mode="json", by_alias=True, exclude=job_queue.STORED_APART),
         coaching=coaching.model_dump(mode="json", by_alias=True) if coaching else None,
         waveform=analysis.waveform,
         audio_path=kept_path,
@@ -177,6 +179,7 @@ def create_reanalysis_job(
             role=analysis.role,
             title=analysis.title,
             source_analysis_id=analysis.id,
+            monologue_id=analysis.monologue_id,
         )
     except Exception:
         uploads.delete_audio(audio_path, data_dir)

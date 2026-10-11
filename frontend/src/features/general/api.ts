@@ -16,6 +16,7 @@ import type {
   Health,
   JobStatus,
   LanguageHint,
+  MonologueList,
   Profile,
   Role,
   SegmentCorrection,
@@ -45,6 +46,8 @@ export type SubmitRequest = {
   role?: Role;
   /** The name a reference is listed under. */
   title?: string;
+  /** The monologue a take is recorded for. Left out for a take that belongs to none. */
+  monologueId?: string;
   /** Sent as the Idempotency-Key header: the same key never creates a second job. */
   idempotencyKey: string;
 };
@@ -59,15 +62,25 @@ export type GeneralApi = {
   getAnalysis: (analysisId: string) => Promise<AnalysisResult>;
   /** Asks for an analysis's coaching to be written again. Returns a job to follow. */
   requestCoaching: (analysisId: string) => Promise<JobStatus>;
-  /** Past takes, or the reference recordings when `role` is "reference". */
-  listAnalyses: (limit: number, role?: Role) => Promise<AnalysisList>;
+  /**
+   * Past takes, or the reference recordings when `role` is "reference". `monologue` narrows
+   * the takes to one monologue's, or with NO_MONOLOGUE to those that belong to none.
+   */
+  listAnalyses: (limit: number, role?: Role, monologue?: string) => Promise<AnalysisList>;
+  /** The monologues being practised, the one practised most recently first. */
+  listMonologues: () => Promise<MonologueList>;
+  /** Deletes a monologue: its reference recording in every revision, and all its takes. */
+  deleteMonologue: (
+    monologueId: string,
+  ) => Promise<{ deletedReferences: number; deletedTakes: number }>;
   /** A take set against a reference recording. */
   getComparison: (analysisId: string, referenceId: string) => Promise<Comparison>;
   /** The outline of a recording's sound wave, for drawing. */
   getWaveform: (analysisId: string) => Promise<Waveform>;
   deleteAnalysis: (analysisId: string) => Promise<void>;
   deleteAnalysisAudio: (analysisId: string) => Promise<void>;
-  clearAnalyses: () => Promise<{ deletedAnalyses: number; deletedJobs: number }>;
+  /** Clears the takes, narrowed by `monologue` as `listAnalyses` is. */
+  clearAnalyses: (monologue?: string) => Promise<{ deletedAnalyses: number; deletedJobs: number }>;
   /** Address of a kept recording, for an <audio> element. */
   analysisAudioUrl: (analysisId: string) => string;
   /** The feedback given on an analysis, and the calibration as it stands. */
@@ -90,6 +103,9 @@ export type GeneralApi = {
   /** Asks the AI model to pick the most telling notes. The answer carries the job to follow. */
   requestFeedbackSummary: () => Promise<FeedbackSummary>;
 };
+
+/** Asks for the takes that belong to no monologue: the ones made in General Practice. */
+export const NO_MONOLOGUE = "none";
 
 export const UNREACHABLE_MESSAGE =
   "The local backend could not be reached. Make sure the API is running, then try again.";
@@ -129,6 +145,7 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
       retainAudio,
       role,
       title,
+      monologueId,
       idempotencyKey,
     }) => {
       const form = new FormData();
@@ -138,6 +155,7 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
       form.append("retainAudio", String(retainAudio));
       if (role) form.append("role", role);
       if (title) form.append("title", title);
+      if (monologueId) form.append("monologueId", monologueId);
       return request("/api/analyses", {
         method: "POST",
         body: form,
@@ -150,8 +168,15 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
     getAnalysis: (analysisId) => request(`/api/analyses/${encodeURIComponent(analysisId)}`),
     requestCoaching: (analysisId) =>
       post(`/api/analyses/${encodeURIComponent(analysisId)}/coaching`),
-    listAnalyses: (limit, role) =>
-      request(`/api/analyses?limit=${limit}${role ? `&role=${role}` : ""}`),
+    listAnalyses: (limit, role, monologue) =>
+      request(
+        `/api/analyses?limit=${limit}${role ? `&role=${role}` : ""}${
+          monologue ? `&monologue=${encodeURIComponent(monologue)}` : ""
+        }`,
+      ),
+    listMonologues: () => request("/api/monologues"),
+    deleteMonologue: (monologueId) =>
+      request(`/api/monologues/${encodeURIComponent(monologueId)}`, { method: "DELETE" }),
     getComparison: (analysisId, referenceId) =>
       request(
         `/api/analyses/${encodeURIComponent(analysisId)}/comparison/${encodeURIComponent(referenceId)}`,
@@ -162,7 +187,10 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
       request(`/api/analyses/${encodeURIComponent(analysisId)}`, { method: "DELETE" }),
     deleteAnalysisAudio: (analysisId) =>
       request(`/api/analyses/${encodeURIComponent(analysisId)}/audio`, { method: "DELETE" }),
-    clearAnalyses: () => request("/api/analyses", { method: "DELETE" }),
+    clearAnalyses: (monologue) =>
+      request(`/api/analyses${monologue ? `?monologue=${encodeURIComponent(monologue)}` : ""}`, {
+        method: "DELETE",
+      }),
     analysisAudioUrl: (analysisId) =>
       apiUrl(`/api/analyses/${encodeURIComponent(analysisId)}/audio`),
     getFeedback: (analysisId) =>

@@ -13,23 +13,25 @@ export default function Home() {
       </div>
 
       <Link
+        href="/monologue"
+        className="block rounded-lg border border-zinc-200 p-4 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:border-zinc-800 dark:hover:bg-zinc-900 dark:focus-visible:outline-indigo-400"
+      >
+        <span className="font-semibold">Monologues</span>
+        <span className="mt-1 block text-sm text-zinc-600 dark:text-zinc-400">
+          The monologues you practise. Add the original recording of each once, then choose one
+          to practise.
+        </span>
+      </Link>
+
+      <Link
         href="/practice"
         className="block rounded-lg border border-zinc-200 p-4 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:border-zinc-800 dark:hover:bg-zinc-900 dark:focus-visible:outline-indigo-400"
       >
         <span className="font-semibold">Daily Speaking Practice</span>
         <span className="mt-1 block text-sm text-zinc-600 dark:text-zinc-400">
-          A timed five-step routine with a checklist and a history of recent days.
-        </span>
-      </Link>
-
-      <Link
-        href="/monologue"
-        className="block rounded-lg border border-zinc-200 p-4 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:border-zinc-800 dark:hover:bg-zinc-900 dark:focus-visible:outline-indigo-400"
-      >
-        <span className="font-semibold">Monologue</span>
-        <span className="mt-1 block text-sm text-zinc-600 dark:text-zinc-400">
-          Compare your take with the original recording, pause by pause and phrase by phrase,
-          and listen to both side by side.
+          A timed five-step routine on one monologue: listen to the original, mark it, perform
+          it, record your take and see where the two differ, pause by pause and phrase by
+          phrase.
         </span>
       </Link>
 
@@ -39,8 +41,8 @@ export default function Home() {
       >
         <span className="font-semibold">General Practice</span>
         <span className="mt-1 block text-sm text-zinc-600 dark:text-zinc-400">
-          Record or upload your voice and see your pace, pauses, loudness and pitch, phrase by
-          phrase, with coaching for the next take.
+          For any speaking, without an original to compare with: record or upload your voice
+          and see your pace, pauses, loudness and pitch, phrase by phrase, with coaching.
         </span>
       </Link>
 

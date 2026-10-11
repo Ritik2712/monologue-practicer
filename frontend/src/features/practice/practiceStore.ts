@@ -17,9 +17,12 @@ import {
   resetStep,
   resumeTimer,
   selectStep,
+  setMonologue,
   setStepCompleted,
   skipStep,
+  startNextRound,
   startTimer,
+  switchMonologue,
   syncWithConfig,
 } from "./practiceState";
 import {
@@ -28,7 +31,7 @@ import {
   serializePracticeData,
   type StorageLike,
 } from "./storage";
-import type { DailyPracticeRecord } from "./types";
+import type { DailyPracticeRecord, PracticeMonologue } from "./types";
 
 export type StorageWarning = "unavailable" | "corrupt" | "partially_invalid" | "write_failed";
 
@@ -40,6 +43,12 @@ export type PracticeAction =
   | { type: "skip_step" }
   | { type: "set_completed"; stepId: string; completed: boolean }
   | { type: "select_step"; stepId: string }
+  /** Says which monologue the round is on. Ignored once the round is under way on another. */
+  | { type: "set_monologue"; monologue: PracticeMonologue }
+  /** Abandons the round on screen and starts it again on another monologue. */
+  | { type: "switch_monologue"; monologue: PracticeMonologue }
+  /** After a finished round: another one, on the same monologue or a different one. */
+  | { type: "start_round"; monologue: PracticeMonologue | null }
   | { type: "reset_today" }
   | { type: "clear_history" }
   | { type: "dismiss_warning" };
@@ -241,9 +250,19 @@ export function createPracticeStore({
       case "select_step":
         current = selectStep(current, action.stepId, nowMs);
         break;
+      case "set_monologue":
+        current = setMonologue(current, action.monologue, nowMs);
+        break;
+      case "switch_monologue":
+        current = switchMonologue(current, action.monologue, steps, nowMs);
+        break;
+      case "start_round":
+        current = startNextRound(current, action.monologue, steps, nowMs);
+        break;
       case "reset_today":
-        // Only the checklist on screen is replaced; other days are untouched.
-        current = createDailyRecord(current.localDate, steps, nowMs);
+        // Only the day on screen is replaced, every round of it; other days are untouched.
+        // It stays on the monologue it was on.
+        current = createDailyRecord(current.localDate, steps, nowMs, current.monologue);
         break;
       case "clear_history":
         if (Object.keys(otherDays).length > 0) otherDays = {};

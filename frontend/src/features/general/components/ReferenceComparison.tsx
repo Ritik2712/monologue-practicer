@@ -11,8 +11,8 @@ import { WaveformComparison } from "./WaveformComparison";
 
 type ReferenceComparisonProps = {
   comparison: ComparisonState;
-  /** The chosen reference, from the list. */
-  reference: AnalysisSummary;
+  /** The reference recording the take is set against. */
+  reference: Pick<AnalysisSummary, "analysisId" | "title" | "durationSeconds">;
   takeId: string;
   /** Where each recording can be played from, or null if it is not available. */
   takeAudioSrc: string | null;

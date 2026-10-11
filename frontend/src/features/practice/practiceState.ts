@@ -4,21 +4,35 @@
  * returns the same object, so callers can detect changes with `===`.
  */
 import type { PracticeStepConfig } from "./config";
-import type { DailyPracticeRecord, PracticeStep, PracticeSummary } from "./types";
+import type {
+  DailyPracticeRecord,
+  DaySummary,
+  PracticeMonologue,
+  PracticeRound,
+  PracticeStep,
+  PracticeSummary,
+} from "./types";
+
+function freshSteps(steps: readonly PracticeStepConfig[]): PracticeStep[] {
+  return steps.map(({ id, title, durationSeconds }) => ({
+    id,
+    title,
+    durationSeconds,
+    status: "not_started",
+  }));
+}
 
 export function createDailyRecord(
   localDate: string,
   steps: readonly PracticeStepConfig[],
   nowMs: number,
+  monologue: PracticeMonologue | null = null,
 ): DailyPracticeRecord {
   return {
     localDate,
-    steps: steps.map(({ id, title, durationSeconds }) => ({
-      id,
-      title,
-      durationSeconds,
-      status: "not_started",
-    })),
+    monologue,
+    earlierRounds: [],
+    steps: freshSteps(steps),
     activeStepId: steps[0]?.id ?? null,
     timer: { status: "idle" },
     startedAtEpochMs: null,
@@ -180,13 +194,99 @@ export function closeOut(record: DailyPracticeRecord): DailyPracticeRecord {
   return record.timer.status === "idle" ? record : { ...record, timer: { status: "idle" } };
 }
 
-/** True when the record is indistinguishable from a brand-new day, so it need not be saved. */
-export function isPristine(record: DailyPracticeRecord): boolean {
+/** True while nothing has been done in the round on screen. */
+export function isRoundUntouched(record: DailyPracticeRecord): boolean {
   return (
     record.timer.status === "idle" &&
     record.activeStepId === (record.steps[0]?.id ?? null) &&
     record.steps.every((step) => step.status === "not_started")
   );
+}
+
+/**
+ * True when the record is indistinguishable from a brand-new day, so it need not be saved.
+ * Choosing a monologue is not progress: a day on which nothing was practised leaves no trace.
+ */
+export function isPristine(record: DailyPracticeRecord): boolean {
+  return record.earlierRounds.length === 0 && isRoundUntouched(record);
+}
+
+/** True when the round on screen has no step left to do: each is completed or skipped. */
+export function isRoundFinished(record: DailyPracticeRecord): boolean {
+  return (
+    record.steps.length > 0 &&
+    record.timer.status === "idle" &&
+    record.steps.every((step) => step.status !== "not_started")
+  );
+}
+
+/**
+ * Says which monologue the round on screen is practised on.
+ *
+ * A round that has been started stays on its monologue: asking for another one then changes
+ * nothing, and the caller offers `switchMonologue` or a new round instead. The title of the
+ * same monologue is brought up to date, in case it was not known or has changed.
+ */
+export function setMonologue(
+  record: DailyPracticeRecord,
+  monologue: PracticeMonologue,
+  nowMs: number,
+): DailyPracticeRecord {
+  const current = reconcile(record, nowMs);
+  const chosen = current.monologue;
+  if (chosen?.id === monologue.id && chosen.title === monologue.title) return current;
+  const free = chosen === null || chosen.id === monologue.id || isRoundUntouched(current);
+  return free ? { ...current, monologue } : current;
+}
+
+/** Abandons the round on screen and starts it afresh on another monologue. Earlier rounds stay. */
+export function switchMonologue(
+  record: DailyPracticeRecord,
+  monologue: PracticeMonologue,
+  config: readonly PracticeStepConfig[],
+  nowMs: number,
+): DailyPracticeRecord {
+  return {
+    ...record,
+    monologue,
+    steps: freshSteps(config),
+    activeStepId: config[0]?.id ?? null,
+    timer: { status: "idle" },
+    updatedAtEpochMs: nowMs,
+    routineCompletedAtEpochMs: null,
+  };
+}
+
+/**
+ * Files the finished round on screen under "earlier today" and starts another, on the same
+ * monologue or a different one. Does nothing while the round still has a step to do.
+ */
+export function startNextRound(
+  record: DailyPracticeRecord,
+  monologue: PracticeMonologue | null,
+  config: readonly PracticeStepConfig[],
+  nowMs: number,
+): DailyPracticeRecord {
+  const current = reconcile(record, nowMs);
+  if (!isRoundFinished(current)) return current;
+  const { completed, skipped, total } = summarize(current);
+  const finished: PracticeRound = {
+    monologue: current.monologue,
+    completed,
+    skipped,
+    total,
+    finishedAtEpochMs: current.updatedAtEpochMs,
+  };
+  return {
+    ...current,
+    monologue,
+    earlierRounds: [...current.earlierRounds, finished],
+    steps: freshSteps(config),
+    activeStepId: config[0]?.id ?? null,
+    timer: { status: "idle" },
+    updatedAtEpochMs: nowMs,
+    routineCompletedAtEpochMs: null,
+  };
 }
 
 export function summarize(record: DailyPracticeRecord): PracticeSummary {
@@ -199,6 +299,42 @@ export function summarize(record: DailyPracticeRecord): PracticeSummary {
     skipped,
     percent: total === 0 ? 0 : Math.round((completed / total) * 100),
     routineCompleted: total > 0 && completed === total,
+  };
+}
+
+/** A whole day: the round on screen together with the rounds finished before it. */
+export function summarizeDay(record: DailyPracticeRecord): DaySummary {
+  const percentOf = (completed: number, total: number) =>
+    total === 0 ? 0 : Math.round((completed / total) * 100);
+  const rounds: (PracticeSummary & { monologue: PracticeMonologue | null })[] =
+    record.earlierRounds.map(({ monologue, completed, skipped, total }) => ({
+      monologue,
+      completed,
+      skipped,
+      total,
+      percent: percentOf(completed, total),
+      routineCompleted: total > 0 && completed === total,
+    }));
+  // The round on screen counts once something has been done in it.
+  if (rounds.length === 0 || !isRoundUntouched(record)) {
+    rounds.push({ ...summarize(record), monologue: record.monologue });
+  }
+  const best = rounds.reduce((top, round) => (round.completed > top.completed ? round : top));
+  const monologues: string[] = [];
+  for (const { monologue } of rounds) {
+    if (monologue && !monologues.includes(monologue.title)) monologues.push(monologue.title);
+  }
+  return {
+    rounds: rounds.length,
+    fullRounds: rounds.filter((round) => round.routineCompleted).length,
+    best: {
+      total: best.total,
+      completed: best.completed,
+      skipped: best.skipped,
+      percent: best.percent,
+      routineCompleted: best.routineCompleted,
+    },
+    monologues,
   };
 }
 

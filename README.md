@@ -3,11 +3,12 @@
 A local speaking-practice coach for Hindi and English monologues. Everything runs on this
 device: no paid APIs, no cloud services, no accounts.
 
-> Status: every part of the plan is built. **Daily Speaking Practice**, **Monologue**
-> (compare your take with the original recording), **General Practice** (record or upload
-> your voice, see it measured, and get coaching for the next take), and **feedback with
-> calibration** (tell the app where it was wrong; it adjusts, slowly and visibly).
-> Start all of it with one command: `./run.sh`.
+> Status: every part of the plan is built. **Monologues** (the monologues you practise,
+> each with its original recording), **Daily Speaking Practice** (a timed routine on one
+> monologue: listen, mark, perform, record your take and compare it with the original),
+> **General Practice** (record or upload any speaking, see it measured, and get coaching),
+> and **feedback with calibration** (tell the app where it was wrong; it adjusts, slowly
+> and visibly). Start all of it with one command: `./run.sh`.
 
 How the project works, file by file, and why each design decision was made:
 
@@ -18,22 +19,36 @@ How the project works, file by file, and why each design decision was made:
 
 ## What you can do today
 
-- **Daily Speaking Practice** at `/practice`: a timed five-step, 15-minute routine with a
-  checklist and a history of recent days. It runs entirely in the browser and works even when
-  the API is not running. Progress is saved in this browser's `localStorage`, so it stays on
-  this device, is separate for each browser, and is removed if you clear the browser's site
-  data.
-- **Monologue** at `/monologue`: add the original recording once (a file you have the right
-  to use) and study its pauses, pace, loudness and pitch. Then record or upload your own
-  take and see where the two differ: the biggest differences first, then pause by pause and
-  phrase by phrase, each with both versions to listen to. An optional picture draws the two
-  sound waves on one timeline. The comparison works by lining up the recognised words, so
-  both recordings need to be of the same text.
-- **General Practice** at `/general`: choose a delivery profile, record in the browser or
-  upload a file, and get speaking rate (with pauses excluded), every pause, loudness and
-  pitch, phrase by phrase, with a timeline you can click to listen. Past analyses are kept
-  in a history and can be compared, reopened and deleted. It needs the API and the worker
-  running; the screen tells you if either is missing.
+- **Monologues** at `/monologue`: the list of monologues you practise. Add one by giving
+  the original recording of it once (a file you have the right to use). **Practise** on a
+  monologue opens its Daily Practice. Deleting a monologue deletes its original and its
+  takes.
+- **Daily Speaking Practice** at `/practice`: a timed five-step, 15-minute routine, done on
+  the monologue you chose. Each step has what it is done with underneath it:
+  1. *Listen and observe*: the original, with its measured pauses, pace, loudness and pitch.
+  2. *Mark the delivery*: the original as a script, each phrase on a line, with the measured
+     pause after it and the words that stood out.
+  3. *Perform the monologue*: the same script to perform from.
+  4. *Record and compare*: record or upload your take. It is analysed and set against the
+     original: the biggest differences first, then pause by pause and phrase by phrase,
+     each with both versions to listen to. Every take is saved under its monologue and can
+     be opened again on any day, with a link to its full analysis.
+  5. *Correct and repeat*: the two biggest differences, and the way back to recording.
+
+  One round is the day's routine. When it is finished, **Practise again** starts another
+  round, on the same monologue or another; the day's record shows how many rounds were
+  done and on which monologues. The checklist's progress is saved in this browser's
+  `localStorage`; the timer works even when the API is not running, the tools need it.
+  The comparison works by lining up the recognised words, so a take needs to be of the
+  same text as its original.
+- **A take's full analysis** at `/monologue/take`: reached from step 4. Every measurement
+  of that take, its coaching, the comparison with the original, and the feedback controls.
+- **General Practice** at `/general`: for any speaking, without an original to compare
+  with. Choose a delivery profile, record in the browser or upload a file, and get
+  speaking rate (with pauses excluded), every pause, loudness and pitch, phrase by phrase,
+  with a timeline you can click to listen. Its analyses are kept in a history of their own
+  and can be compared, reopened and deleted. It needs the API and the worker running; the
+  screen tells you if either is missing.
 - **Coaching** with every analysis: up to three corrections, most important first, each
   with what was measured, why it matters, a drill, and the phrase to practise on with a Play
   button; then what is already working, targets for the next take, and what is uncertain.
@@ -41,19 +56,18 @@ How the project works, file by file, and why each design decision was made:
   [Ollama](https://ollama.com), and every figure in it is checked against the measurements.
   If Ollama is not running, the analysis still works and the coaching is written from fixed
   rules instead; you can ask the model again later without re-recording.
-- **Comparison with a reference** is also inside General Practice, as a section of every
-  result.
 - **Feedback** on every result of your own, next to the thing it is about. On a pause:
   intentional, accidental, "not a pause: I was still speaking", or "too short to split the
   phrase". On a phrase: a pause was missed (pick the silence the app heard, or the word
   the pause came after), the WPM looks too high or too low, or the words are wrong (type
   them as you said them). On a correction: useful or not useful. Feedback is optional and
   never changes a measurement that is already stored.
-- **Feedback on a reference**, under "Study this reference" on the Monologue screen:
+- **Feedback on the original recording** (the reference), in step 1 of Daily Practice:
   correct its misheard words, so that your takes are lined up with the right ones, and
   report mistakes in its pauses. A reference alone never moves a setting; a take of your
   own has to show the same thing.
-- **Calibration**, in a panel at the bottom of General Practice. When at least three
+- **Calibration**, in a panel at the bottom of Daily Practice, of a take's full analysis
+  and of General Practice. When at least three
   reports agree, from at least two recordings, one setting moves a small step inside a
   fixed range: the shortest silence that counts as a pause (500 ms by default, 250 to 800
   ms allowed), or how readily a kind of correction is put first. The panel shows every
@@ -117,7 +131,9 @@ cd backend && uv run python -m app.speech_model download
 
 **Updating from an earlier phase?** Run the database step again, so the database gets its
 new tables and columns. Existing analyses are kept: they become "takes", made with the
-default settings, each the first result of its own recording:
+default settings, each the first result of its own recording. A take stored before Phase 8
+belongs to no monologue, so it shows in the General Practice history; a reference recording
+stored before it is now a monologue:
 
 ```bash
 cd backend && uv run alembic upgrade head
@@ -283,16 +299,35 @@ way:
 curl -s -X POST http://localhost:4321/api/analyses/ANALYSIS_ID/coaching
 ```
 
-Add a reference recording. It is followed like any job; it gets no coaching:
+Add a monologue: the original recording of it, as a reference. It is followed like any
+job; it gets no coaching:
 
 ```bash
 curl -s -X POST http://localhost:4321/api/analyses -F "audio=@/path/to/original.m4a" -F "role=reference" -F "title=The original" -F "retainAudio=true"
 ```
 
-List the reference recordings:
+List the monologues. `monologueId` names one; `referenceId` is its original recording in
+its newest revision:
 
 ```bash
-curl -s "http://localhost:4321/api/analyses?role=reference"
+curl -s http://localhost:4321/api/monologues
+```
+
+Submit a take of a monologue, so that it is stored under it:
+
+```bash
+curl -s -X POST http://localhost:4321/api/analyses -F "audio=@/path/to/take.m4a" -F "monologueId=MONOLOGUE_ID"
+```
+
+List the takes of one monologue, or the takes that belong to none (the General Practice
+history):
+
+```bash
+curl -s "http://localhost:4321/api/analyses?monologue=MONOLOGUE_ID"
+```
+
+```bash
+curl -s "http://localhost:4321/api/analyses?monologue=none"
 ```
 
 Compare a take with a reference:
@@ -388,10 +423,11 @@ slower.
 | A recording you just made or chose, for playback | This browser tab's memory | When the tab is closed or refreshed |
 | An uploaded recording | `backend/data/uploads/` | As soon as its job succeeds or is cancelled, or fails in a way a retry cannot fix |
 | A recording whose job failed but could be retried | `backend/data/uploads/` | On a successful retry, when you discard the job, or after 24 hours |
-| A recording you asked to keep ("Keep this recording") | `backend/data/audio/` | When you delete the recording, delete its analysis, or clear the history, on the General Practice screen |
-| A reference recording and its measurements | `backend/data/audio/` (kept by default; untick to store measurements only) and the database | When you delete that reference. Clearing the history of takes does not touch references |
-| Which reference is chosen | This browser's `localStorage` | When you choose none, or delete it |
-| Analysis results, their coaching, and jobs | `backend/data/monologue_coach.db` | When you delete an analysis or clear the history |
+| A recording you asked to keep ("Keep this recording") | `backend/data/audio/` | When you delete the recording or its analysis. Clearing the General Practice history deletes those of General Practice only |
+| A monologue: its original recording and that recording's measurements | `backend/data/audio/` (kept by default; untick to store measurements only) and the database | When you delete the monologue. Clearing the General Practice history does not touch it |
+| The takes of a monologue: their results and coaching | `backend/data/monologue_coach.db`, each marked with its monologue | When you delete the take, or its monologue. Clearing the General Practice history does not touch them |
+| Which monologue today's routine is on, and the rounds done | This browser's `localStorage`, with the checklist | With the checklist |
+| General Practice results, their coaching, and jobs | `backend/data/monologue_coach.db` | When you delete an analysis or clear the General Practice history |
 | Your feedback on a result: labels, reports, notes, corrected words | `backend/data/monologue_coach.db` | With the analysis it is about, or one at a time with "Remove" |
 | The calibration: the adjusted settings and the history of every change | `backend/data/monologue_coach.db` | Never deleted, so that every result can be traced to the settings that made it. "Reset to defaults" puts the values back; the history stays |
 | The notes the AI model last picked out | `backend/data/monologue_coach.db`, one row | Replaced by the next pick. Not shown once the feedback they came from is deleted |

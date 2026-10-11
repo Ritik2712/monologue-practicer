@@ -1,12 +1,13 @@
 /**
- * The state of the General Practice and Monologue screens, and everything that changes it:
- * submitting a recording, following its job, showing a result, managing the history, and
- * keeping the reference recordings and the comparison with the chosen one.
+ * The state of the General Practice, Monologues and Daily Practice screens, and everything
+ * that changes it: submitting a recording, following its job, showing a result, managing
+ * the history, and keeping the monologues, the takes of the one being practised, and the
+ * comparison of a take with that monologue's reference recording.
  *
  * Like the checklist's store it knows nothing about React. The backend client, the timer
  * and the browser storage are passed in, so tests can script the backend and move time.
  */
-import { ApiError, describeError, type GeneralApi } from "./api";
+import { ApiError, describeError, NO_MONOLOGUE, type GeneralApi } from "./api";
 import type {
   AnalysisOptions,
   AnalysisResult,
@@ -15,6 +16,7 @@ import type {
   JobKind,
   JobStatus,
   LanguageHint,
+  Monologue,
   Profile,
   Role,
   SegmentCorrection,
@@ -23,15 +25,19 @@ import type {
 
 /** Remembers a job that is still in progress, so a page refresh can pick it up again. */
 export const ACTIVE_JOB_KEY = "monologue-coach.general.active-job";
-/** Remembers which reference recording takes are being compared with. */
-export const SELECTED_REFERENCE_KEY = "monologue-coach.reference.selected";
+/**
+ * Written by earlier versions, which remembered a chosen reference between visits. The
+ * monologue being practised now says which reference is meant, so the key is cleared.
+ */
+export const LEGACY_SELECTED_REFERENCE_KEY = "monologue-coach.reference.selected";
 
 /** How often a job in progress is checked. Slow enough not to hammer the backend. */
 export const POLL_MS = 1000;
 /** When the backend stops answering, checks back off up to this long. */
 export const MAX_POLL_MS = 5000;
 export const HISTORY_LIMIT = 20;
-export const REFERENCE_LIMIT = 50;
+/** How many of one monologue's takes are listed. */
+export const TAKES_LIMIT = 50;
 
 export type ErrorInfo = { code: string; message: string };
 
@@ -45,6 +51,8 @@ export type Submission = {
   role?: Role;
   /** The name a reference is listed under. */
   title?: string;
+  /** The monologue a take is recorded for. Left out in General Practice. */
+  monologueId?: string;
   /** An object URL for the same audio, so the result can be played back in this session. */
   previewUrl: string | null;
 };
@@ -69,7 +77,7 @@ export type ViewedState =
   | { status: "ready"; analysis: AnalysisResult }
   | { status: "error"; analysisId: string; message: string };
 
-/** A take set against the chosen reference. */
+/** A take set against its monologue's reference recording. */
 export type ComparisonState =
   | { status: "none" }
   | { status: "loading"; takeId: string; referenceId: string }
@@ -95,6 +103,7 @@ export type GeneralState = {
     | { status: "loading" }
     | { status: "ready"; data: AnalysisOptions }
     | { status: "error"; message: string };
+  /** The General Practice history: the takes that belong to no monologue. */
   history: {
     status: "loading" | "ready" | "error";
     items: AnalysisSummary[];
@@ -115,17 +124,33 @@ export type GeneralState = {
   /** Whether the recording in the current run is a take or a reference. */
   runRole: Role;
   viewed: ViewedState;
-  /** The reference recordings that takes can be compared with. */
-  references: {
+  /** The monologues being practised, the one practised most recently first. */
+  monologues: {
     status: "loading" | "ready" | "error";
-    items: AnalysisSummary[];
+    items: Monologue[];
     message: string | null;
   };
-  /** The reference currently chosen. Remembered between visits. */
+  /** The monologue the screen on view is about. Null on a screen that is about none. */
+  monologueId: string | null;
+  /** That monologue's takes, newest first. */
+  takes: {
+    monologueId: string | null;
+    status: "loading" | "ready" | "error";
+    items: AnalysisSummary[];
+    total: number;
+    message: string | null;
+  };
+  /**
+   * The reference recording on view: the newest revision of the watched monologue's, unless
+   * an earlier revision has been opened.
+   */
   selectedReferenceId: string | null;
-  /** The chosen reference's own full result, for studying it. */
+  /** That reference's own full result, for studying it. */
   referenceDetail: ViewedState;
-  /** The take on view set against the chosen reference. Kept up to date by the store. */
+  /**
+   * The take on view set against that reference, when the take belongs to the watched
+   * monologue. Kept up to date by the store.
+   */
   comparison: ComparisonState;
   /** Sound-wave outlines by analysis ID. Only what has been asked for. */
   waveforms: Record<string, WaveformState>;
@@ -168,10 +193,16 @@ export type GeneralStore = {
   dismissRun: () => void;
   openAnalysis: (analysisId: string) => void;
   closeAnalysis: () => void;
-  refreshReferences: () => void;
-  /** Chooses the reference that takes are compared with. Null chooses none. */
+  refreshMonologues: () => void;
+  /**
+   * Says which monologue the screen on view is about. Its takes are loaded and its newest
+   * reference recording is chosen. Null when the screen is about no monologue.
+   */
+  watchMonologue: (monologueId: string | null) => void;
+  /** Opens another revision of the watched monologue's reference. Null opens none. */
   selectReference: (analysisId: string | null) => void;
-  deleteReference: (analysisId: string) => void;
+  /** Deletes a monologue: its reference recording in every revision, and all its takes. */
+  deleteMonologue: (monologueId: string) => void;
   /** Fetches a recording's sound-wave outline, once. Does nothing if it is already here. */
   loadWaveform: (analysisId: string) => void;
   deleteAnalysis: (analysisId: string) => void;
@@ -193,6 +224,14 @@ type StoreDeps = {
   revokeUrl?: (url: string) => void;
 };
 
+const NO_TAKES: GeneralState["takes"] = {
+  monologueId: null,
+  status: "ready",
+  items: [],
+  total: 0,
+  message: null,
+};
+
 const INITIAL: GeneralState = {
   options: { status: "loading" },
   history: { status: "loading", items: [], total: 0, message: null },
@@ -203,7 +242,9 @@ const INITIAL: GeneralState = {
   correction: { status: "idle" },
   runRole: "take",
   viewed: { status: "none" },
-  references: { status: "loading", items: [], message: null },
+  monologues: { status: "loading", items: [], message: null },
+  monologueId: null,
+  takes: NO_TAKES,
   selectedReferenceId: null,
   referenceDetail: { status: "none" },
   comparison: { status: "none" },
@@ -229,6 +270,17 @@ export function createGeneralStore({
   let failedPolls = 0;
   /** Goes up whenever the run is replaced, so answers to old requests are ignored. */
   let runToken = 0;
+  /**
+   * The reference last chosen on the watched monologue's behalf. Undefined until one has
+   * been: the monologue is then followed again only when its newest reference changes, so
+   * an earlier revision the user has opened is not taken away from them.
+   */
+  let followed: string | null | undefined;
+  /**
+   * Recordings held in memory that belong to a monologue: its reference, or a take of it.
+   * Clearing the General Practice history must not release these.
+   */
+  const monologueAudio = new Set<string>();
 
   function apply(patch: Partial<GeneralState>) {
     state = { ...state, ...patch };
@@ -237,10 +289,12 @@ export function createGeneralStore({
 
   function set(patch: Partial<GeneralState>) {
     apply(patch);
-    // The chosen reference's details and the comparison follow from what is on view and
-    // which reference is chosen. They are brought up to date here, in one place, so no
-    // action has to remember to do it.
-    if ("viewed" in patch || "selectedReferenceId" in patch) syncWithSelection();
+    // The reference's details and the comparison follow from what is on view, which
+    // monologue is watched and which reference is chosen. They are brought up to date
+    // here, in one place, so no action has to remember to do it.
+    if ("viewed" in patch || "selectedReferenceId" in patch || "monologueId" in patch) {
+      syncWithSelection();
+    }
   }
 
   function syncWithSelection() {
@@ -275,10 +329,14 @@ export function createGeneralStore({
       );
     }
 
-    // Only one of your own takes is compared with a reference.
+    // A take is compared only with the reference of the monologue it was recorded for.
+    // A take made in General Practice is compared with none.
     const { viewed, comparison } = state;
     const takeId =
-      viewed.status === "ready" && viewed.analysis.role === "take"
+      viewed.status === "ready" &&
+      viewed.analysis.role === "take" &&
+      !!viewed.analysis.monologueId &&
+      viewed.analysis.monologueId === state.monologueId
         ? viewed.analysis.analysisId
         : null;
     if (takeId === null || referenceId === null) {
@@ -315,39 +373,67 @@ export function createGeneralStore({
     );
   }
 
-  function rememberReference(analysisId: string | null) {
-    try {
-      const storage = getStorage();
-      if (analysisId) storage?.setItem(SELECTED_REFERENCE_KEY, analysisId);
-      else storage?.removeItem(SELECTED_REFERENCE_KEY);
-    } catch {
-      // A convenience only: the choice still holds for this visit.
-    }
-  }
-
   function selectReference(analysisId: string | null) {
     if (analysisId === state.selectedReferenceId) return;
-    rememberReference(analysisId);
     set({ selectedReferenceId: analysisId });
   }
 
-  function refreshReferences() {
-    api.listAnalyses(REFERENCE_LIMIT, "reference").then(
+  /**
+   * Chooses the watched monologue's newest reference: when the monologue is first watched,
+   * and again whenever that reference changes (it was corrected, measured again, or the
+   * monologue was deleted). In between, the choice is left alone.
+   */
+  function followMonologue() {
+    const monologueId = state.monologueId;
+    // Until the list has arrived there is nothing to follow.
+    if (monologueId === null || state.monologues.status === "loading") return;
+    const watched = state.monologues.items.find((item) => item.monologueId === monologueId);
+    const referenceId = watched?.referenceId ?? null;
+    if (referenceId === followed) return;
+    followed = referenceId;
+    selectReference(referenceId);
+  }
+
+  function refreshMonologues() {
+    api.listMonologues().then(
       ({ items }) => {
-        apply({ references: { status: "ready", items, message: null } });
-        // A reference deleted elsewhere can no longer be the chosen one.
-        const chosen = state.selectedReferenceId;
-        if (chosen && !items.some((item) => item.analysisId === chosen)) selectReference(null);
+        apply({ monologues: { status: "ready", items, message: null } });
+        followMonologue();
       },
       (error) =>
         apply({
-          references: {
-            ...state.references,
+          monologues: {
+            ...state.monologues,
             status: "error",
             message: describeError(error).message,
           },
         }),
     );
+  }
+
+  function refreshTakes() {
+    const monologueId = state.monologueId;
+    if (monologueId === null) return;
+    api.listAnalyses(TAKES_LIMIT, "take", monologueId).then(
+      ({ items, total }) => {
+        // The answer for a monologue that is no longer watched is not wanted.
+        if (state.monologueId !== monologueId) return;
+        apply({ takes: { monologueId, status: "ready", items, total, message: null } });
+      },
+      (error) => {
+        if (state.monologueId !== monologueId) return;
+        apply({
+          takes: { ...state.takes, status: "error", message: describeError(error).message },
+        });
+      },
+    );
+  }
+
+  /** After a take was added, changed or deleted: every list it could be in. */
+  function refreshLists() {
+    refreshHistory();
+    refreshTakes();
+    refreshMonologues();
   }
 
   function remember(jobId: string | null) {
@@ -467,13 +553,16 @@ export function createGeneralStore({
         ? { ...state.localAudio, [analysisId]: previewUrl }
         : state.localAudio;
       if (job.role === "reference") {
-        // A new reference joins the list and becomes the chosen one. Whatever take is on
-        // view stays there, and is now compared with it.
+        // A new reference is a new monologue in the list. A reference measured again is a
+        // new revision of its monologue: if that monologue is the one being watched, the
+        // refreshed list makes the new revision the chosen one. Whatever take is on view
+        // stays there.
+        monologueAudio.add(analysisId);
         set({ run: { phase: "done", job, analysisId }, localAudio });
-        refreshReferences();
-        selectReference(analysisId);
+        refreshMonologues();
         return;
       }
+      if (analysis.monologueId) monologueAudio.add(analysisId);
       // New coaching is shown only if its analysis is still the one on screen: the user
       // may have opened another while the model was writing.
       const show =
@@ -485,7 +574,7 @@ export function createGeneralStore({
         viewed: show ? { status: "ready", analysis } : viewed,
         localAudio,
       });
-      refreshHistory();
+      refreshLists();
     } catch (error) {
       if (token !== runToken) return;
       set({
@@ -507,6 +596,7 @@ export function createGeneralStore({
         retainAudio: submission.retainAudio,
         role: submission.role,
         title: submission.title,
+        monologueId: submission.monologueId,
         idempotencyKey: key,
       });
       if (token !== runToken) return;
@@ -536,7 +626,7 @@ export function createGeneralStore({
   }
 
   function refreshHistory() {
-    api.listAnalyses(HISTORY_LIMIT).then(
+    api.listAnalyses(HISTORY_LIMIT, "take", NO_MONOLOGUE).then(
       ({ items, total }) => set({ history: { status: "ready", items, total, message: null } }),
       (error) =>
         set({
@@ -576,36 +666,76 @@ export function createGeneralStore({
       loadOptions();
       refreshHistory();
       let jobId: string | null = null;
-      let referenceId: string | null = null;
       try {
-        jobId = getStorage()?.getItem(ACTIVE_JOB_KEY) ?? null;
-        referenceId = getStorage()?.getItem(SELECTED_REFERENCE_KEY) ?? null;
+        const storage = getStorage();
+        jobId = storage?.getItem(ACTIVE_JOB_KEY) ?? null;
+        storage?.removeItem(LEGACY_SELECTED_REFERENCE_KEY);
       } catch {
         jobId = null;
       }
-      // The reference chosen last time is chosen again; the list then confirms it exists.
-      if (referenceId) set({ selectedReferenceId: referenceId });
-      refreshReferences();
+      refreshMonologues();
       if (jobId) void poll(jobId, startRun());
     },
     loadOptions,
     refreshHistory,
-    refreshReferences,
+    refreshMonologues,
     selectReference,
 
-    deleteReference(analysisId) {
-      api.deleteAnalysis(analysisId).then(
-        () => {
-          apply({
-            references: {
-              ...state.references,
-              items: state.references.items.filter((item) => item.analysisId !== analysisId),
+    watchMonologue(monologueId) {
+      if (monologueId === state.monologueId) return;
+      // If the list is already here this monologue's original is chosen now; otherwise
+      // when the list arrives. Either way the choice changes in the same step as the
+      // monologue, so a take is never set against the original of the one watched before.
+      const listed = monologueId !== null && state.monologues.status !== "loading";
+      const referenceId = listed
+        ? (state.monologues.items.find((item) => item.monologueId === monologueId)
+            ?.referenceId ?? null)
+        : null;
+      followed = listed ? referenceId : undefined;
+      set({
+        monologueId,
+        takes: monologueId
+          ? { monologueId, status: "loading", items: [], total: 0, message: null }
+          : NO_TAKES,
+        selectedReferenceId: referenceId,
+      });
+      refreshTakes();
+    },
+
+    deleteMonologue(monologueId) {
+      api.deleteMonologue(monologueId).then(
+        ({ deletedTakes }) => {
+          const { viewed, takes, referenceDetail, run } = state;
+          const watched = state.monologueId === monologueId;
+          // What this page knows it was holding for the monologue.
+          const gone = takes.monologueId === monologueId ? takes.items.map((item) => item.analysisId) : [];
+          const viewedGone =
+            viewed.status === "ready" && viewed.analysis.monologueId === monologueId;
+          if (viewedGone) gone.push(viewed.analysis.analysisId);
+          if (watched && referenceDetail.status === "ready") {
+            gone.push(referenceDetail.analysis.analysisId);
+          }
+          set({
+            monologues: {
+              ...state.monologues,
+              items: state.monologues.items.filter((item) => item.monologueId !== monologueId),
             },
-            localAudio: forget([analysisId]),
-            notice: { kind: "info", text: "Reference deleted." },
+            takes: watched ? { ...NO_TAKES, monologueId } : takes,
+            viewed: viewedGone ? { status: "none" } : viewed,
+            run: run.phase === "done" && gone.includes(run.analysisId) ? { phase: "idle" } : run,
+            localAudio: forget(gone),
+            notice: {
+              kind: "info",
+              text:
+                deletedTakes === 0
+                  ? "Monologue deleted."
+                  : deletedTakes === 1
+                    ? "Monologue deleted, with its 1 take."
+                    : `Monologue deleted, with its ${deletedTakes} takes.`,
+            },
           });
-          if (state.selectedReferenceId === analysisId) selectReference(null);
-          refreshReferences();
+          followMonologue();
+          refreshMonologues();
         },
         (error) => set({ notice: { kind: "error", text: describeError(error).message } }),
       );
@@ -676,8 +806,9 @@ export function createGeneralStore({
           // The same audio plays for the new revision as for the result it came from.
           const url = state.localAudio[analysisId];
           if (revision.role === "reference") {
-            // The corrected reference joins the library and becomes the chosen one, so
-            // whatever take is on view is now lined up with the corrected words.
+            // The corrected reference becomes the one its monologue's takes are compared
+            // with, so whatever take is on view is now lined up with the corrected words.
+            monologueAudio.add(revision.analysisId);
             set({
               correction: { status: "idle" },
               localAudio: url
@@ -685,13 +816,15 @@ export function createGeneralStore({
                 : state.localAudio,
               notice: {
                 kind: "info",
-                text: `Saved as revision ${revision.revision} of this reference, and chosen. Word counts and WPM were worked out again from the corrected words. The earlier one is still in the list, unchanged, until you delete it.`,
+                text: `Saved as revision ${revision.revision} of the original recording. Word counts and WPM were worked out again from the corrected words, and your takes are now compared with this revision. The earlier one is kept, unchanged.`,
               },
             });
-            refreshReferences();
+            followed = revision.analysisId;
             selectReference(revision.analysisId);
+            refreshMonologues();
             return;
           }
+          if (revision.monologueId) monologueAudio.add(revision.analysisId);
           const { viewed } = state;
           const stillShown =
             viewed.status === "ready" && viewed.analysis.analysisId === analysisId;
@@ -704,7 +837,7 @@ export function createGeneralStore({
               text: `Saved as revision ${revision.revision}. Word counts and WPM were worked out again from your words. The earlier result is still in your history, unchanged.`,
             },
           });
-          refreshHistory();
+          refreshLists();
         },
         (error) =>
           set({
@@ -819,18 +952,22 @@ export function createGeneralStore({
           const { viewed, run } = state;
           const showing = viewed.status === "ready" && viewed.analysis.analysisId === analysisId;
           const justRan = run.phase === "done" && run.analysisId === analysisId;
+          // The take is in one of the two lists: the history, or its monologue's takes.
+          const without = <List extends { items: AnalysisSummary[]; total: number }>(list: List) => {
+            const items = list.items.filter((item) => item.analysisId !== analysisId);
+            return items.length === list.items.length
+              ? list
+              : { ...list, items, total: Math.max(0, list.total - 1) };
+          };
           set({
-            history: {
-              ...state.history,
-              items: state.history.items.filter((item) => item.analysisId !== analysisId),
-              total: Math.max(0, state.history.total - 1),
-            },
+            history: without(state.history),
+            takes: without(state.takes),
             viewed: showing ? { status: "none" } : viewed,
             run: justRan ? { phase: "idle" } : run,
             localAudio: forget([analysisId]),
             notice: { kind: "info", text: "Analysis deleted." },
           });
-          refreshHistory();
+          refreshLists();
         },
         (error) => set({ notice: { kind: "error", text: describeError(error).message } }),
       );
@@ -850,9 +987,12 @@ export function createGeneralStore({
           // chosen, so there is nothing to bring up to date.
           apply({
             history: { ...state.history, items: state.history.items.map(withoutAudio) },
-            references: {
-              ...state.references,
-              items: state.references.items.map(withoutAudio),
+            takes: { ...state.takes, items: state.takes.items.map(withoutAudio) },
+            monologues: {
+              ...state.monologues,
+              items: state.monologues.items.map((item) =>
+                item.referenceId === analysisId ? { ...item, audioRetained: false } : item,
+              ),
             },
             viewed: updated(viewed),
             referenceDetail: updated(referenceDetail),
@@ -866,19 +1006,29 @@ export function createGeneralStore({
     },
 
     clearHistory() {
-      api.clearAnalyses().then(
+      // Only the General Practice history: the takes that belong to no monologue.
+      api.clearAnalyses(NO_MONOLOGUE).then(
         ({ deletedAnalyses }) => {
-          const finished = !isBusy();
+          const { run, viewed } = state;
+          // A finished run is cleared with the history, unless it was about a monologue.
+          const aboutMonologue =
+            state.runRole === "reference" || ("job" in run && !!run.job?.monologueId);
+          const finished = !isBusy() && !aboutMonologue;
           if (finished) {
             startRun();
             remember(null);
             pending = null;
           }
+          const keepViewed =
+            viewed.status === "ready" &&
+            (viewed.analysis.role === "reference" || !!viewed.analysis.monologueId);
           set({
             history: { status: "ready", items: [], total: 0, message: null },
-            viewed: { status: "none" },
-            run: finished ? { phase: "idle" } : state.run,
-            localAudio: forget(Object.keys(state.localAudio)),
+            viewed: keepViewed ? viewed : { status: "none" },
+            run: finished ? { phase: "idle" } : run,
+            localAudio: forget(
+              Object.keys(state.localAudio).filter((id) => !monologueAudio.has(id)),
+            ),
             notice: {
               kind: "info",
               text:

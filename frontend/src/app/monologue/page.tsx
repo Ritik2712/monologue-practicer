@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 
-import { MonologuePractice } from "@/features/general/components/MonologuePractice";
+import { MonologueList } from "@/features/monologue/components/MonologueList";
 
 export const metadata: Metadata = {
-  title: "Monologue · Monologue Coach",
+  title: "Monologues · Monologue Coach",
 };
 
-export default function MonologuePage() {
-  return <MonologuePractice />;
+export default function MonologuesPage() {
+  return <MonologueList />;
 }

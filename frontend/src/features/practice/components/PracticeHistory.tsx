@@ -2,7 +2,7 @@ import { Button } from "@/components/Button";
 
 import { formatDayLabel } from "../format";
 import { recentDateKeys } from "../localDate";
-import { isPristine, summarize } from "../practiceState";
+import { isPristine, summarizeDay } from "../practiceState";
 import type { PracticeSnapshot } from "../practiceStore";
 import type { DailyPracticeRecord } from "../types";
 
@@ -72,6 +72,9 @@ function HistoryTable({ caption, rows, todayKey }: HistoryTableProps) {
               Date
             </th>
             <th scope="col" className="py-2 pr-4 font-medium">
+              Monologue
+            </th>
+            <th scope="col" className="py-2 pr-4 font-medium">
               Steps completed
             </th>
             <th scope="col" className="py-2 font-medium">
@@ -81,7 +84,7 @@ function HistoryTable({ caption, rows, todayKey }: HistoryTableProps) {
         </thead>
         <tbody>
           {rows.map(({ key, day }) => {
-            const summary = day ? summarize(day) : null;
+            const summary = day ? summarizeDay(day) : null;
             return (
               <tr key={key} className="border-b border-zinc-100 dark:border-zinc-900">
                 <th scope="row" className="py-2 pr-4 font-normal whitespace-nowrap">
@@ -89,16 +92,23 @@ function HistoryTable({ caption, rows, todayKey }: HistoryTableProps) {
                 </th>
                 {summary ? (
                   <>
+                    <td className="py-2 pr-4 break-words">
+                      {summary.monologues.length > 0 ? summary.monologues.join(", ") : "—"}
+                    </td>
                     <td className="py-2 pr-4">
-                      {summary.completed} of {summary.total}
-                      {summary.skipped > 0 && ` (${summary.skipped} skipped)`}
+                      {summary.best.completed} of {summary.best.total}
+                      {summary.best.skipped > 0 && ` (${summary.best.skipped} skipped)`}
+                      {/* The figures are those of the round that got furthest. */}
+                      {summary.rounds > 1 && ` · best of ${summary.rounds} rounds`}
                     </td>
                     <td className="py-2 tabular-nums">
-                      {summary.percent}%{summary.routineCompleted && " · full routine"}
+                      {summary.best.percent}%
+                      {summary.fullRounds === 1 && " · full routine"}
+                      {summary.fullRounds > 1 && ` · full routine × ${summary.fullRounds}`}
                     </td>
                   </>
                 ) : (
-                  <td colSpan={2} className="py-2 text-zinc-600 dark:text-zinc-400">
+                  <td colSpan={3} className="py-2 text-zinc-600 dark:text-zinc-400">
                     No practice recorded
                   </td>
                 )}

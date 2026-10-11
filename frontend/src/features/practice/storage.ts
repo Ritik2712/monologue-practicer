@@ -4,7 +4,14 @@
  */
 import { isLocalDateKey } from "./localDate";
 import { nextUnfinishedStepId } from "./practiceState";
-import type { DailyPracticeRecord, PracticeStep, StepStatus, TimerState } from "./types";
+import type {
+  DailyPracticeRecord,
+  PracticeMonologue,
+  PracticeRound,
+  PracticeStep,
+  StepStatus,
+  TimerState,
+} from "./types";
 
 /** The only browser-storage key this feature touches. */
 export const PRACTICE_STORAGE_KEY = "monologue-coach.practice.v1";
@@ -90,6 +97,12 @@ function parseRecord(key: string, value: unknown): DailyPracticeRecord | null {
   const allCompleted = steps.every((step) => step.status === "completed");
   return {
     localDate: key,
+    // Both are missing from days saved before the routine was tied to a monologue. A value
+    // that does not read is dropped on its own: it is no reason to lose the day.
+    monologue: parseMonologue(value.monologue),
+    earlierRounds: Array.isArray(value.earlierRounds)
+      ? value.earlierRounds.flatMap((round) => parseRound(round) ?? [])
+      : [],
     steps,
     activeStepId: activeIsValid ? savedActive.id : nextUnfinishedStepId(steps, null),
     timer: activeIsValid ? timer : { status: "idle" },
@@ -98,6 +111,29 @@ function parseRecord(key: string, value: unknown): DailyPracticeRecord | null {
     routineCompletedAtEpochMs: allCompleted
       ? (value.routineCompletedAtEpochMs ?? value.updatedAtEpochMs)
       : null,
+  };
+}
+
+function parseMonologue(value: unknown): PracticeMonologue | null {
+  if (!isObject(value)) return null;
+  const { id, title } = value;
+  if (typeof id !== "string" || id === "" || typeof title !== "string") return null;
+  return { id, title };
+}
+
+function parseRound(value: unknown): PracticeRound | null {
+  if (!isObject(value)) return null;
+  const { completed, skipped, total, finishedAtEpochMs } = value;
+  const counts = [completed, skipped, total];
+  if (!counts.every((count) => Number.isInteger(count) && (count as number) >= 0)) return null;
+  if ((completed as number) + (skipped as number) > (total as number)) return null;
+  if (!isFiniteNumber(finishedAtEpochMs)) return null;
+  return {
+    monologue: parseMonologue(value.monologue),
+    completed: completed as number,
+    skipped: skipped as number,
+    total: total as number,
+    finishedAtEpochMs,
   };
 }
 

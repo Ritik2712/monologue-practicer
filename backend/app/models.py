@@ -80,6 +80,9 @@ class Job(Base):
     # Set when this job analyses the kept recording of an earlier analysis again. The
     # result is stored as a new revision of that recording.
     source_analysis_id: Mapped[str | None] = mapped_column(String(32))
+    # For a take recorded while practising a monologue: that monologue's ID, which is the
+    # root ID of its reference recording. Null for a reference, and for a free take.
+    monologue_id: Mapped[str | None] = mapped_column(String(32))
 
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, index=True)
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime)
@@ -118,6 +121,9 @@ class Analysis(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     # Why a later revision exists: "transcript_corrected" or "reanalysed". Null for the first.
     revision_reason: Mapped[str | None] = mapped_column(String(32))
+    # The monologue a take was recorded for: the root ID of that monologue's reference
+    # recording. Null for a reference itself, and for a take made in General Practice.
+    monologue_id: Mapped[str | None] = mapped_column(String(32), index=True)
     # The complete AnalysisResult as JSON, without the coaching.
     result: Mapped[dict] = mapped_column(JSON)
     # The coaching for this result, as JSON. Null for results stored before coaching existed.

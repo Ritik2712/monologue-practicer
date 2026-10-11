@@ -303,6 +303,9 @@ class AnalysisResult(AnalysisBody):
     revision_reason: RevisionReason | None = None
     # Every result made from this recording, oldest first. Filled in when the result is read.
     revisions: list[RevisionInfo] = []
+    # The monologue this take was recorded for. None for a reference, and for a take made
+    # in General Practice. Filled in from its own column when the result is read.
+    monologue_id: str | None = None
     audio_retained: bool
     # Kept apart from the measurements: it can be written again without touching them.
     # None for results stored before coaching existed.
@@ -322,6 +325,8 @@ class AnalysisSummary(ApiModel):
     duration_seconds: float
     revision: int
     revision_reason: RevisionReason | None = None
+    # The monologue a take was recorded for, if any.
+    monologue_id: str | None = None
     audio_retained: bool
     original_filename: str | None
     # Keyed by the metric's JSON name, e.g. "speechActiveWpm".
@@ -340,6 +345,44 @@ class AnalysisList(ApiModel):
 class HistoryCleared(ApiModel):
     deleted_analyses: int
     deleted_jobs: int
+
+
+# --- Monologues --------------------------------------------------------------------------
+
+
+class Monologue(ApiModel):
+    """One monologue the user practises: a reference recording and the takes made for it.
+
+    Nothing is stored under this name. It is a view of the analyses: every revision of one
+    reference recording is one monologue, and `monologue_id` is that recording's root ID.
+    """
+
+    monologue_id: str
+    # The newest revision of the reference recording: the one takes are compared with.
+    reference_id: str
+    title: str
+    # When the reference was first added.
+    created_at: datetime
+    language: str
+    duration_seconds: float
+    # Whether the newest revision's recording was kept, so it can be played.
+    audio_retained: bool
+    revision: int
+    revision_count: int
+    take_count: int
+    # When the newest take was analysed. None while there is no take.
+    last_take_at: datetime | None
+    # The thresholds the newest revision was measured with.
+    settings: dict[str, float | int] = {}
+
+
+class MonologueList(ApiModel):
+    items: list[Monologue]
+
+
+class MonologueDeleted(ApiModel):
+    deleted_references: int
+    deleted_takes: int
 
 
 # --- Waveform ----------------------------------------------------------------------------
@@ -737,6 +780,8 @@ class JobStatus(ApiModel):
     analysis_id: str | None
     # Set when this job analyses the kept recording of an earlier analysis again.
     source_analysis_id: str | None = None
+    # The monologue the take being analysed belongs to, if any.
+    monologue_id: str | None = None
     can_retry: bool
     can_cancel: bool
     # Jobs ahead of this one in the queue. Only set while queued.
