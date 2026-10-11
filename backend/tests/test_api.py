@@ -6,7 +6,7 @@ import pytest
 
 from app import uploads
 from app.routes import analyses as analyses_route
-from tests.conftest import wav_bytes
+from tests.conftest import FakeChat, answer_within, wav_bytes
 
 
 def upload(client, content: bytes | None = None, *, filename="take.wav", content_type="audio/wav",
@@ -43,6 +43,8 @@ def test_health_reports_the_database_the_worker_and_the_speech_model(client, mak
         "database": "ok",
         "worker": "not_running",
         "speechModel": "unknown",
+        "coach": "unknown",
+        "coachModel": None,
     }
 
     make_worker().beat()
@@ -51,10 +53,24 @@ def test_health_reports_the_database_the_worker_and_the_speech_model(client, mak
         "database": "ok",
         "worker": "running",
         "speechModel": "ready",
+        # This worker was given no language model, so AI coaching is off.
+        "coach": "off",
+        "coachModel": None,
     }
 
     clock.advance(seconds=60)  # the worker has gone quiet
     assert client.get("/api/health").json()["worker"] == "not_running"
+
+
+@pytest.mark.parametrize("status", ["ready", "not_running", "model_missing"])
+def test_health_passes_on_what_the_worker_found_out_about_the_language_model(
+    client, make_worker, status
+):
+    make_worker(FakeChat(model_status=status)).beat()
+    health = client.get("/api/health").json()
+    assert (health["coach"], health["coachModel"]) == (status, "fake-llm")
+    # Coaching is optional: the API itself is still healthy without it.
+    assert health["status"] == "ok"
 
 
 def test_only_local_pages_may_call_the_api(client):
@@ -338,3 +354,120 @@ def test_a_failure_that_would_repeat_cannot_be_retried(client, data_dir, limits,
 
     retry = client.post(f"/api/jobs/{job_id}/retry")
     assert (retry.status_code, retry.json()["detail"]["code"]) == (409, "not_retryable")
+
+
+# --- Coaching ----------------------------------------------------------------------------
+
+
+def analysed(client, make_worker, llm=None, **form) -> tuple[str, dict]:
+    job_id = upload(client, **form).json()["jobId"]
+    make_worker(llm).process_next_job()
+    analysis_id = client.get(f"/api/jobs/{job_id}").json()["analysisId"]
+    return analysis_id, client.get(f"/api/analyses/{analysis_id}").json()
+
+
+def test_a_result_carries_coaching_built_on_its_own_measurements(client, make_worker):
+    _, result = analysed(client, make_worker, profile="thomas_shelby")
+    coaching = result["coaching"]
+
+    assert coaching["source"] == "rules"  # this worker has no language model
+    assert coaching["notice"]["code"] == "ai_off"
+    assert [line["label"] for line in coaching["summary"]] == ["Pace", "Pauses", "Voice", "Clarity"]
+    by_id = {finding["id"]: finding for finding in coaching["findings"]}
+    first = coaching["corrections"][0]
+    assert by_id[first["findingId"]]["kind"] == "held_silence"
+    assert first["title"] == "Hold one full silence"
+    assert first["practise"]["kind"] == "segment"
+    assert coaching["nextTake"][0] == "Hold at least one silence for 2 seconds or more."
+    assert coaching["caveats"][-1].startswith("Breaths are not detected")
+    assert coaching["settings"]["version"] == 1
+
+
+def test_every_job_says_what_kind_it_is(client, make_worker):
+    job = upload(client).json()
+    assert job["kind"] == "analysis"
+
+
+def test_coaching_can_be_written_again_without_the_audio(client, make_worker, data_dir):
+    analysis_id, before = analysed(client, make_worker, profile="thomas_shelby")
+    assert stored_uploads(data_dir) == []
+
+    response = client.post(f"/api/analyses/{analysis_id}/coaching")
+    assert response.status_code == 202
+    job = response.json()
+    assert (job["kind"], job["status"], job["analysisId"]) == ("coaching", "queued", analysis_id)
+
+    make_worker(FakeChat(answer_within)).process_next_job()
+
+    done = client.get(f"/api/jobs/{job['jobId']}").json()
+    assert (done["status"], done["analysisId"]) == ("succeeded", analysis_id)
+    after = client.get(f"/api/analyses/{analysis_id}").json()
+    assert (after["coaching"]["source"], after["coaching"]["model"]) == ("ai", "fake-llm")
+    assert after["coaching"]["corrections"][0]["title"].startswith("Work on f")
+    # The measurements are exactly as they were.
+    assert {**after, "coaching": None} == {**before, "coaching": None}
+
+
+def test_asking_twice_does_not_queue_the_language_model_twice(client, make_worker):
+    analysis_id, _ = analysed(client, make_worker)
+    first = client.post(f"/api/analyses/{analysis_id}/coaching")
+    second = client.post(f"/api/analyses/{analysis_id}/coaching")
+    assert (first.status_code, second.status_code) == (202, 200)
+    assert first.json()["jobId"] == second.json()["jobId"]
+
+
+def test_coaching_for_an_unknown_analysis_is_refused(client):
+    response = client.post("/api/analyses/nope/coaching")
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "analysis_not_found"
+
+
+def test_when_the_model_cannot_answer_the_old_coaching_stays(client, make_worker):
+    analysis_id, before = analysed(client, make_worker, profile="thomas_shelby")
+    job_id = client.post(f"/api/analyses/{analysis_id}/coaching").json()["jobId"]
+
+    make_worker(FakeChat(model_status="not_running")).process_next_job()
+
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert job["status"] == "failed"
+    assert job["error"] == {
+        "code": "not_running",
+        "message": "The model is not_running.",
+        "retryable": False,
+    }
+    assert job["canRetry"] is False
+    assert client.get(f"/api/analyses/{analysis_id}").json() == before
+
+
+def test_deleting_an_analysis_removes_its_coaching_jobs_too(client, make_worker):
+    analysis_id, _ = analysed(client, make_worker)
+    job_id = client.post(f"/api/analyses/{analysis_id}/coaching").json()["jobId"]
+    assert client.delete(f"/api/analyses/{analysis_id}").status_code == 204
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_a_coaching_job_whose_analysis_was_cleared_fails_cleanly(client, make_worker):
+    analysis_id, _ = analysed(client, make_worker)
+    job_id = client.post(f"/api/analyses/{analysis_id}/coaching").json()["jobId"]
+    client.delete("/api/analyses")  # clears history; the queued job is left alone
+
+    make_worker(FakeChat(answer_within)).process_next_job()
+
+    job = client.get(f"/api/jobs/{job_id}").json()
+    assert (job["status"], job["error"]["code"], job["analysisId"]) == (
+        "failed",
+        "analysis_gone",
+        None,
+    )
+
+
+def test_a_result_stored_before_coaching_existed_is_still_served(
+    client, make_worker, session_factory
+):
+    from app.models import Analysis
+
+    analysis_id, _ = analysed(client, make_worker)
+    with session_factory() as session:
+        session.get(Analysis, analysis_id).coaching = None
+        session.commit()
+    assert client.get(f"/api/analyses/{analysis_id}").json()["coaching"] is None

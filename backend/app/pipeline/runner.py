@@ -104,12 +104,18 @@ def run_analysis(
     deps: PipelineDeps,
     on_stage: Callable[[str], None] = lambda stage: None,
     check: Callable[[], None] = lambda: None,
+    on_audio: Callable[[np.ndarray], None] = lambda samples: None,
 ) -> AnalysisBody:
-    """`check` is called at every safe stopping point and raises to abort the run."""
+    """`check` is called at every safe stopping point and raises to abort the run.
+
+    `on_audio` is handed the decoded samples once, for uses outside the measurements (the
+    waveform picture). Nothing it does can reach the result returned here.
+    """
     warnings: list[str] = []
 
     on_stage("preparing_audio")
     samples = deps.decode(audio_path, max_seconds=max_seconds)
+    on_audio(samples)
     duration = samples.shape[0] / SAMPLE_RATE
     clipped = clipping_ratio(samples)
     if clipped > CLIPPING_WARNING_RATIO:

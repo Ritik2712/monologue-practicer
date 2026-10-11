@@ -4,7 +4,14 @@ import { createHealthMonitor, HEALTH_CHECK_MS } from "./healthMonitor";
 import type { Health } from "./types";
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-const healthy: Health = { status: "ok", database: "ok", worker: "running", speechModel: "ready" };
+const healthy: Health = {
+  status: "ok",
+  database: "ok",
+  worker: "running",
+  speechModel: "ready",
+  coach: "ready",
+  coachModel: "llama3.1:8b",
+};
 
 function setup() {
   const getHealth = vi.fn().mockResolvedValue(healthy);

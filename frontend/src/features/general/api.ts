@@ -8,10 +8,13 @@ import type {
   AnalysisList,
   AnalysisOptions,
   AnalysisResult,
+  Comparison,
   Health,
   JobStatus,
   LanguageHint,
   Profile,
+  Role,
+  Waveform,
 } from "./types";
 
 /** A failed request, in the backend's own {code, message} terms. */
@@ -33,6 +36,10 @@ export type SubmitRequest = {
   profile: Profile;
   language: LanguageHint;
   retainAudio: boolean;
+  /** A take (the default) or a reference recording to compare takes against. */
+  role?: Role;
+  /** The name a reference is listed under. */
+  title?: string;
   /** Sent as the Idempotency-Key header: the same key never creates a second job. */
   idempotencyKey: string;
 };
@@ -45,7 +52,14 @@ export type GeneralApi = {
   cancelJob: (jobId: string) => Promise<JobStatus>;
   retryJob: (jobId: string) => Promise<JobStatus>;
   getAnalysis: (analysisId: string) => Promise<AnalysisResult>;
-  listAnalyses: (limit: number) => Promise<AnalysisList>;
+  /** Asks for an analysis's coaching to be written again. Returns a job to follow. */
+  requestCoaching: (analysisId: string) => Promise<JobStatus>;
+  /** Past takes, or the reference recordings when `role` is "reference". */
+  listAnalyses: (limit: number, role?: Role) => Promise<AnalysisList>;
+  /** A take set against a reference recording. */
+  getComparison: (analysisId: string, referenceId: string) => Promise<Comparison>;
+  /** The outline of a recording's sound wave, for drawing. */
+  getWaveform: (analysisId: string) => Promise<Waveform>;
   deleteAnalysis: (analysisId: string) => Promise<void>;
   deleteAnalysisAudio: (analysisId: string) => Promise<void>;
   clearAnalyses: () => Promise<{ deletedAnalyses: number; deletedJobs: number }>;
@@ -77,12 +91,23 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
   return {
     getHealth: () => request("/api/health"),
     getOptions: () => request("/api/analysis-options"),
-    submitAnalysis: ({ audio, filename, profile, language, retainAudio, idempotencyKey }) => {
+    submitAnalysis: ({
+      audio,
+      filename,
+      profile,
+      language,
+      retainAudio,
+      role,
+      title,
+      idempotencyKey,
+    }) => {
       const form = new FormData();
       form.append("audio", audio, filename);
       form.append("profile", profile);
       form.append("language", language);
       form.append("retainAudio", String(retainAudio));
+      if (role) form.append("role", role);
+      if (title) form.append("title", title);
       return request("/api/analyses", {
         method: "POST",
         body: form,
@@ -93,7 +118,16 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
     cancelJob: (jobId) => post(`/api/jobs/${encodeURIComponent(jobId)}/cancel`),
     retryJob: (jobId) => post(`/api/jobs/${encodeURIComponent(jobId)}/retry`),
     getAnalysis: (analysisId) => request(`/api/analyses/${encodeURIComponent(analysisId)}`),
-    listAnalyses: (limit) => request(`/api/analyses?limit=${limit}`),
+    requestCoaching: (analysisId) =>
+      post(`/api/analyses/${encodeURIComponent(analysisId)}/coaching`),
+    listAnalyses: (limit, role) =>
+      request(`/api/analyses?limit=${limit}${role ? `&role=${role}` : ""}`),
+    getComparison: (analysisId, referenceId) =>
+      request(
+        `/api/analyses/${encodeURIComponent(analysisId)}/comparison/${encodeURIComponent(referenceId)}`,
+      ),
+    getWaveform: (analysisId) =>
+      request(`/api/analyses/${encodeURIComponent(analysisId)}/waveform`),
     deleteAnalysis: (analysisId) =>
       request(`/api/analyses/${encodeURIComponent(analysisId)}`, { method: "DELETE" }),
     deleteAnalysisAudio: (analysisId) =>

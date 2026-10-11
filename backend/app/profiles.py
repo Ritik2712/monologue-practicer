@@ -6,10 +6,11 @@ characters to compare against. `focus` names the measurements that matter most f
 style; `not_measured` lists parts of the style the app cannot hear, so the screen can say so.
 
 This is the single source for these descriptions: the frontend fetches them, and the
-coaching step will use the same text.
+coaching step uses the same text.
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,9 @@ class FocusMetric:
     metric: str
     label: str
     looks_for: str
+    # Which way the style leans on this measurement. The coaching step reads this; a profile
+    # still holds no reference numbers.
+    wants: Literal["low", "high"]
 
 
 @dataclass(frozen=True)
@@ -51,14 +55,16 @@ PROFILES: tuple[DeliveryProfile, ...] = (
                 "paceVariation",
                 "Pace consistency",
                 "A similar speed from phrase to phrase (low pace variation)",
+                "low",
             ),
             FocusMetric(
                 "medianPauseSeconds",
                 "Deliberate pauses",
                 "Pauses long enough to register between phrases",
+                "high",
             ),
             FocusMetric(
-                "energyVariation", "Restrained intensity", "Loudness that stays fairly even"
+                "energyVariation", "Restrained intensity", "Loudness that stays fairly even", "low"
             ),
         ),
         not_measured=("Clarity of consonants",),
@@ -79,16 +85,19 @@ PROFILES: tuple[DeliveryProfile, ...] = (
                 "paceVariation",
                 "Changing pace",
                 "Clear differences in speed between phrases (high pace variation)",
+                "high",
             ),
             FocusMetric(
                 "pitchVariationSemitones",
                 "Pitch movement",
                 "A wide spread of pitch around your own median",
+                "high",
             ),
             FocusMetric(
                 "energyVariation",
                 "Dynamic intensity",
                 "Loud and quiet stretches that clearly differ",
+                "high",
             ),
         ),
         not_measured=("Whether a contrast was purposeful",),
@@ -105,14 +114,20 @@ PROFILES: tuple[DeliveryProfile, ...] = (
         ),
         focus=(
             FocusMetric(
-                "speechActiveWpm", "Measured pace", "An unhurried speaking rate while speaking"
+                "speechActiveWpm",
+                "Measured pace",
+                "An unhurried speaking rate while speaking",
+                "low",
             ),
             FocusMetric(
                 "longestPauseSeconds",
                 "Deliberate silence",
                 "At least one silence held long enough to carry weight",
+                "high",
             ),
-            FocusMetric("energyVariation", "Low-key intensity", "Loudness that stays fairly even"),
+            FocusMetric(
+                "energyVariation", "Low-key intensity", "Loudness that stays fairly even", "low"
+            ),
         ),
         not_measured=("Crispness of phrasing",),
     ),
@@ -122,6 +137,14 @@ PROFILES: tuple[DeliveryProfile, ...] = (
         summary="No style target. All measurements are shown without a profile's priorities.",
     ),
 )
+
+
+def get_profile(profile_id: str) -> DeliveryProfile:
+    for profile in PROFILES:
+        if profile.id == profile_id:
+            return profile
+    return PROFILES[-1]
+
 
 LANGUAGES: tuple[tuple[str, str, str | None], ...] = (
     ("auto", "Detect automatically", None),

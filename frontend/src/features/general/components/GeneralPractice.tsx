@@ -1,11 +1,11 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/Button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
-import type { HealthState } from "../healthMonitor";
+import { audioSourceFor, regenerationState } from "../coaching";
 import type { LanguageHint, Profile } from "../types";
 import {
   generalApi,
@@ -14,8 +14,11 @@ import {
   useRecorder,
 } from "../useGeneralPractice";
 import { validateAudioFile } from "../validation";
+import { BackendNotice } from "./BackendNotice";
 import { HistoryPanel } from "./HistoryPanel";
-import { Command, MUTED, Notice } from "./parts";
+import { MUTED, Notice, Section } from "./parts";
+import { ReferenceComparison } from "./ReferenceComparison";
+import { ReferenceLibrary } from "./ReferenceLibrary";
 import { Results } from "./Results";
 import { RunPanel } from "./RunPanel";
 import {
@@ -47,7 +50,7 @@ const CONFIRM_TEXT: Record<Confirmation["kind"], { title: string; description: s
   clear_history: {
     title: "Clear all history?",
     description:
-      "Every saved analysis and every kept recording is deleted from this device. An analysis still in progress is not affected, and neither is the Daily Practice checklist. This cannot be undone.",
+      "Every saved analysis of your own takes, and every recording kept with them, is deleted from this device. Your reference recordings are not affected, nor is an analysis still in progress or the Daily Practice checklist. This cannot be undone.",
     confirmLabel: "Clear all history",
   },
 };
@@ -77,6 +80,12 @@ export function GeneralPractice() {
 
   const options = state.options.status === "ready" ? state.options.data : null;
   const busy = ["submitting", "tracking", "loading_result"].includes(state.run.phase);
+
+  // A link such as /general?analysis=<id>, as the Monologue screen gives, opens that result.
+  useEffect(() => {
+    const analysisId = new URLSearchParams(window.location.search).get("analysis");
+    if (analysisId) store.openAnalysis(analysisId);
+  }, [store]);
 
   const release = (url: string | null | undefined) => {
     if (url && !submittedUrls.current.has(url)) URL.revokeObjectURL(url);
@@ -142,10 +151,10 @@ export function GeneralPractice() {
 
   const viewed = state.viewed;
   const viewedAnalysis = viewed.status === "ready" ? viewed.analysis : null;
-  const audioSrc = viewedAnalysis
-    ? (state.localAudio[viewedAnalysis.analysisId] ??
-      (viewedAnalysis.audioRetained ? generalApi.analysisAudioUrl(viewedAnalysis.analysisId) : null))
-    : null;
+  const audioSrc = viewedAnalysis ? audioSourceFor(viewedAnalysis, state.localAudio, generalApi) : null;
+  const chosenReference = state.references.items.find(
+    (item) => item.analysisId === state.selectedReferenceId,
+  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -153,10 +162,12 @@ export function GeneralPractice() {
         <h1 className="text-2xl font-semibold tracking-tight">General Practice</h1>
         <p className="mt-2 text-zinc-700 dark:text-zinc-300">
           Record yourself or upload a recording, and see how you spoke: pace, pauses, loudness and
-          pitch, phrase by phrase. Hindi, English and Hinglish.
+          pitch, phrase by phrase, with coaching on what to change for the next take. Hindi,
+          English and Hinglish.
         </p>
         <p className={`mt-1 text-sm ${MUTED}`}>
-          Everything is analysed on this computer. Your audio is never sent anywhere else.
+          Everything is analysed on this computer, including the AI coaching. Your audio and your
+          words are never sent anywhere else.
         </p>
       </header>
 
@@ -207,7 +218,7 @@ export function GeneralPractice() {
               {busy
                 ? "An analysis is already in progress."
                 : audio
-                  ? "Takes roughly a quarter of the recording's length."
+                  ? "Measuring takes roughly a quarter of the recording's length; the AI coaching adds about half a minute."
                   : source === "record"
                     ? "Record something first."
                     : "Choose a file first."}
@@ -216,7 +227,13 @@ export function GeneralPractice() {
         </div>
       )}
 
-      <RunPanel run={state.run} store={store} />
+      <RunPanel
+        run={state.run}
+        kind={state.runKind}
+        role={state.runRole}
+        coachingFor={state.coachingFor}
+        store={store}
+      />
 
       {viewed.status === "loading" && <p className={MUTED}>Loading that analysis…</p>}
       {viewed.status === "error" && (
@@ -232,6 +249,36 @@ export function GeneralPractice() {
           profile={options?.profiles.find((item) => item.id === viewedAnalysis.profile)}
           history={state.history.items}
           audioSrc={audioSrc}
+          referenceSection={
+            <Section
+              id="reference-heading"
+              title="Compare with a reference recording"
+              description="Set this take against a recording you supply, such as the original performance: where each of you pauses, and how fast each phrase is said. This is a measured comparison of two real recordings, separate from the delivery profile above."
+            >
+              <ReferenceLibrary state={state} store={store} options={options} busy={busy} />
+              {chosenReference && (
+                <ReferenceComparison
+                  // Fresh players and a closed waveform for each pair of recordings.
+                  key={`${viewedAnalysis.analysisId}-${chosenReference.analysisId}`}
+                  comparison={state.comparison}
+                  reference={chosenReference}
+                  takeId={viewedAnalysis.analysisId}
+                  takeAudioSrc={audioSrc}
+                  referenceAudioSrc={audioSourceFor(chosenReference, state.localAudio, generalApi)}
+                  waveforms={state.waveforms}
+                  onLoadWaveform={(analysisId) => store.loadWaveform(analysisId)}
+                />
+              )}
+            </Section>
+          }
+          coach={
+            health.status === "reachable"
+              ? { status: health.health.coach, model: health.health.coachModel }
+              : null
+          }
+          busy={busy}
+          regeneration={regenerationState(state, viewedAnalysis.analysisId)}
+          onRegenerateCoaching={() => store.regenerateCoaching(viewedAnalysis.analysisId)}
           onClose={() => store.closeAnalysis()}
           onDelete={() => ask({ kind: "delete_analysis", analysisId: viewedAnalysis.analysisId })}
           onDeleteAudio={() => ask({ kind: "delete_audio", analysisId: viewedAnalysis.analysisId })}
@@ -256,46 +303,4 @@ export function GeneralPractice() {
       />
     </div>
   );
-}
-
-/** Says plainly when a part of the local backend that analysis needs is missing. */
-function BackendNotice({ health, onCheckAgain }: { health: HealthState; onCheckAgain: () => void }) {
-  const again = <Button onClick={onCheckAgain}>Check again</Button>;
-  if (health.status === "checking") return null;
-  if (health.status === "unreachable") {
-    return (
-      <Notice kind="warning" action={again}>
-        The local backend is not running, so nothing can be analysed yet. In a terminal, run:
-        <Command>cd backend && uv run uvicorn app.main:app --port 8000</Command>
-      </Notice>
-    );
-  }
-  const { database, worker, speechModel } = health.health;
-  if (database !== "ok") {
-    return (
-      <Notice kind="warning" action={again}>
-        The backend cannot use its database. In a terminal, run:
-        <Command>cd backend && uv run alembic upgrade head</Command>
-      </Notice>
-    );
-  }
-  if (worker !== "running") {
-    return (
-      <Notice kind="warning" action={again}>
-        The analysis worker is not running. You can submit a recording, but it will wait in the
-        queue until the worker starts. In a terminal, run:
-        <Command>cd backend && uv run python -m app.worker</Command>
-      </Notice>
-    );
-  }
-  if (speechModel === "missing") {
-    return (
-      <Notice kind="warning" action={again}>
-        The speech model is not downloaded, so analyses will fail. Download it once (about 480
-        MB):
-        <Command>cd backend && uv run python -m app.speech_model download</Command>
-      </Notice>
-    );
-  }
-  return null;
 }

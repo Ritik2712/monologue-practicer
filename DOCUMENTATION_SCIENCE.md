@@ -1,17 +1,19 @@
 # Monologue Coach — Audio Science and AI Documentation
 
-How a recording is turned into numbers — speaking rate, pauses, loudness, pitch — and how an
-AI model will later turn those numbers into coaching.
+How a recording is turned into numbers — speaking rate, pauses, loudness, pitch — how those
+numbers are turned into coaching, with a local AI model doing the wording and ordinary code
+checking it, and how one recording is compared with another.
 
 - Start with [DOCUMENTATION.md](DOCUMENTATION.md) for the big picture and the general glossary.
 - How jobs are queued, run, cancelled and stored is in
   [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md). This file is about **what is
-  measured and why it is measured that way**.
+  measured, how the coaching is produced, and why it is done that way**.
 
 Anything not built yet is marked **Planned**.
 
-**Last updated:** end of Phase 3. All measurements below are built, and the delivery
-profiles exist as descriptions. The AI coaching (section 13) is not built.
+**Last updated:** end of Phase 5. All measurements below are built, so is the coaching
+(section 13), and so is the comparison of a take with a reference recording (section 14),
+with its waveform picture.
 
 ## Contents
 
@@ -27,12 +29,15 @@ profiles exist as descriptions. The AI coaching (section 13) is not built.
 10. [Emphasis candidates, hesitation sounds, breaths](#10-emphasis-candidates-hesitation-sounds-breaths)
 11. [How much to trust a number](#11-how-much-to-trust-a-number)
 12. [The settings](#12-the-settings)
-13. [The AI model (planned)](#13-the-ai-model-planned)
-14. [Accuracy and limits](#14-accuracy-and-limits)
-15. [Science decisions](#15-science-decisions)
-16. [Glossary](#16-glossary)
+13. [Coaching and the AI model](#13-coaching-and-the-ai-model)
+14. [Comparing with a reference recording](#14-comparing-with-a-reference-recording)
+15. [Accuracy and limits](#15-accuracy-and-limits)
+16. [Science decisions](#16-science-decisions)
+17. [Glossary](#17-glossary)
 
-All code for this document is in `backend/app/pipeline/`.
+The measuring code is in `backend/app/pipeline/`. The coaching code is in
+`backend/app/coaching/`, and the one file that talks to the AI model is `backend/app/llm.py`.
+The code that compares two recordings is in `backend/app/comparison/`.
 
 ## 1. The pipeline at a glance
 
@@ -65,8 +70,16 @@ All code for this document is in `backend/app/pipeline/`.
         ▼
  ┌──────────────┐  runner.py        everything assembled into one result, with quality
  │ 6. Result    │                   labels and warnings
+ └──────┬───────┘
+        ▼
+ ┌──────────────┐  coaching/        the result  ->  findings  ->  corrections, drills,
+ │ 7. Coaching  │                   targets (section 13). Changes nothing above it.
  └──────────────┘
 ```
+
+Steps 1 to 6 are the **measurements**. Step 7 reads them and never alters them. A
+reference recording goes through steps 1 to 6 and stops there. Setting one measured
+recording against another is a separate step, described in section 14.
 
 Two different tools look at the same audio, and each is trusted for what it is good at:
 
@@ -181,7 +194,7 @@ through the **faster-whisper** library. The model size is `small` (about 480 MB)
 Whisper works on windows of up to 30 seconds. For each word it also reports a start time,
 an end time and a **confidence** between 0 and 1.
 
-Three choices in how it is run (reasons in section 15):
+Three choices in how it is run (reasons in section 16):
 
 - **Silence is removed first.** Whisper tends to invent words when given silence. If step 2
   found no speech at all, Whisper is not run.
@@ -221,7 +234,7 @@ are downgraded to estimates with the warning `word_timing_uncertain`.
 
 Whisper has a known failure: on a difficult stretch it can lock onto one character or word
 and repeat it, producing output like `हुँँँँँँँँँँँँ…` in place of several seconds of speech.
-This happened in testing (section 15, decision S9).
+This happened in testing (section 16, decision S9).
 
 Two things guard against it:
 
@@ -545,72 +558,617 @@ not be silently recalculated.
 Settings that contradict each other are refused when created; for example, a minimum pause
 longer than the long-silence boundary.
 
-## 13. The AI model (planned)
+## 13. Coaching and the AI model
 
-**Not built. This section records what has been decided for Phase 4.**
+All code for this section is in `backend/app/coaching/` and `backend/app/llm.py`.
 
-### What it will be
+### The idea in one picture
 
-A language model running on this computer through **Ollama**, using `llama3.1:8b`, which is
-already installed here. No cloud model, and no fallback to one.
+```
+ measurements (sections 1 to 12)
+        │
+        ▼
+ ┌──────────────┐  findings.py   "You spoke at 240 WPM while speaking. That is fast:
+ │ 1. Findings  │                 over 200 WPM."  +  is it an issue, a strength, or neither
+ └──────┬───────┘                 for the chosen profile?        (ordinary code, no AI)
+        │
+        ├─────────────────────────────────────────────┐
+        ▼                                             ▼
+ ┌──────────────┐  prompt.py                   ┌──────────────┐  rules.py
+ │ 2. Ask the   │  llm.py                      │ Templates    │  the same findings,
+ │    AI model  │  profile + transcript +      │              │  worded by fixed
+ └──────┬───────┘  findings, as text           └──────┬───────┘  sentences
+        ▼                                             │
+ ┌──────────────┐  grounding.py                       │
+ │ 3. Check its │  every figure, time, segment        │  used when the model is not
+ │    answer    │  and quotation is looked up         │  available, or nothing in its
+ └──────┬───────┘                                     │  answer passes the checks
+        ▼                                             ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │ 4. Coaching: corrections, what works, targets, caveats      │  coach.py
+ └─────────────────────────────────────────────────────────────┘
+```
 
-### The division of labour
+The division of labour is strict:
 
 | | Done by | Why |
 | --- | --- | --- |
-| Every number: WPM, pause lengths, pitch, timestamps | The code in this document | Arithmetic must be exact and repeatable |
-| Explaining what the numbers mean for a performance, and suggesting drills | The AI model | Language is what it is good at |
+| Every number: WPM, pause lengths, pitch, timestamps | The measuring code (sections 1 to 12) | Arithmetic must be exact and repeatable |
+| Saying what a number *is*: "fast", "very even", "a held silence" | The findings code, using fixed bands | So the same number always gets the same word |
+| Deciding whether that suits the chosen profile | The findings code, from the profile's stated leanings | So a correction can never point the wrong way |
+| Choosing which issues matter most, picking the line to work on, and wording the reason and the drill | **The AI model** | Reading a script and writing advice about it is what a language model is good at |
+| The delivery summary, the targets for the next take, the list of what is uncertain | Code and templates | These must be exact, so the model is not asked |
 
-**The model will never be given audio**, and will never calculate. It will receive the
-finished result — transcript, segments with times, the metrics, the warnings — plus a
-description of the chosen delivery profile, and will be asked to write:
+**The model is never given audio**, and never calculates anything.
 
-1. the top three corrections, most important first;
-2. the exact segments and timestamps to practise, each with a reason taken from the numbers;
-3. a concrete drill for each;
-4. what is already working, backed by a measurement;
-5. targets for the next take;
-6. a note wherever a measurement was an estimate or unavailable.
+### Step 1: findings
 
-### Keeping it honest
+A **finding** is one plain statement of fact about the recording, written by ordinary code.
+It is the only place a figure in the coaching can come from. For the test recording used in
+this document (a 22-second English clip):
 
-Language models can state numbers that sound right and are not. Two safeguards are planned:
+```
+f1: You spoke at 240 WPM while speaking (pauses left out). That is fast: over 200 WPM.
+f2: Your phrases varied by 16 WPM around your typical 242 WPM, which is 7%. That is very
+    even: under 10%. Slowest: segment 5 at 209 WPM. Fastest: segment 4 at 248 WPM.
+f3: 5 pauses of 0.5 seconds or more, with a median of 1.1 seconds. That is long enough to
+    register: 1 second or more. Pauses make up 32% of the recording.
+f4: The longest pause is 2.6 seconds, at 0:08.6, between segments 3 and 4. That is a held
+    silence: 2 seconds or more.
+f5: Loudness varied by 5.2 dB across your speech. That is moderate: between 3 and 6 dB.
+f6: Pitch varied by 2.3 semitones around your own median. That is moderate: between 2 and
+    4 semitones.
+```
 
-- **Checking its answer.** Every timestamp, segment and figure the model mentions will be
-  compared with the measured result. Anything that does not match will be removed or the
-  answer rejected.
-- **A fallback that is not the model.** If Ollama is not running or its answer fails the
-  check, the measured result is still shown, with plain correction notes generated by fixed
-  rules.
+Each finding also points back at its **evidence**: the metric, the segment or the pause it
+rests on. That is what lets the screen put a Play button beside it.
+
+The full list of findings the code can produce:
+
+| Finding | Produced when | The bands it uses |
+| --- | --- | --- |
+| `pace` | Speech-active WPM was measured | Unhurried under 140 WPM, fast over 200 WPM, moderate between |
+| `pace_variation` | There is a typical pace (at least 3 reliable segments) | Spread of segment WPM ÷ typical pace: very even under 10%, widely varied over 25% |
+| `pause_length` | At least one pause | Median pause: short under 1 s, "long enough to register" from 1 s |
+| `no_pauses` | No pause at all in 15 s or more of speech | — |
+| `held_silence` | At least one pause | Longest pause: a "held silence" from 2 s |
+| `loudness_variation` | Loudness variation was measured | Even under 3 dB, widely varied over 6 dB |
+| `pitch_variation` | Pitch was measured | Narrow under 2 semitones, wide over 4 |
+| `fast_segment`, `slow_segment` | A segment is 25% or more from typical pace (section 6). At most two of each, the furthest first | — |
+| `hesitations` | At least one hesitation sound was recognised | — |
+| `emphasis` | At least one emphasis candidate (section 10) | — |
+| `no_emphasis` | No candidate, in a recording of 20 words or more | — |
+| `recognition_confidence` | Words were recognised | — (always "context") |
+
+If a measurement is unavailable, its finding is simply not produced. A missing number never
+becomes a statement.
+
+### The bands
+
+A number on its own says nothing about delivery. "Pitch varied by 1.6 semitones" only becomes
+useful once something says whether that is a little or a lot. The bands do that. They are in
+`coaching/settings.py`, as `CoachingSettings`:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `slow_wpm` | 140 | Below this, speech-active pace is "unhurried" |
+| `fast_wpm` | 200 | Above this, it is "fast" |
+| `even_pace_ratio` | 0.10 | Pace variation under this share of typical pace is "very even" |
+| `varied_pace_ratio` | 0.25 | Over this, "widely varied" |
+| `registering_pause_seconds` | 1.0 | A median pause this long "registers" |
+| `held_silence_seconds` | 2.0 | A single pause this long is a "held silence" |
+| `even_loudness_db` | 3.0 | Loudness variation under this is "even" |
+| `varied_loudness_db` | 6.0 | Over this, "widely varied" |
+| `narrow_pitch_semitones` | 2.0 | Pitch variation under this is "narrow" |
+| `wide_pitch_semitones` | 4.0 | Over this, "wide" |
+| `no_pause_min_speech_seconds` | 15 | With no pause at all, shorter speech than this is not remarked on |
+| `max_segment_findings` | 2 | Most "this phrase was faster" findings, and most "slower" |
+| `version` | 1 | Goes up whenever a default changes |
+
+**These bands are this project's own rough choices.** They were not taken from any actor's
+voice, and they were not derived from a study. They are for orientation: a way of putting a
+consistent word to a number. Every coaching result stores a copy of them, as every analysis
+stores its thresholds, so a result can always be explained by the values that produced it,
+and the calibration feature (Phase 6) can move them.
+
+What they have been compared with is thin, and it is stated here so nobody assumes more.
+The four synthesised test clips measured: speech-active pace 195 to 240 WPM; median pause
+1.1 to 1.6 s; loudness variation 2.8 to 6.2 dB; pitch variation 2.3 to 3.1 semitones. So a
+synthesised voice at its default speed lands in "fast", and in "moderate" for pitch. No
+human recording has been through them yet.
+
+### How a finding gets its role
+
+Each profile now says, for each measurement it focuses on, which way it **leans**: it wants
+that measurement low, or high. This is one word per measurement, in `profiles.py`. It is
+still not a number.
+
+| Profile | Leans |
+| --- | --- |
+| Walter White | Pace variation **low**; median pause **high**; loudness variation **low** |
+| Joker | Pace variation **high**; pitch variation **high**; loudness variation **high** |
+| Thomas Shelby | Pace **low**; longest pause **high**; loudness variation **low** |
+| Custom / neutral | Nothing |
+
+A banded finding then gets its role like this:
+
+| The measurement is in… | …and the profile leans that way | …the opposite way | …the profile has no view |
+| --- | --- | --- | --- |
+| the low or high band | **strength** | **issue** (weight 1.0) | the general habit below, else **context** |
+| the middle band | — | **issue** (weight 0.5): partway there | **context** |
+
+When a profile has no view (always, for Custom / neutral), two general speaking habits
+apply, because they hold for almost any delivery: a **fast overall pace** is an issue, and a
+**narrow pitch range** is an issue (a wide one is a strength). Everything else is context.
+
+The findings about single things follow the same logic:
+
+| Finding | Role |
+| --- | --- |
+| A phrase faster than typical | An issue; a **strength** for a profile that leans towards varied pace (Joker), where a phrase that breaks the pattern is the point |
+| A phrase slower than typical | An issue only for a profile that wants an even pace (Walter White); a strength for Joker; otherwise context |
+| Hesitation sounds | An issue |
+| No pause at all | An issue |
+| Words that stood out | A strength; context for a restrained profile (Walter White, Thomas Shelby), where a louder word is neither a fault nor a goal |
+| No word stood out | An issue only for an expressive profile (Joker) |
+
+The weight puts issues in order, most important first. The coaching uses at most the top
+three.
+
+### The fallback: templates
+
+For every kind of issue there is a fixed **template**: a title, a reason, a drill, and a
+target, with gaps that code fills in (the profile's name, the opening words of the phrase,
+the relevant band). For example, for a fast overall pace:
+
+> **Slow your overall pace.** At this speed a listener has little time to take each phrase
+> in. *Drill:* Say “You clearly do not know who you are…” at about half your normal speed,
+> stretching the vowels. Then say it once more at a speed between that and normal. Do both 3
+> times. *Target:* Bring your speaking pace down towards 200 WPM or below.
+
+There are thirteen such templates (`rules.py`). They are what the user gets, labelled
+"Written from fixed rules", whenever the AI model cannot be used. They are also the reason
+an analysis never has to fail because of the model.
+
+A test fills in every template under every profile and checks that no gap is left open and
+that the only figures in it are the bands.
+
+### Step 2: asking the AI model
+
+**Which model.** `llama3.1:8b`, run by **Ollama** on this computer. It is the model named in
+the project brief and it was already installed here. The app never downloads it, or any
+other model; if it is missing, the screen says so and gives the command for you to run.
+
+**What it is sent** (`prompt.py`). Text only, in two parts.
+
+The *instructions* tell it, among other things: you did not hear the recording; use only
+the findings and the transcript; never state a number, time or measurement that is not
+written in them; do not repeat a finding's figures, because the app prints the finding
+beside your answer; do not mention breathing, emotion, pronunciation, accent or clarity of
+consonants, because none of these were measured; never imply the recording was compared with
+the character's real voice; choose the segment where the change matters most, judging by
+what the words mean.
+
+The *data* is, in order: the delivery profile in words; the recording's length and
+language, with any warnings; the transcript, one line per segment with the pauses between
+them; the bands; and the findings, grouped as issues, strengths and context:
+
+```
+seg-1 [0:00.0-0:04.1] 236 WPM: "You clearly do not know who you are talking to, so let me clue you in."
+(pause-1: 1.3 seconds of silence)
+seg-2 [0:05.4-0:06.6]: "I am not in danger."
+…
+Issues, most important first (corrections come only from these):
+f1: You spoke at 240 WPM while speaking (pauses left out). That is fast: over 200 WPM.
+    Aim: Slow your overall pace. Technique: half speed with stretched vowels, then a speed between that and normal.
+```
+
+Each issue carries the **aim** and a **technique** from its template. The model is not left
+to work out which way to push, or to invent a drill method.
+
+**What it is asked to write.** Only this:
+
+- for each of up to three issues: which issue, which segment to practise on, a title, why
+  it matters (one or two sentences), and a drill (one or two sentences);
+- for one or two strengths: one sentence on what to keep doing.
+
+It is **not** asked for the delivery summary, the targets for the next take or the caveats.
+Those are written by code.
+
+**How its answer is confined.** Ollama can force a model's output to fit a JSON schema, so
+that text which does not fit cannot be produced at all. The schema built for each recording
+lists the exact finding IDs that may be named as corrections (the issues), the exact ones
+that may be named as working (the strengths), and the exact segment IDs that exist. The
+model therefore cannot name a finding or a segment that does not exist, and cannot turn a
+strength into a correction. The schema also fixes how many corrections to return; the code
+checks all of this again when the answer arrives, and does not rely on the schema alone.
+
+**Fitting the transcript in.** A model can only take in so much text at once. Text is
+counted in **tokens**, pieces of roughly a word or part of one. Measured on this model:
+English words took about 4 characters per token (1.05 tokens per word), Hindi in Devanagari
+about 2 characters per token (2.14 tokens per word), and Hindi in Roman letters about 2.9.
+Digits and punctuation cost far more: a line such as `seg-5 [0:15.7-0:17.8] 209 WPM:` is
+mostly tokens of one or two characters.
+
+The model is given room for 8,192 tokens. Before sending, the code estimates the size of
+the prompt and makes it fit, in this order:
+
+1. **The full layout**, as shown above: start and end time, WPM, every pause.
+2. If that does not fit, **a leaner layout**: each phrase with its start time only, no WPM,
+   and only the pauses of a second or more. Timings are trimmed before words, because they
+   cost the most and the findings already carry the timings that matter.
+3. If that still does not fit, **each phrase is cut** to its first 40 words, then 25, 15,
+   10, 6, 3, until it does. Only now have words been lost, and the coaching says so in its
+   caveats.
+4. In the extreme case, only the phrases the findings point at are listed.
+
+The estimate is deliberately high: letters at 3.5 characters per token, every digit and
+punctuation mark as a whole token, other scripts at 1.6 characters per token. Compared with
+what the model really counted:
+
+| Prompt | Estimated | Real |
+| --- | --- | --- |
+| 22-second English recording, full layout | 1,781 | 1,330 |
+| 8-second Hindi recording, full layout | 1,549 | 1,150 |
+| 133-second English recording, full layout | 3,006 | 2,331 |
+| A stand-in for a 10-minute recording (the 133-second one stitched end to end: 108 phrases, 1,665 words), leaner layout, no words cut | 6,603 | 5,134 |
+
+An earlier version of the estimate counted every character alike and came out 27% too *low*
+on a transcript listing. It was found by comparing against the model's own count, which is
+why that comparison is now a test.
+
+**Settings used:** temperature 0.3 (a little randomness, so a second try can differ; see
+decision S32), an answer of at most 600 tokens, a time limit of 180 seconds per answer.
+
+### Step 3: checking the answer
+
+Confining the *shape* of the answer does not confine its *wording*: the model could still
+write "you spoke at 150 WPM" inside a sentence. So the wording is checked, by ordinary code
+(`grounding.py`), against the text the model was shown:
+
+| In the model's wording | Rule | Example that fails |
+| --- | --- | --- |
+| A figure with a unit: WPM, seconds, milliseconds, dB, Hz, semitones, % (also written as words: "two seconds") | Must match a figure of the **same unit** in what it was shown, within 3% or half of its own last digit, whichever is larger | "Aim for 150 WPM" when no 150 WPM was measured |
+| A time such as 0:55 | Must be within 0.6 s of a time that appears in the measurements | "At 1:15 you rushed" in a 22-second recording |
+| "segment 9", "pause 7" | That segment or pause must exist | |
+| Four or more words in quotation marks | Must appear, in that order, in the transcript | A line the speaker never said |
+| A finding named | Must be one it was allowed to name, and not named twice | |
+| Any part | Must not be empty or absurdly long | |
+
+Not treated as measurements: counts in a drill ("repeat 3 times", "count to 5"), the phrase
+"100%", and counting aloud in quotation marks ("one thousand one").
+
+What happens next:
+
+1. If everything passes, the answer is used.
+2. If anything fails, the answer is sent back **once**, with the list of what was wrong
+   ("“150 WPM” is not one of the measured figures"), and the model is asked to write it
+   again.
+3. Whatever still fails after that is **removed**, item by item, and the coaching carries a
+   note saying how many suggestions were left out.
+4. If no correction survives, or the answer was not valid JSON twice, the templates are
+   used instead and the note says why.
+
+### What the coaching contains
+
+| Part | Written by | The spec's requirement it meets |
+| --- | --- | --- |
+| Delivery summary: Pace, Pauses, Voice, Clarity | Code, from the findings | A short summary grounded in computed values |
+| Up to three corrections, most important first | The AI model (or templates), each tied to one finding | Top 3 corrections, ordered by impact |
+| "Measured" and "Practise on" for each | Code: the finding's statement, and the segment's own words and times | Exact timestamps and segments, with a reason grounded in measured data |
+| A drill for each | The AI model (or templates) | A concrete drill for each correction |
+| What is already working | The AI model (or templates), each tied to a finding | What is working, supported by measurements |
+| Targets for the next take | Templates, one per correction | Next-take targets based on this recording and profile |
+| Uncertain or not measured | Code: the analysis warnings, what the profile asks for that cannot be measured, and that breaths, emotion and pronunciation are not measured | A clear note when estimates are uncertain or unavailable |
+
+There can be **fewer than three corrections**. If only one thing measured works against the
+profile, one correction is given. Nothing is invented to fill the list.
+
+There can be **none**. A recording with no speech, or under three seconds, gets no coaching
+at all, and the reason is shown. A recording in which nothing works against the profile gets
+no corrections, and says so.
+
+### When the model is not available
+
+| Situation | What the user gets |
+| --- | --- |
+| Ollama is not running | Template coaching, with "Ollama is not running…" and the command to start it |
+| The model is not installed in Ollama | Template coaching, and the `ollama pull` command to run yourself |
+| The model takes longer than the time limit | Template coaching, and a note |
+| Its answer fails the checks entirely | Template coaching, and a note |
+| `OLLAMA_BASE_URL` points at another computer | Template coaching; nothing is sent |
+| AI coaching is switched off (`AI_COACHING=off`) | Template coaching |
+
+In every case the measurements are complete, and the model can be asked again later without
+recording or uploading anything (the "Write the coaching again" button).
 
 ### Delivery profiles
 
-**This part is built**: the profiles exist, in `backend/app/profiles.py`, and the General
-Practice screen shows them. Using them to judge a performance is the part still to come.
-
 Walter White, Joker and Thomas Shelby are **descriptions of a delivery style in words**, not
 measurements of any actor's voice. The app has no reference recording of them and does not
-claim to compare against one. A real, measured comparison will only happen when the user
-supplies a reference recording themselves (Phase 5).
-
-Each profile names the measurements that matter most for the style, and says what the app
-cannot hear at all:
+claim to compare against one. A real, measured comparison only happens when the user
+supplies a reference recording themselves, and it is a separate thing from the profile
+(section 14).
 
 | Profile | In a sentence | Measurements it depends on most | Not measured |
 | --- | --- | --- | --- |
-| Walter White | Controlled and deliberate | Pace variation (low), median pause, loudness variation (low) | Clarity of consonants |
-| Joker | Expressive and unpredictable | Pace variation (high), pitch variation, loudness variation (high) | Whether a contrast was purposeful |
-| Thomas Shelby | Composed and economical | Speech-active WPM (unhurried), longest pause, loudness variation (low) | Crispness of phrasing |
+| Walter White | Controlled and deliberate | Pace variation (low), median pause (high), loudness variation (low) | Clarity of consonants |
+| Joker | Expressive and unpredictable | Pace variation (high), pitch variation (high), loudness variation (high) | Whether a contrast was purposeful |
+| Thomas Shelby | Composed and economical | Speech-active WPM (low), longest pause (high), loudness variation (low) | Crispness of phrasing |
 | Custom / neutral | No style target | None singled out | — |
 
-Today the screen marks those measurements with a "Profile focus" tag and stops there. It
-does not yet say "too fast for Thomas Shelby". Turning the description and the numbers into
-that kind of statement, carefully, is the AI coaching step.
-
 There are deliberately **no target numbers** in a profile, such as "Walter White speaks at
-130 WPM". Any such number would be invented.
+130 WPM". Any such number would be invented. A profile says only which way it leans; the
+figures in a coaching target ("towards 140 WPM or below") are the app's own bands, the same
+for every profile, and the screen says so beside them.
 
-## 14. Accuracy and limits
+### What was seen with the real model
+
+About fifteen coaching runs were made with the real `llama3.1:8b` while building this, on
+four synthesised recordings (three English, one Hindi) across all four profiles. This is a
+small sample of one kind of input, and the advice was read by the developer, not judged by
+a speaking coach. With that said:
+
+| Observation | What was done about it |
+| --- | --- |
+| Every answer was valid JSON of the right shape, and named only real findings and segments | Expected: the schema makes anything else impossible |
+| None of the runs had an answer fail the checks on wording | The retry and removal steps are therefore proven only by the automated tests, which script a misbehaving model |
+| Asked for a drill with no guidance, it suggested "whisper it, then full voice" for a correction about keeping the volume *level* | Each issue now carries its aim and technique (decision S35) |
+| Asked for a title, it described the problem ("Faster pace") instead of the remedy | Same fix; titles now read "Slow Down Your Pace" |
+| Asked for its own next-take targets, it once advised against "holding pauses too long", which no finding said | Targets are now always written by template (decision S30) |
+| It tends to choose the first phrase to practise on, whatever the correction | Left as it is; the phrase shown is always real |
+| Its reasons are often generic ("this undermines the character's authority") | Left as it is; the measured line beside each reason carries the specifics |
+| Hindi lines were quoted back in Devanagari, exactly as transcribed | — |
+| Told not to mention emotion, it still once ended a drill with "focusing on the different pitches and emotions" | Left as it is, and not checked by code: it is an instruction to the actor, not a claim that emotion was measured. It shows that an instruction to the model lowers how often something happens; it does not prevent it |
+| Time for the model, per coaching | 20.9 to 51.8 seconds on an Apple M2 with 16 GB, for recordings up to 133 seconds. The first answer after Ollama has been idle includes about 7.5 seconds to load the model. For the 10-minute stand-in, 66 seconds, most of it spent reading the prompt |
+| Speed | About 15 tokens of answer per second; about 116 tokens of prompt read per second |
+| Memory while loaded | 5.8 GB, as reported by Ollama. It stays loaded for about five minutes after its last use, which is Ollama's default |
+
+## 14. Comparing with a reference recording
+
+All code for this section is in `backend/app/comparison/`, plus
+`backend/app/pipeline/waveform.py` for the picture.
+
+### What a reference is
+
+A **reference** is a recording you supply yourself, for example the original performance of
+the monologue you are practising. It goes through exactly the same pipeline as one of your
+own takes (sections 1 to 12): the same speech detection, the same recogniser, the same
+measurements, the same thresholds. The only differences are that it is listed separately,
+has a name, and gets no coaching.
+
+This is the first place in the app where one recording is set against another. It is what
+makes it possible to say something the delivery profiles never could:
+
+| Kind of statement | Example | Where it comes from |
+| --- | --- | --- |
+| A measurement of your take | "You paused for 2.6 seconds here" | Sections 1 to 12 |
+| A judgement against a profile described in words | "For Walter White, pauses this short work against the profile" | Section 13 |
+| A **measured comparison with a real recording** | "The reference pauses for 6.1 seconds here. You did not pause" | This section |
+
+The three are kept apart on screen and in the code. In particular the comparison does not
+go through the AI model at all, and the profile coaching never mentions the reference.
+
+### The idea in one picture
+
+```
+ your take (measured)            the reference (measured)
+        │                                │
+        └───────────────┬────────────────┘
+                        ▼
+ ┌────────────────────────────────┐  align.py
+ │ 1. Line up the words           │  which word of one is which word of the other
+ └───────────────┬────────────────┘
+                 ▼
+ ┌────────────────────────────────┐  compare.py
+ │ 2. Pause by pause              │  for each pause: does the other recording pause at
+ │                                │  the same place in the words, and for how long
+ ├────────────────────────────────┤
+ │ 3. Phrase by phrase            │  the pace of the same words in each recording
+ ├────────────────────────────────┤
+ │ 4. The recordings as wholes    │  their headline figures, side by side
+ └───────────────┬────────────────┘
+                 ▼
+ ┌────────────────────────────────┐
+ │ 5. The biggest differences     │  the few that a listener would notice most
+ └────────────────────────────────┘
+```
+
+Everything here is arithmetic on the two stored results. No audio is read, nothing is
+stored, and neither result is changed. A comparison took between 3 and 31 thousandths of a
+second in the runs measured here, so it is worked out each time it is asked for.
+
+### Step 1: lining up the words
+
+Two recordings of the same passage never have the same transcript. A word is misheard in
+one, dropped in the other, or spelt differently. So the first job is to work out which word
+in the reference is which word in the take.
+
+**Match keys.** Each word is first reduced to a *key*: lower case, punctuation removed, and
+combining marks removed. In English that makes "Danger," and "danger." the same. In Hindi,
+combining marks are the vowel signs, the nasal dot and the half-letter mark, which is
+exactly where the recogniser's spelling varies:
+
+| The recogniser wrote | Key |
+| --- | --- |
+| खतरे, खत्रे | खतर |
+| हूँ, हु | ह |
+| आदमी, आद्मी | आदम |
+| दरवाज़ा, दर्वाजा | दरवज |
+
+Some genuinely different words get the same key this way (में and मैं both become म). That
+is accepted, because of what comes next.
+
+**The longest common run.** The two lists of keys are then matched by finding the longest
+list of words that appears in both *in the same order*. In computing this is called the
+longest common subsequence. Because order must be preserved, a stray equal key cannot pull
+the line-up out of place: it would have to match without disturbing its neighbours.
+
+**Coverage.** The share of the reference's words that found a partner in the take decides
+how far the comparison goes:
+
+| Coverage | Status | What is compared |
+| --- | --- | --- |
+| 60% or more | `matched`: the same passage | Everything |
+| 30% to 60% | `partial` | The parts that line up; the note says so |
+| Under 30% | `unmatched`: different words | Only the recordings as wholes |
+| One has no recognised words | `no_words` | Only the recordings as wholes |
+
+Measured on the test recordings: an English take against an English reference of the same
+lines matched 30 of 31 words (97%); a Hindi take against a Hindi reference matched 17 of 19
+(89%), the two misses being the two forms of one word, which the recogniser spelt with an
+extra letter in the reference (ख्यत्री where the take had खत्रे); an English take against a Hindi reference matched 0%.
+
+### Step 2: pause by pause
+
+For each pause in the reference, the question is: does the take pause at the same place in
+the words?
+
+A pause sits between the last word of one phrase and the first word of the next. The
+matched words nearest to it on either side (at most 3 words away) have partners in the take.
+Those two partner words mark the same place in the take, and then:
+
+| In the take, those two words are… | The row says |
+| --- | --- |
+| in **different phrases** (there is a pause between them) | `both`: both pause here. The difference in length is given |
+| in the **same phrase** | `reference_only`: the reference pauses, you did not |
+| not found (no matched word within 3 words on one side) | `unplaced`: could not be located in your take. It is **not** called missing |
+
+The same is then done from the take's side, to find pauses the take makes where the
+reference runs on: `take_only`.
+
+Two details matter:
+
+- **Pauses are located by phrase, not by word time.** It would seem natural to say "the
+  take's pause must lie between the end of one word and the start of the next". That was
+  the first version, and it was wrong. The recogniser's word times are loose around a
+  pause: the first word after a pause is often given a start time *inside* the pause. Comparing
+  a two-minute recording with an exact copy of itself, that version reported 6 of the 23
+  pauses as missing on one side and extra on the other. Which phrase a word belongs to is
+  decided once, by the pipeline, and a pause is by definition the gap between two phrases,
+  so the question "is there a pause between these two words?" is now answered by asking
+  whether they are in the same phrase. The same self-comparison now gives 23 of 23 pauses
+  matched with a difference of zero.
+- **If the take makes two pauses where the reference makes one**, the longer of the two is
+  taken as "the" pause.
+
+### Step 3: phrase by phrase
+
+For each phrase of the reference, the pace of the same words in the take:
+
+```
+reference pace = matched words of the phrase ÷ time from the first to the last of them
+take pace      = the take's words over the same stretch ÷ that stretch's time,
+                 minus any pauses the take makes inside it
+```
+
+Both are taken over the same stretch of words, and pauses are left out of both, as
+everywhere else in the app. A phrase is compared only when at least 60% of its words were
+matched, it has at least 3 words, and the stretch lasts at least 1.5 seconds in both
+recordings. Otherwise it is listed, can still be played in both, and carries no pace.
+
+This figure rests on the recogniser's word times, which are good to about a tenth of a
+second. Over a three-second phrase that is a few per cent. It is labelled as an estimate.
+
+### Step 4: the recordings as wholes
+
+Fourteen headline figures side by side: length, time speaking, words, speech-active WPM,
+whole-clip WPM, pace variation, number of pauses, median, longest and total pause, pause
+share, loudness variation, pitch variation and pitch range.
+
+**Three things are deliberately left out:**
+
+| Not compared | Why |
+| --- | --- |
+| How loud each recording is | It depends on the microphone, the distance and any processing, not on the performance |
+| How high each voice is (median pitch) | Two voices differ in pitch. Only how much each one *moves* is compared, in semitones |
+| The sound waves themselves | The waveform is a picture (see below) and is never measured |
+
+Loudness *variation* is included, with a note: a film clip has usually been compressed,
+which evens out its loudness, so this one is not only about the performance.
+
+If the take covers more or less of the text than the reference, the totals differ for that
+reason alone. The table says so.
+
+### Step 5: the biggest differences
+
+The few differences a listener would notice most, largest first, each as one plain
+sentence with both versions to listen to:
+
+| Difference | Listed when | Example |
+| --- | --- | --- |
+| A pause only the reference makes | It lasts 1 second or more | "The reference pauses for 6.1 seconds after “No”. You did not pause there." |
+| A pause only the take makes | It lasts 1 second or more | "You paused for 1 second after “I am not in danger”. The reference does not pause there." |
+| A pause both make, of different length | The lengths differ by at least 0.5 s and by at least 40% of the reference's | "The reference holds 1.6 seconds after “…I am the danger”; you held 2.6 seconds." |
+| A phrase at a different pace | It differs by 25% or more | "You said “…” at 240 WPM. The reference says it at 120 WPM, so you were 100% faster." |
+| A different overall pace | It differs by 15% or more | "Overall you spoke at 230 WPM while speaking; the reference speaks at 180 WPM." |
+
+To put pauses and paces in one order, each is given a weight in rough seconds of silence: a
+missing pause weighs its own length (at most 3), a pause of different length 0.8 of the
+difference, an extra pause 0.7 of its length, and a phrase 3 times the share by which its
+pace differs. At most five are listed.
+
+The wording is always "difference", never "mistake". The reference is the target you chose,
+but whether to follow it at each point is a decision about a performance, and the app does
+not make it.
+
+### The settings
+
+In `comparison/settings.py`, as `ComparisonSettings`. They are sent with every comparison.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `matched_coverage` | 0.6 | From this share of matched words, the two are the same passage |
+| `partial_coverage` | 0.3 | From here, partly |
+| `max_anchor_gap_words` | 3 | How far from a pause a matched word may be and still locate it |
+| `phrase_min_coverage` | 0.6 | Share of a phrase's words that must be matched to compare its pace |
+| `phrase_min_words` | 3 | Fewest words in a phrase whose pace is compared |
+| `phrase_min_seconds` | 1.5 | Shortest stretch over which a pace is compared |
+| `notable_pause_seconds` | 1.0 | A pause only one recording has is listed from here |
+| `notable_pause_change_seconds` | 0.5 | A pause both have is listed when the lengths differ by this… |
+| `notable_pause_change_ratio` | 0.4 | …and by this share of the reference's |
+| `notable_phrase_pace_ratio` | 0.25 | A phrase is listed when its pace differs by this share |
+| `notable_overall_pace_ratio` | 0.15 | The overall pace is listed when it differs by this share |
+| `max_differences` | 5 | How many of the biggest differences are listed |
+| `pause_context_seconds` | 1.5 | Audio played either side of a pause |
+| `version` | 1 | Goes up whenever a default changes |
+
+Like the analysis thresholds and the coaching bands, these are this project's own choices.
+
+### The waveform: a picture, not a measurement
+
+The screen can draw the sound waves of the two recordings on one timeline. This is the one
+part of the app that is **only** for looking at.
+
+**How it is made.** A recording has far too many samples to draw: ten minutes is 9.6
+million. So when a recording is analysed, the samples are grouped into at most 2,000
+buckets (and never finer than 5 milliseconds each), and only the lowest and the highest
+sample of each bucket is kept. Drawn as a filled band between those two lines, that looks
+the same as drawing every sample, and it is small: about 21 KB for a 17-second recording
+and 23 KB for a 133-second one.
+
+**How it is kept apart.**
+
+- It is stored in its own column, not inside the measured result, and is sent only when the
+  screen asks for it. A screen that never switches the waveform on never receives it.
+- Nothing reads it. Speaking rate, pauses, loudness and pitch all come from the samples
+  themselves, by the methods in sections 3 to 9. A test analyses the same recording with
+  and without the waveform step and checks that the measured results are identical.
+- The comparison in this section does not use it either.
+
+**What it shows honestly.**
+
+- Each recording keeps its real length. A 17-second reference next to a 22-second take is
+  drawn 17 and 22 seconds long; neither is stretched to match the other.
+- The two are not lined up automatically. You can shift your take by a number of seconds;
+  the number is yours, it is shown, and it changes only the picture.
+- Height is **relative waveform amplitude**: 1.0 is the loudest a recording can be. It is
+  not loudness in the room. By default both are drawn on that same scale, so a quietly
+  recorded clip looks thin. An option stretches each to its own loudest point so that its
+  shape can be seen; it is off by default and says, when on, that it hides any real
+  difference in level.
+
+## 15. Accuracy and limits
 
 What is known, stated plainly.
 
@@ -630,6 +1188,18 @@ What is known, stated plainly.
 | Hesitation sounds | A lower bound. |
 | Breaths | Not detected. |
 | Intention and emotion | Not measured, and not inferred from the measurements. |
+| The bands behind "fast", "even", "narrow" | This project's own rough choices (section 13). Compared so far only with four synthesised clips. A real voice, a different language or a different style may sit differently in them. |
+| AI coaching: the figures | Checked. A figure with a unit, a time, a segment number or a quotation that does not match the measurements is sent back, then removed. The check allows 3%, so a figure near a measured one passes: in one run the model proposed drill speeds of "220, 240 and 200 WPM", which passed because phrases had been measured at 225 and 237 WPM and 200 WPM is a band. |
+| AI coaching: the advice | Not checked, and cannot be by code. Whether "this line sets the tone" is true, or a drill is a good one, is the model's judgement. An 8-billion-parameter model is fluent and often generic. Treat it as a suggestion. |
+| AI coaching: language | Written in English, whatever language was spoken. Hindi lines are quoted in their own script. |
+| AI coaching: repeatability | Asking twice gives different wording, and can choose different lines. The measurements, findings, summary, targets and caveats are identical every time. |
+| Comparison: needs the same words | Lining up works through the recognised words. Two recordings of different text, or in different languages, are compared only as wholes. |
+| Comparison: depends on both transcripts | A word misheard in either recording is a word not lined up. A pause next to several misheard words is reported as "could not be located", not guessed at. |
+| Comparison: a reference with music or other voices | Typical of a clip from a film. Music can be taken for speech, or hide a pause, and it changes the loudness and pitch figures. The comparison cannot tell; a clean recording of the original gives a far better reference. |
+| Comparison: phrase pace | Rests on word times good to about a tenth of a second, so it is an estimate, weakest on short phrases. |
+| Comparison: what it cannot say | Whether a difference matters. It lists where the two recordings differ in pauses and pace. It does not hear emphasis, tone or intention, and it never calls a difference a mistake. |
+| Waveform | A picture. Its height depends on how each recording was made. Nothing is measured from it. |
+| AI coaching: what the speaker says | The transcript is part of what the model reads. Words in a recording that sound like instructions could in principle steer its wording. They cannot make it name a finding or segment that does not exist, or get an unmeasured figure past the checks. |
 
 **How it has been tested so far.** The arithmetic is covered by tests whose answers can be
 worked out by hand. The complete pipeline has been run on synthesised speech (the macOS
@@ -648,9 +1218,36 @@ counts are too, unless a window had to be retried (decision S9), in which case t
 differ slightly between runs.
 
 **Speed**, measured on this Apple M2: a 17-second recording in about 9 seconds including
-loading the model; recognising the words of a 133-second recording in about 20 seconds.
+loading the model; recognising the words of a 133-second recording in about 20 seconds. The
+AI coaching then adds 20 to 50 seconds, which depends on the length of the answer far more
+than on the length of the recording.
 
-## 15. Science decisions
+**How the comparison has been tested.** Its arithmetic is covered by tests on recordings
+built to order, with pauses and phrases at known times. The complete path was then run with
+the real pipeline on five synthesised recordings:
+
+| Check | Result |
+| --- | --- |
+| An English take against an English reference of the same lines (the take adds a line before and after, splits one line in two and runs two together) | 30 of 31 words lined up. All four pause rows correct: one extra pause, two shared (+1.02 s and +0.29 s), one missing 6.1-second pause |
+| A Hindi take against a Hindi reference, pausing in different places | 17 of 19 words lined up. The reference's 2-second pause reported as missing in the take; the take's two pauses reported as extra |
+| A two-minute recording against an exact copy of itself | 370 of 370 words, 23 of 23 pauses matched with zero difference, 24 phrases at identical pace, no differences listed |
+| An English take against a Hindi reference | 0% lined up; compared only as wholes, and the note says so |
+| Time to compare | 3 to 5 thousandths of a second for the short pairs; 14 to 31 for the two-minute pair |
+
+The third check is the one that found a real fault, described in section 14 and decision
+S39. It has **not** been run on real human recordings, on a reference taken from a film, or
+on two recordings in which the same text is spoken by different voices.
+
+**How the coaching has been tested.** Its logic is covered by automated tests that replace
+the AI model with a scripted stand-in, including one that invents figures, misquotes, names
+things that do not exist, answers in broken JSON or is not running. The real model was then
+run about fifteen times on four synthesised recordings; what was seen is in section 13. A
+prompt the size of a 10-minute recording was also sent to it, built by stitching the
+measurements of a 133-second recording end to end, to confirm that it fits and is answered.
+It has **not** been tried on real human recordings, on a real recording near the 10-minute
+limit, or compared with what a human speaking coach would say.
+
+## 16. Science decisions
 
 Each entry says what was chosen, what was considered, and what was decided against and why.
 
@@ -857,9 +1454,11 @@ worth understanding.
 - **Chosen:** times to the millisecond, WPM and dB to one decimal place.
 - **Why:** `193.54838709677` WPM suggests a precision the method does not have.
 
-### S21. Numbers come from code; the AI model only explains *(planned)*
+### S21. Numbers come from code; the AI model only explains
 
-- **Chosen:** see section 13.
+- **Chosen:** see section 13. Built in Phase 4, and taken further than first planned: the
+  model does not even receive the raw metrics to interpret. It receives finished statements
+  (decision S24).
 - **Decided against:** asking the model to listen to audio or to compute rates, which it
   would do unreliably and unrepeatably.
 
@@ -885,7 +1484,307 @@ worth understanding.
 - **Honest limit:** it catches a stuck *character*. A stuck *word* or phrase ("thank you
   thank you thank you…") is left to the retry in S9.
 
-## 16. Glossary
+### S24. Code states the facts; the model chooses among them and words the advice
+
+- **Chosen:** a layer of **findings** between the measurements and the model. Each finding
+  is a finished sentence with its figures in it, and a role (issue, strength, context)
+  already decided. The model picks from the issues and writes about them.
+- **Why:** it removes the two things a small model does worst. It never has to read a table
+  of 25 metrics and decide what "pitch variation 1.6" means, and it never has to decide
+  which way a correction should point. It also gives the template fallback for free,
+  because templates and model work from the same findings.
+- **Decided against:**
+  - *Handing the model the whole result as JSON and asking for coaching.* This is the
+    obvious design. An 8-billion-parameter model given numbers without anchors guesses at
+    what is high or low, and nothing could then check its judgement.
+  - *Templates only, no model.* Fully safe, and what the fallback is. But it cannot choose
+    the line where a pause would serve the meaning, and the brief asks for the local model.
+  - *Letting the model also label each finding as good or bad.* A model that mislabels a
+    strength would then coach the user out of something that works.
+
+### S25. The bands are rough, ours, and stored with every coaching
+
+- **Chosen:** fixed thresholds (section 13) that turn a figure into a word, kept in one
+  place with a version number and saved inside each coaching.
+- **Why:** any coaching, by rules or by a model, needs to know whether a number is a little
+  or a lot. Writing the thresholds down makes that judgement visible and changeable instead
+  of leaving it hidden in a model's guess.
+- **Decided against:**
+  - *No bands; let the model judge the raw numbers.* See S24.
+  - *Bands drawn from a body of recordings* ("the middle half of speakers fall between…").
+    The right way, and there is no such body of recordings here to draw them from.
+  - *Bands per language.* Hindi and English words differ in length, so one WPM band for both
+    is crude. Separate bands would need evidence this project does not have.
+- **Honest limit:** these are judgement calls, checked against four synthesised clips. They
+  are settings, and Phase 6 exists to adjust them.
+
+### S26. A profile says which way it leans, never a number
+
+- **Chosen:** each profile focus gets one word, `low` or `high`. "Walter White leans
+  towards low pace variation."
+- **Why:** it is enough to turn a banded finding into an issue or a strength, and it claims
+  nothing about any actor's actual voice.
+- **Decided against:** a target per profile ("Thomas Shelby: 120 WPM"). There is no honest
+  source for such a figure; it would be invented, and it would look like a measurement.
+- **Consequence:** the figures in a target ("towards 140 WPM or below") are the app's bands,
+  identical for every profile. The screen says this beside them.
+
+### S27. With no profile, only two things count as issues by default
+
+- **Chosen:** a fast overall pace, and a narrow pitch range. Plus the findings that are
+  issues for anyone: a rushed phrase, hesitation sounds, no pause at all.
+- **Why:** with no style chosen, most measurements are neither good nor bad. Loud and quiet,
+  even and varied, long pauses and short ones can all be right. Speaking too fast and
+  speaking in a flat pitch are two of the most widely given pieces of general speaking
+  advice, and are safe to raise as optional suggestions.
+- **Decided against:** treating every measurement outside its middle band as an issue (it
+  would nag about choices that may be deliberate), and giving no coaching at all without a
+  profile.
+
+### S28. The shape of the model's answer is enforced, not requested
+
+- **Chosen:** Ollama's structured output, with a JSON schema built for each recording whose
+  lists of allowed finding IDs and segment IDs are exactly the ones that exist.
+- **Why:** it makes whole classes of mistake impossible instead of merely unlikely. The
+  model cannot name `seg-12` in a recording of six segments, because that text cannot be
+  generated.
+- **Decided against:**
+  - *Asking for JSON in the prompt and parsing whatever comes back.* A model can add
+    commentary, drop a bracket or rename a field, and repair code would be needed for each.
+  - *Plain "JSON mode" without a schema.* Valid JSON, but of any shape.
+
+### S29. The wording is checked figure by figure, with one retry
+
+- **Chosen:** the checks in section 13, then one chance to correct, then removal of what
+  still fails, then templates if nothing is left.
+- **Why:** the schema cannot see inside a sentence. Telling a model "do not invent numbers"
+  lowers the rate at which it does; it does not make it zero, and the brief asks for the
+  output to be validated, not trusted.
+- **Decided against:**
+  - *Trusting the instruction alone.*
+  - *Forbidding digits altogether.* Simple to check, but "repeat 3 times" and "hold for 2
+    seconds" are exactly what a drill needs.
+  - *Throwing the whole answer away over one bad sentence.* Wasteful when two of three
+    corrections are sound.
+  - *Retrying until it passes.* Each try costs most of a minute, and a model that failed
+    twice the same way is not improving.
+  - *An exact match for figures.* People, and models, round: "about 220 WPM" for 223 is not
+    an invention. Hence the 3% allowance, with the cost described under "Accuracy and
+    limits".
+- **Honest limit:** this catches wrong *figures*, *times*, *references* and *quotations*.
+  It cannot catch a wrong *opinion*.
+
+### S30. The summary, the targets and the caveats are never written by the model
+
+- **Chosen:** the delivery summary is assembled from the findings; each target for the next
+  take is a template tied to a correction; the list of what is uncertain comes from the
+  analysis warnings and fixed sentences.
+- **Why:** these three have to be right every time, and none of them needs a turn of phrase.
+  A target should also be something the next recording can be checked against, which
+  "establish a steady pace from the start" is not and "keep phrase speeds within 10% of
+  your typical pace" is.
+- **What prompted it:** in an early version the model wrote the targets, and one of them
+  warned against holding pauses "too long", which no finding had said. There was no figure
+  in it for the checks to catch.
+- **Decided against:** asking the model for everything and checking harder.
+
+### S31. The AI model is reached on this computer only
+
+- **Chosen:** the Ollama address must be `localhost`, `127.0.0.1` or `::1`. Any other
+  address is refused before a request is made. Proxy settings in the environment are
+  ignored, so a local request cannot be routed through another machine. The client has no
+  code for downloading a model.
+- **Why:** the prompt contains everything the user said. "Runs locally" should be something
+  the code enforces, not something a setting can quietly undo.
+- **Decided against:** letting `OLLAMA_BASE_URL` point anywhere (convenient for someone with
+  a stronger machine on their network, and exactly how a transcript ends up leaving the
+  device), and pulling a missing model automatically (a multi-gigabyte download the user did
+  not ask for).
+
+### S32. `llama3.1:8b`, at a low temperature, with room for 8,192 tokens
+
+- **Chosen:** the model named in the brief and already installed here; temperature 0.3; a
+  context of 8,192 tokens; answers capped at 600 tokens.
+- **Why this model:** it runs on a 16 GB laptop, taking 5.8 GB while loaded, and its
+  published description lists Hindi among the languages it supports, which matters for
+  Hindi and Hinglish transcripts.
+- **Why 8,192 tokens:** left to itself, Ollama picks a size that depends on its version and
+  the machine, and a prompt that does not fit is cut by Ollama in a way this app does not
+  control. Asking for 8,192 explicitly holds a long transcript plus the instructions, and
+  anything longer is cut by this app in a known way (section 13) before it is sent.
+- **Decided against:**
+  - *A larger model.* Better writing, but slower and beyond this machine's memory alongside
+    the speech model.
+  - *A model with its refusals removed* (an "abliterated" build of the same model was also
+    installed). Speaking coaching never triggers a refusal, so it offers nothing here, and
+    altering a model's weights can cost quality. It can be tried by changing one setting.
+  - *Temperature 0.* Fully repeatable, but then "Write the coaching again" would return the
+    same answer.
+- **Honest limit:** 0.3 was the first value tried and was kept. Other values, and other
+  models, were not compared.
+
+### S33. Coaching is written in English
+
+- **Chosen:** the instructions, and so the answers, are in English. Lines from the
+  transcript are quoted in the script they were spoken in.
+- **Why:** the screen is in English, and the templates, bands and findings would all need
+  translating for the result to be consistently in another language.
+- **Decided against:** asking the model to answer in the language spoken. Its Hindi has not
+  been evaluated here, and the checks (units, "segment 4") are written for English wording.
+- **Honest limit:** a Hindi speaker gets English advice about Hindi lines.
+
+### S34. Fewer than three corrections when there are fewer than three issues
+
+- **Chosen:** as many corrections as there are issues, up to three.
+- **Why:** the brief asks for the top three. But a model told to produce exactly three from
+  one issue will invent two, and invented problems are worse than a short list.
+- **Decided against:** padding with "context" findings to reach three.
+
+### S35. The model is told the aim and the technique for each issue
+
+- **Chosen:** each issue in the prompt carries a line from its template: "Aim: Keep your
+  volume level. Technique: one steady volume, as if to someone across a table."
+- **Why:** observed, not assumed. Given a free hand, the model titled a too-fast pace "Speak
+  at a steady pace", and for a correction about keeping the volume level it proposed
+  whispering and then speaking at full voice, a drill for the opposite problem.
+- **Decided against:** leaving the method to the model (above), and giving it the whole
+  template drill to copy (it copied it nearly word for word, adding nothing).
+- **What is left to the model:** which line to work on, why it matters for that line, and
+  the wording of the drill around that line.
+
+### S36. Recordings are lined up by their words, not by their sound
+
+- **Chosen:** the two transcripts are matched word by word, and everything else follows
+  from that: a pause is "the same pause" when it falls at the same place in the words.
+- **Why:** it is what a person means by "the original pauses after *I am the danger* and
+  you did not". It needs no assumption that the two recordings run at similar speeds, and
+  every statement it produces can be checked by reading two transcripts.
+- **Decided against:**
+  - *Matching the sound itself* (stretching one recording's timeline until its loudness
+    or pitch curve fits the other's, known as dynamic time warping). It needs no
+    transcript, but it lines up *anything* with anything: two unrelated recordings still
+    produce a confident-looking match, and its answers cannot be explained in words.
+  - *Comparing by clock time* ("at 0:05 the reference is silent and you are not"). It
+    breaks the moment one speaker is a little faster than the other.
+- **Cost accepted:** it only works when both say the same words, and only as well as the
+  recogniser heard them.
+
+### S37. The line-up is the longest common run of words, worked out for the whole passage
+
+- **Chosen:** the longest common subsequence of the two word lists, computed in full.
+- **Why:** observed, not assumed. Python's built-in sequence matcher was tried first. It
+  works block by block, taking the longest identical stretch first. On a made-up test, a
+  passage that repeats its lines set against a copy with about one word in eight dropped or
+  changed, it lined up 17% of the words; the full method lined up 86%. A monologue that
+  repeats a phrase is exactly the case that must work.
+- **Speed:** two passages of 2,600 words each (more than ten minutes of speech) take about
+  three hundredths of a second, because each row of the working table is one array
+  operation.
+- **Decided against:** an approximate or block-based matcher (above), and matching
+  phrase to phrase (the two speakers break phrases in different places, which is the very
+  thing being measured).
+
+### S38. Words are matched on a key that ignores Devanagari marks
+
+- **Chosen:** see "Match keys" in section 14.
+- **Why:** observed. The `small` recogniser spells the same Hindi word differently from one
+  recording to the next, and the differences are in the vowel signs and half-letters.
+  Matching on exact spelling would line up far fewer Hindi words than English ones.
+- **Decided against:**
+  - *Exact spelling*: unfair to Hindi.
+  - *"Close enough" matching by counting changed letters*: it needs a threshold for what is
+    close enough, and makes the line-up many times slower.
+  - *Turning Hindi into Roman letters first*: another tool to add, with errors of its own.
+- **Honest limit:** some different words share a key. Order protects against most wrong
+  matches; it is not a guarantee.
+
+### S39. A pause is located by the phrases around it, never by word times
+
+- **Chosen:** two words have a pause between them exactly when the pipeline put them in
+  different phrases.
+- **Why:** found by testing, not foreseen. The first version asked whether a pause lay
+  between the end time of one word and the start time of the next. Comparing a recording
+  with a copy of itself, it called 6 of 23 pauses missing on one side and extra on the
+  other, because the recogniser had given the first word after each of those pauses a start
+  time some tenths of a second inside the pause. Phrase membership has no such looseness: it
+  is the definition of a pause (section 4).
+- **Decided against:** widening the time allowance until the test passed. Any fixed
+  allowance is wrong for some recording, and a large one starts matching the wrong pause.
+- **A check worth keeping:** "a recording compared with itself shows no difference" is now
+  an automated test, with word times deliberately pushed into the pauses.
+
+### S40. A pause that cannot be located is called that, not called missing
+
+- **Chosen:** if no matched word lies within three words of a reference pause on both
+  sides, the row says "not found in your take" and it is left out of the differences.
+- **Why:** a take that covers only the first half of the passage has not "missed" the
+  pauses of the second half. Nor has a take in which the recogniser lost a sentence.
+- **Decided against:** treating everything unmatched as a difference, which would bury the
+  real ones.
+
+### S41. Phrase pace is taken over the same words in both recordings
+
+- **Chosen:** from the first matched word of the phrase to the last, in each recording,
+  with pauses inside that stretch left out.
+- **Why:** the two speakers break phrases differently, so "the reference's phrase 2 against
+  the take's phrase 2" would compare different words. Leaving pauses out keeps to the rule
+  of section 6: a pace is how fast you speak while speaking.
+- **Decided against:** comparing each recording's own phrase WPM (different words), and
+  comparing only the overall pace (it hides the one rushed line).
+
+### S42. Loudness and the height of the voice are not compared
+
+- **Chosen:** neither the level of each recording nor each voice's median pitch appears in
+  the comparison. Pitch *variation* and *range*, in semitones, do. So does loudness
+  *variation*, with a note that it also reflects how each recording was made.
+- **Why:** a studio clip and a laptop microphone differ in level for reasons that have
+  nothing to do with performance, and two people's voices differ in pitch by nature. Showing
+  those differences would invite the user to "fix" them.
+- **Decided against:** normalising both recordings to the same level and then comparing.
+  It would look rigorous and still compare the microphones.
+
+### S43. Differences are ranked by rough seconds, and worded as differences
+
+- **Chosen:** the weights in section 14; at most five; always "the reference does X, you
+  did Y", never "you should".
+- **Why:** a list of thirty rows is a table, not guidance; the checklist's last step asks
+  for the two biggest things to change. Ranking needs one scale, and seconds of silence is
+  the one a listener feels. The neutral wording is because the reference is a target the
+  user chose, not a rule: an actor may hold a pause longer than the original on purpose.
+- **Honest limit:** the weights are judgement calls. A different weighting would put a
+  rushed phrase above a missing pause, or below it.
+
+### S44. The comparison does not go through the AI model
+
+- **Chosen:** the comparison is produced entirely by code, and the profile coaching of
+  section 13 is not told about the reference.
+- **Why:** the brief asks for measured self metrics, qualitative profile targets and
+  measured reference comparison to be kept separate. Every sentence in the comparison is a
+  measured fact about two recordings, which code can state exactly; a model would add
+  fluency and the chance of error to something that needs neither.
+- **Decided against:** giving the model the comparison as extra findings. It is a
+  reasonable later step, once the comparison itself has been tried on real recordings.
+
+### S45. The waveform is a stored outline that nothing measures
+
+- **Chosen:** the lowest and highest sample of each of up to 2,000 buckets, made by the
+  worker when a recording is analysed, stored apart from the measurements, never
+  normalised, and fetched only when the screen asks.
+- **Why made by the worker and not in the browser:** the worker already has the decoded
+  audio in hand, so the outline costs almost nothing. The browser would have to decode the
+  file itself. By calculation, ten minutes of stereo audio at 48 kHz is about 230 MB once
+  decoded; it also fails for formats that browser cannot play, and is impossible when the
+  recording was not kept.
+  Stored this way, the picture is available for every recording, kept or not.
+- **Why lowest and highest, not an average:** an average over a bucket hides the peaks. A
+  single loud consonant would vanish from a ten-minute picture.
+- **Why not normalised:** stretching each recording to full height would make a whisper and
+  a shout look the same, and would suggest the two were recorded equally loud.
+- **Decided against:** drawing from the loudness timeline the result already contains (it
+  is in decibels, four points a second: a different thing, and too coarse); a charting
+  library (two filled shapes do not need one).
+
+## 17. Glossary
 
 | Term | Meaning |
 | --- | --- |
@@ -920,3 +1819,20 @@ worth understanding.
 | **Ollama** | A program that runs AI language models on your own computer. |
 | **LLM** | Large language model: an AI model that reads and writes text. |
 | **Grounding** | Making sure everything an AI model states is backed by supplied facts. |
+| **Finding** | One plain statement of fact about a recording, written by code, with its figures in it. |
+| **Band** | A range of values given a word: under 2 semitones is "narrow". |
+| **Role** | What a finding means for the chosen profile: an issue, a strength, or just context. |
+| **Template** | A fixed sentence with gaps that code fills in. |
+| **Prompt** | The text sent to a language model: instructions, then data. |
+| **Token** | The pieces of text a language model reads and writes: roughly a word, or part of one. |
+| **Context** | How many tokens a model can take in and produce in one go. |
+| **JSON schema / structured output** | A description of the exact shape an answer must have; Ollama can refuse to generate anything that does not fit it. |
+| **Reference** | A recording you supply to compare your takes with, such as the original performance. Measured like any take. |
+| **Take** | One of your own recordings. |
+| **Line-up (alignment)** | Working out which word of one recording is which word of the other. |
+| **Match key** | A word with case, punctuation and combining marks removed, so two spellings of one spoken word compare as equal. |
+| **Longest common subsequence** | The longest list of items that appears in two lists in the same order, not necessarily next to each other. |
+| **Coverage** | The share of the reference's words that were lined up with a word in the take. |
+| **Waveform** | A picture of the sound wave itself: how far the air pressure swings, moment by moment. |
+| **Outline (envelope)** | The lowest and highest value of the waveform in each small stretch of time. What is actually drawn. |
+| **Parameters (as in "8b")** | The numbers inside a model that were learned in training; 8 billion here. More usually means more capable and slower. |

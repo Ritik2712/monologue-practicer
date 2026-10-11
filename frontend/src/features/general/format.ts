@@ -109,4 +109,5 @@ export const STAGE_LABELS = {
   detecting_speech: "Finding where you speak",
   transcribing: "Recognising the words",
   measuring_audio: "Measuring pace, pauses, loudness and pitch",
+  generating_feedback: "Writing the coaching",
 } as const;

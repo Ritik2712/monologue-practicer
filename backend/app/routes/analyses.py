@@ -4,6 +4,8 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Respons
 from fastapi.responses import FileResponse
 
 from app import history, job_queue, profiles, schemas, uploads
+from app.comparison.compare import compare
+from app.comparison.settings import DEFAULT_COMPARISON_SETTINGS
 from app.config import settings
 from app.dependencies import DataDirDep, NowDep, SessionDep
 from app.models import Analysis
@@ -15,6 +17,17 @@ router = APIRouter(prefix="/api", tags=["analyses"])
 
 # Room for the form fields and multipart boundaries that travel with the file.
 REQUEST_OVERHEAD_BYTES = 64 * 1024
+MAX_TITLE_CHARACTERS = 120
+DEFAULT_REFERENCE_TITLE = "Reference recording"
+
+
+def reference_title(given: str | None, filename: str | None) -> str:
+    """The name a reference is listed under: what the user typed, else the file's name."""
+    title = " ".join((given or "").split())
+    if not title and filename:
+        # "knocks-scene.final.mp3" -> "knocks-scene.final"
+        title = filename.rsplit(".", 1)[0] if "." in filename else filename
+    return (title or DEFAULT_REFERENCE_TITLE)[:MAX_TITLE_CHARACTERS]
 
 
 def _error(status: int, code: str, message: str) -> HTTPException:
@@ -55,6 +68,8 @@ def submit_analysis(
     profile: Annotated[schemas.Profile, Form()] = "custom",
     language: Annotated[schemas.LanguageHint, Form()] = "auto",
     retain_audio: Annotated[bool, Form(alias="retainAudio")] = False,
+    role: Annotated[schemas.Role, Form()] = "take",
+    title: Annotated[str | None, Form(max_length=300)] = None,
     idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
 ) -> schemas.JobStatus:
     """Accepts a recording, queues it for analysis and returns at once with a job to poll.
@@ -62,6 +77,10 @@ def submit_analysis(
     Nothing slow happens here. The file is checked, saved, and a job row is created; the
     worker does the rest. Sending the same `Idempotency-Key` header again returns the
     original job instead of creating a second one.
+
+    `role` says what the recording is: one of the user's own takes (the default), or a
+    `reference` to compare takes against. A reference is measured in exactly the same way,
+    is listed separately, gets no coaching, and can be given a `title`.
     """
     existing = job_queue.find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
@@ -116,6 +135,12 @@ def submit_analysis(
             audio_path=audio_path,
             idempotency_key=idempotency_key,
             now=now,
+            role=role,
+            title=(
+                reference_title(title, uploads.display_name(audio.filename))
+                if role == job_queue.REFERENCE
+                else None
+            ),
         )
     except job_queue.DuplicateJob as duplicate:
         uploads.delete_audio(audio_path, data_dir)
@@ -136,7 +161,81 @@ def get_analysis(analysis_id: str, session: SessionDep) -> schemas.AnalysisResul
     result = schemas.AnalysisResult.model_validate(analysis.result)
     # The recording can be deleted later without touching the measurements.
     result.audio_retained = analysis.audio_path is not None
+    if analysis.coaching:
+        result.coaching = schemas.Coaching.model_validate(analysis.coaching)
     return result
+
+
+@router.get("/analyses/{analysis_id}/waveform", response_model=schemas.Waveform)
+def get_waveform(analysis_id: str, session: SessionDep) -> schemas.Waveform:
+    """The outline of the recording's sound wave, for drawing.
+
+    A picture only. No measurement is taken from it, and fetching it changes nothing. It
+    is stored when the recording is analysed, so it is there even if the audio was not kept.
+    """
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise _error(404, "analysis_not_found", "No analysis with this ID exists.")
+    if not analysis.waveform:
+        raise _error(
+            404,
+            "waveform_not_stored",
+            "No waveform was stored for this recording. It was analysed before waveforms "
+            "were added.",
+        )
+    return schemas.Waveform.model_validate(analysis.waveform)
+
+
+@router.get("/analyses/{analysis_id}/comparison/{reference_id}", response_model=schemas.Comparison)
+def compare_with_reference(
+    analysis_id: str, reference_id: str, session: SessionDep
+) -> schemas.Comparison:
+    """Sets one analysis against a reference recording.
+
+    Worked out on the spot from the two stored results, which takes a few thousandths of a
+    second. Nothing is stored and neither result is changed, so the same question always
+    gets the same answer.
+    """
+    take = session.get(Analysis, analysis_id)
+    if take is None:
+        raise _error(404, "analysis_not_found", "No analysis with this ID exists.")
+    reference = session.get(Analysis, reference_id)
+    if reference is None or reference.role != job_queue.REFERENCE:
+        raise _error(404, "reference_not_found", "No reference recording with this ID exists.")
+    if take.id == reference.id:
+        raise _error(400, "same_recording", "A recording cannot be compared with itself.")
+    return compare(
+        schemas.AnalysisBody.model_validate(take.result),
+        schemas.AnalysisBody.model_validate(reference.result),
+        DEFAULT_COMPARISON_SETTINGS,
+        take_id=take.id,
+        reference_id=reference.id,
+        reference_title=reference.title,
+    )
+
+
+@router.post(
+    "/analyses/{analysis_id}/coaching",
+    response_model=schemas.JobStatus,
+    status_code=202,
+    responses={200: {"model": schemas.JobStatus, "description": "One is already in progress"}},
+)
+def regenerate_coaching(
+    analysis_id: str, response: Response, session: SessionDep, data_dir: DataDirDep, now: NowDep
+) -> schemas.JobStatus:
+    """Asks for this analysis's coaching to be written again by the local language model.
+
+    Returns at once with a job to poll, like submitting a recording does. The measurements
+    are not touched and no audio is needed. If the language model cannot answer, the job
+    fails and the coaching that was already there stays as it is.
+    """
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise _error(404, "analysis_not_found", "No analysis with this ID exists.")
+    job, created = job_queue.create_coaching_job(session, analysis, now)
+    if not created:
+        response.status_code = 200
+    return job_queue.to_status(session, job, now, data_dir)
 
 
 @router.get("/analysis-options", response_model=schemas.AnalysisOptions)
@@ -175,18 +274,25 @@ def list_analyses(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
+    role: schemas.Role = "take",
 ) -> schemas.AnalysisList:
-    """Past analyses, newest first, with the headline numbers of each."""
-    return history.list_analyses(session, limit=limit, offset=offset)
+    """Past analyses, newest first, with the headline numbers of each.
+
+    Lists the user's own takes unless `role=reference` asks for the reference recordings.
+    """
+    return history.list_analyses(session, limit=limit, offset=offset, role=role)
 
 
 @router.delete("/analyses", response_model=schemas.HistoryCleared)
-def clear_history(session: SessionDep, data_dir: DataDirDep) -> schemas.HistoryCleared:
-    """Deletes every stored result, every finished job, and all audio belonging to them.
+def clear_history(
+    session: SessionDep, data_dir: DataDirDep, role: schemas.Role = "take"
+) -> schemas.HistoryCleared:
+    """Deletes every stored result of one role, its finished jobs, and all their audio.
 
-    Jobs still queued or running are not touched.
+    Clears the history of takes unless `role=reference` is given. The other is never
+    touched, and neither are jobs still queued or running.
     """
-    return history.clear_history(session, data_dir)
+    return history.clear_history(session, data_dir, role=role)
 
 
 @router.delete("/analyses/{analysis_id}", status_code=204)

@@ -21,6 +21,8 @@ export const PRACTICE_ROUTINE: { readonly steps: readonly PracticeStepConfig[] }
       instruction:
         "Study the original actor's pauses, emphasis, pace, breathing, pitch, and vocal intensity.",
       durationSeconds: 180,
+      note: "The Monologue screen plays the original and shows its measured pauses, pace, loudness and pitch. Breathing and emphasis by slowing down are not measured: those are still for your ear.",
+      link: { href: "/monologue", label: "Open Monologue to study the original recording" },
     },
     {
       id: "mark",
@@ -39,8 +41,8 @@ export const PRACTICE_ROUTINE: { readonly steps: readonly PracticeStepConfig[] }
       title: "Record and compare",
       instruction: "Record yourself and compare your recording with the original.",
       durationSeconds: 180,
-      note: "General Practice records and measures your own take. Comparing it side by side with the original recording is not part of this app yet, so that part is still done by ear.",
-      link: { href: "/general", label: "Open General Practice to record and analyse your take" },
+      note: "The Monologue screen records your take and sets it against the original: where each of you pauses, how fast each phrase is said, and both versions to listen to.",
+      link: { href: "/monologue", label: "Open Monologue to record and compare your take" },
     },
     {
       id: "correct",

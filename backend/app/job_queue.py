@@ -7,6 +7,9 @@ processed is simply a row whose status is "queued".
        │          ├──────▶ failed      (retry puts it back to queued)
        └──────────┴──────▶ cancelled
 
+There are two kinds of job. An "analysis" job measures an uploaded recording. A "coaching"
+job has no audio: it only writes the coaching of an analysis that already exists again.
+
 Status changes are written as "UPDATE ... WHERE status = <expected>", so if two things
 happen at once (the user cancels just as the worker picks the job up) only one of them wins
 and the other can tell that it lost.
@@ -28,6 +31,12 @@ RUNNING = "running"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
 CANCELLED = "cancelled"
+
+ANALYSIS = "analysis"
+COACHING = "coaching"
+
+TAKE = "take"
+REFERENCE = "reference"
 
 # The worker reports in every few seconds. Silent for this long means it is not running.
 WORKER_ALIVE_SECONDS = 15
@@ -76,10 +85,14 @@ def create_job(
     audio_path: str,
     idempotency_key: str | None,
     now: datetime,
+    role: str = TAKE,
+    title: str | None = None,
 ) -> Job:
     job = Job(
         id=job_id,
         status=QUEUED,
+        role=role,
+        title=title,
         profile=profile,
         language_hint=language_hint,
         retain_audio=retain_audio,
@@ -100,6 +113,38 @@ def create_job(
             raise
         raise DuplicateJob(existing) from None
     return job
+
+
+def create_coaching_job(session: Session, analysis: Analysis, now: datetime) -> tuple[Job, bool]:
+    """Queues a job that writes the coaching of a stored analysis again.
+
+    Returns the job and whether it is new. If one is already waiting or running for this
+    analysis, that one is returned instead, so the language model is never asked twice.
+    """
+    active = session.execute(
+        select(Job).where(
+            Job.kind == COACHING,
+            Job.analysis_id == analysis.id,
+            Job.status.in_((QUEUED, RUNNING)),
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        return active, False
+    job = Job(
+        id=new_id(),
+        kind=COACHING,
+        status=QUEUED,
+        role=analysis.role,
+        profile=analysis.profile,
+        language_hint="auto",
+        retain_audio=False,
+        analysis_id=analysis.id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(job)
+    session.commit()
+    return job, True
 
 
 # --- Worker side -------------------------------------------------------------------------
@@ -164,6 +209,9 @@ def complete_job(
     settings_version: int,
     now: datetime,
     data_dir: Path | None = None,
+    *,
+    coaching: schemas.Coaching | None = None,
+    waveform: schemas.Waveform | None = None,
 ) -> Analysis | None:
     """Stores the result and marks the job succeeded.
 
@@ -182,6 +230,8 @@ def complete_job(
         analysis_id=analysis_id,
         job_id=job.id,
         created_at=now,
+        role=job.role,
+        title=job.title,
         revision=1,
         audio_retained=kept_path is not None,
     )
@@ -189,13 +239,19 @@ def complete_job(
         id=analysis_id,
         job_id=job.id,
         created_at=now,
+        role=job.role,
+        title=job.title,
         profile=result.profile,
         language=result.language.code[:16],
         duration_seconds=result.duration_seconds,
         schema_version=result.schema_version,
         settings_version=settings_version,
         revision=1,
-        result=result.model_dump(mode="json", by_alias=True),
+        # The coaching lives in its own column so it can be rewritten without the result.
+        result=result.model_dump(mode="json", by_alias=True, exclude={"coaching"}),
+        coaching=coaching.model_dump(mode="json", by_alias=True) if coaching else None,
+        # Stored on its own as well: a picture for the screen, read by no measurement.
+        waveform=waveform.model_dump(mode="json", by_alias=True) if waveform else None,
         audio_path=kept_path,
     )
     session.add(analysis)
@@ -221,6 +277,31 @@ def complete_job(
     if not kept_path:
         uploads.delete_audio(upload_path, data_dir)
     return analysis
+
+
+def complete_coaching_job(
+    session: Session, job_id: str, coaching: schemas.Coaching, now: datetime
+) -> bool:
+    """Replaces an analysis's coaching and marks the coaching job succeeded.
+
+    Returns False, changing nothing, if the job was cancelled at the last moment or the
+    analysis has been deleted. The measurements are never touched.
+    """
+    job = session.get(Job, job_id)
+    analysis = session.get(Analysis, job.analysis_id) if job and job.analysis_id else None
+    if analysis is None:
+        return False
+    analysis.coaching = coaching.model_dump(mode="json", by_alias=True)
+    finished = session.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status == RUNNING, Job.cancel_requested.is_(False))
+        .values(status=SUCCEEDED, stage=None, finished_at=now, updated_at=now)
+    )
+    if finished.rowcount != 1:
+        session.rollback()
+        return False
+    session.commit()
+    return True
 
 
 def fail_job(
@@ -402,6 +483,8 @@ def recover_orphaned_jobs(
     requeued = ended = 0
     for job in orphans:
         has_audio = uploads.audio_exists(job.audio_path, data_dir)
+        # What the job needs in order to run again: its audio, or the analysis to coach.
+        can_run = job.analysis_id is not None if job.kind == COACHING else has_audio
         job.stage = None
         job.heartbeat_at = None
         job.updated_at = now
@@ -412,7 +495,7 @@ def recover_orphaned_jobs(
             job.cancel_requested = False
             job.finished_at = now
             ended += 1
-        elif has_audio and job.attempt < max_attempts:
+        elif can_run and job.attempt < max_attempts:
             job.status = QUEUED
             job.started_at = None
             requeued += 1
@@ -421,7 +504,11 @@ def recover_orphaned_jobs(
                 job.audio_path = None
             job.status = FAILED
             job.error_code = "worker_stopped"
-            job.error_message = "The worker stopped while analysing this recording."
+            job.error_message = (
+                "The worker stopped while writing the coaching."
+                if job.kind == COACHING
+                else "The worker stopped while analysing this recording."
+            )
             job.error_retryable = has_audio
             job.finished_at = now
             ended += 1
@@ -464,6 +551,8 @@ def report_worker(
     speech_model: str,
     speech_model_ready: bool,
     starting: bool = False,
+    coach_model: str | None = None,
+    coach_status: str | None = None,
 ) -> None:
     state = session.get(WorkerState, 1)
     if state is None:
@@ -475,6 +564,8 @@ def report_worker(
     state.heartbeat_at = now
     state.speech_model = speech_model
     state.speech_model_ready = speech_model_ready
+    state.coach_model = coach_model
+    state.coach_status = coach_status
     session.commit()
 
 
@@ -511,6 +602,8 @@ def to_status(
         )
     return schemas.JobStatus(
         job_id=job.id,
+        kind=job.kind,
+        role=job.role,
         status=job.status,
         stage=job.stage if job.status == RUNNING else None,
         cancel_requested=job.cancel_requested and job.status == RUNNING,

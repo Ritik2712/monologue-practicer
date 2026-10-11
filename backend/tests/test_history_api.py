@@ -206,3 +206,166 @@ def test_clearing_history_removes_everything_finished_and_nothing_still_in_progr
     assert client.get(f"/api/jobs/{waiting_job}").json()["status"] == "queued"
     make_worker().process_next_job()
     assert client.get("/api/analyses").json()["total"] == 1
+
+
+# --- Reference recordings ----------------------------------------------------------------
+
+
+def test_a_reference_is_submitted_with_a_title_and_listed_separately(client, make_worker):
+    take_id = analyse(client, make_worker)
+    reference_id = analyse(client, make_worker, role="reference", title="  The   original ")
+
+    takes = client.get("/api/analyses").json()
+    references = client.get("/api/analyses", params={"role": "reference"}).json()
+    assert [item["analysisId"] for item in takes["items"]] == [take_id]
+    assert takes["total"] == 1 and takes["items"][0]["role"] == "take"
+    assert [(item["analysisId"], item["role"], item["title"]) for item in references["items"]] == [
+        (reference_id, "reference", "The original")
+    ]
+
+    result = client.get(f"/api/analyses/{reference_id}").json()
+    assert (result["role"], result["title"], result["coaching"]) == (
+        "reference",
+        "The original",
+        None,
+    )
+
+
+def test_a_reference_with_no_title_is_named_after_its_file(client, make_worker):
+    named = analyse(client, make_worker, role="reference", filename="knocks scene.final.mp3")
+    assert client.get(f"/api/analyses/{named}").json()["title"] == "knocks scene.final"
+
+    long = analyse(client, make_worker, role="reference", title="x" * 200)
+    assert len(client.get(f"/api/analyses/{long}").json()["title"]) == 120
+
+
+def test_a_take_never_carries_a_title(client, make_worker):
+    take_id = analyse(client, make_worker, title="ignored for a take")
+    assert client.get(f"/api/analyses/{take_id}").json()["title"] is None
+
+
+def test_an_unknown_role_is_refused(client):
+    response = client.post(
+        "/api/analyses",
+        files={"audio": ("take.wav", wav_bytes(1.0), "audio/wav")},
+        data={"role": "original"},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_request"
+
+
+def test_the_job_says_whether_it_is_for_a_take_or_a_reference(client):
+    def submit(**form) -> dict:
+        audio = {"audio": ("a.wav", wav_bytes(1.0), "audio/wav")}
+        return client.post("/api/analyses", files=audio, data=form).json()
+
+    assert submit()["role"] == "take"
+    assert submit(role="reference")["role"] == "reference"
+
+
+def test_clearing_the_history_of_takes_leaves_the_references_alone(client, make_worker, data_dir):
+    analyse(client, make_worker, retainAudio="true")
+    reference_id = analyse(client, make_worker, role="reference", retainAudio="true")
+    assert len(files_in(data_dir, "audio")) == 2
+
+    cleared = client.delete("/api/analyses").json()
+    assert cleared == {"deletedAnalyses": 1, "deletedJobs": 1}
+    assert client.get("/api/analyses").json()["total"] == 0
+    assert client.get("/api/analyses", params={"role": "reference"}).json()["total"] == 1
+    # The reference keeps its recording, and its job row is still there to name its file.
+    assert files_in(data_dir, "audio") == [f"{reference_id}.wav"]
+    reference = client.get("/api/analyses", params={"role": "reference"}).json()["items"][0]
+    assert reference["originalFilename"] == "take.wav"
+
+
+def test_the_references_can_be_cleared_without_touching_the_takes(client, make_worker):
+    take_id = analyse(client, make_worker)
+    analyse(client, make_worker, role="reference")
+
+    cleared = client.delete("/api/analyses", params={"role": "reference"}).json()
+    assert cleared["deletedAnalyses"] == 1
+    assert client.get("/api/analyses", params={"role": "reference"}).json()["total"] == 0
+    assert client.get(f"/api/analyses/{take_id}").status_code == 200
+
+
+def test_one_reference_can_be_deleted_like_any_analysis(client, make_worker):
+    reference_id = analyse(client, make_worker, role="reference")
+    assert client.delete(f"/api/analyses/{reference_id}").status_code == 204
+    assert client.get("/api/analyses", params={"role": "reference"}).json()["total"] == 0
+
+
+# --- Waveform ----------------------------------------------------------------------------
+
+
+def test_the_waveform_outline_is_served_on_request_only(client, make_worker):
+    analysis_id = analyse(client, make_worker)
+    # It is not part of the result: a screen that never asks for it never receives it.
+    assert "waveform" not in client.get(f"/api/analyses/{analysis_id}").json()
+
+    outline = client.get(f"/api/analyses/{analysis_id}/waveform").json()
+    assert set(outline) == {"durationSeconds", "secondsPerPoint", "minimum", "maximum"}
+    assert outline["durationSeconds"] == 9.0
+    assert len(outline["minimum"]) == len(outline["maximum"]) == 1800
+
+
+def test_a_recording_analysed_before_waveforms_existed_says_so(
+    client, make_worker, session_factory
+):
+    from app.models import Analysis
+
+    analysis_id = analyse(client, make_worker)
+    with session_factory() as session:
+        session.get(Analysis, analysis_id).waveform = None
+        session.commit()
+
+    response = client.get(f"/api/analyses/{analysis_id}/waveform")
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "waveform_not_stored"
+    assert (
+        client.get("/api/analyses/nope/waveform").json()["detail"]["code"] == "analysis_not_found"
+    )
+
+
+# --- Comparison --------------------------------------------------------------------------
+
+
+def test_a_take_is_compared_with_a_reference_on_request(client, make_worker):
+    take_id = analyse(client, make_worker)
+    reference_id = analyse(client, make_worker, role="reference", title="The original")
+    before = client.get(f"/api/analyses/{take_id}").json()
+
+    comparison = client.get(f"/api/analyses/{take_id}/comparison/{reference_id}").json()
+
+    assert (comparison["takeId"], comparison["referenceId"]) == (take_id, reference_id)
+    assert comparison["referenceTitle"] == "The original"
+    # Both were made from the same scripted recording, so they line up completely.
+    assert comparison["alignment"]["status"] == "matched"
+    assert comparison["alignment"]["coverage"] == 1.0
+    assert [pause["status"] for pause in comparison["pauses"]] == ["both"]
+    assert comparison["pauses"][0]["differenceSeconds"] == 0.0
+    assert comparison["differences"] == []
+    pace = next(row for row in comparison["metrics"] if row["metric"] == "speechActiveWpm")
+    assert (pace["take"], pace["reference"], pace["difference"]) == (180.0, 180.0, 0.0)
+    assert comparison["settings"]["version"] == 1
+    # Asking for a comparison stores nothing and changes nothing.
+    assert client.get(f"/api/analyses/{take_id}").json() == before
+    assert client.get(f"/api/analyses/{take_id}/comparison/{reference_id}").json() == comparison
+
+
+def test_a_comparison_needs_a_real_reference(client, make_worker):
+    take_id = analyse(client, make_worker)
+    other_take = analyse(client, make_worker)
+    reference_id = analyse(client, make_worker, role="reference")
+
+    def code(path: str) -> tuple[int, str]:
+        response = client.get(path)
+        return response.status_code, response.json()["detail"]["code"]
+
+    # One of the user's own takes is not a reference.
+    assert code(f"/api/analyses/{take_id}/comparison/{other_take}") == (404, "reference_not_found")
+    assert code(f"/api/analyses/{take_id}/comparison/nope") == (404, "reference_not_found")
+    assert code(f"/api/analyses/nope/comparison/{reference_id}") == (404, "analysis_not_found")
+    assert code(f"/api/analyses/{reference_id}/comparison/{reference_id}") == (
+        400,
+        "same_recording",
+    )

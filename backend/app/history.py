@@ -41,6 +41,8 @@ def summarize(analysis: Analysis, original_filename: str | None) -> schemas.Anal
         analysis_id=analysis.id,
         job_id=analysis.job_id,
         created_at=analysis.created_at,
+        role=analysis.role,
+        title=analysis.title,
         profile=analysis.profile,
         language=analysis.language,
         duration_seconds=analysis.duration_seconds,
@@ -52,12 +54,17 @@ def summarize(analysis: Analysis, original_filename: str | None) -> schemas.Anal
     )
 
 
-def list_analyses(session: Session, *, limit: int, offset: int) -> schemas.AnalysisList:
-    """Newest first."""
-    total = session.execute(select(func.count()).select_from(Analysis)).scalar_one()
+def list_analyses(
+    session: Session, *, limit: int, offset: int, role: str = job_queue.TAKE
+) -> schemas.AnalysisList:
+    """Newest first. Takes and references are listed separately."""
+    total = session.execute(
+        select(func.count()).select_from(Analysis).where(Analysis.role == role)
+    ).scalar_one()
     rows = session.execute(
         select(Analysis, Job.original_filename)
         .outerjoin(Job, Job.id == Analysis.job_id)
+        .where(Analysis.role == role)
         .order_by(Analysis.created_at.desc(), Analysis.id)
         .limit(limit)
         .offset(offset)
@@ -97,20 +104,25 @@ def delete_kept_audio(
     return True
 
 
-def clear_history(session: Session, data_dir: Path | None = None) -> schemas.HistoryCleared:
-    """Removes every stored result and every finished job, with all of their audio.
+def clear_history(
+    session: Session, data_dir: Path | None = None, *, role: str = job_queue.TAKE
+) -> schemas.HistoryCleared:
+    """Removes every stored result of one role, and its finished jobs, with all their audio.
 
-    Jobs that are still queued or running are left alone, along with their uploads.
+    The history of takes and the library of references are cleared separately, so clearing
+    one never empties the other. Jobs that are still queued or running are left alone,
+    along with their uploads.
     """
-    analyses = session.execute(select(Analysis)).scalars().all()
+    analyses = session.execute(select(Analysis).where(Analysis.role == role)).scalars().all()
     for analysis in analyses:
         uploads.delete_audio(analysis.audio_path, data_dir)
-    finished_jobs = session.execute(select(Job).where(Job.status.in_(FINISHED))).scalars().all()
+    finished = (Job.status.in_(FINISHED)) & (Job.role == role)
+    finished_jobs = session.execute(select(Job).where(finished)).scalars().all()
     for job in finished_jobs:
         # A failed job may still be holding its upload for a retry.
         uploads.delete_audio(job.audio_path, data_dir)
 
-    session.execute(delete(Job).where(Job.status.in_(FINISHED)))
-    session.execute(delete(Analysis))
+    session.execute(delete(Job).where(finished))
+    session.execute(delete(Analysis).where(Analysis.role == role))
     session.commit()
     return schemas.HistoryCleared(deleted_analyses=len(analyses), deleted_jobs=len(finished_jobs))

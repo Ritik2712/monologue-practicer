@@ -1,14 +1,16 @@
 # Monologue Coach — Frontend Documentation
 
 Everything that runs in the browser: the pages, the Daily Practice checklist and its timer,
-the General Practice screen (recording, uploading, results, history), and what is saved in
-the browser. Start with [DOCUMENTATION.md](DOCUMENTATION.md) for the big
+the General Practice screen (recording, uploading, results, coaching, history), the
+Monologue screen (reference recordings, comparison, waveforms), and what is saved in the
+browser. Start with [DOCUMENTATION.md](DOCUMENTATION.md) for the big
 picture and the glossary. The Python side is in
 [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md).
 
 Anything not built yet is marked **Planned**.
 
-**Last updated:** end of Phase 3 (General Practice screen).
+**Last updated:** end of Phase 5 (the Monologue screen, reference recordings, the
+comparison with a reference, and the waveform picture).
 
 ## Contents
 
@@ -74,6 +76,8 @@ frontend/
             ├── healthMonitor.ts      Watches whether the API, worker and model are available
             ├── validation.ts         Checks a chosen file before sending it
             ├── compare.ts            The change between two attempts
+            ├── coaching.ts           Small decisions about showing coaching
+            ├── waveform.ts           The arithmetic behind the waveform picture
             ├── timeline.ts           The arithmetic behind the chart
             ├── audioDuration.ts      Makes browser-made recordings seekable
             ├── format.ts             Turns numbers into text like 0:04.7
@@ -83,6 +87,12 @@ frontend/
             │   ├── SetupForm.tsx         Profile picker, record/upload, language, keep-audio
             │   ├── RunPanel.tsx          Progress, cancel, retry, failure
             │   ├── Results.tsx           Everything shown for one analysis
+            │   ├── Coaching.tsx          Corrections, drills, what works, targets, caveats
+            │   ├── MonologuePractice.tsx The whole Monologue page, assembled
+            │   ├── ReferenceLibrary.tsx  Choose, add and delete reference recordings
+            │   ├── ReferenceComparison.tsx  A take against a reference, with both to play
+            │   ├── WaveformComparison.tsx   The two sound waves on one timeline
+            │   ├── BackendNotice.tsx     Says which part of the backend is missing
             │   ├── TimelineChart.tsx     Loudness and speech over time
             │   ├── HistoryPanel.tsx      Past analyses
             │   └── parts.tsx             Small shared pieces: tiles, badges, notices
@@ -101,10 +111,13 @@ would hide the checklist's history (decision F16).
 
 | Address | What you see | Page file | Main code | Uses the backend? |
 | --- | --- | --- | --- | --- |
-| `/` | Home: links to the two features and the backend status | `src/app/page.tsx` | `components/BackendStatus.tsx` | Yes, `GET /api/health` |
+| `/` | Home: links to the three features and the backend status | `src/app/page.tsx` | `components/BackendStatus.tsx` | Yes, `GET /api/health` |
 | `/practice` | Daily Speaking Practice checklist | `src/app/practice/page.tsx` | `features/practice/` | No |
 | `/general` | General Practice: record or upload, analyse, results, history | `src/app/general/page.tsx` | `features/general/` | Yes, for everything |
-| `/monologue` | Original vs. your recording | Planned (Phase 5) | | |
+| `/monologue` | Monologue: add the original recording, study it, record a take, see where the two differ | `src/app/monologue/page.tsx` | `features/general/` (the same folder: it shares the store and most components) | Yes, for everything |
+
+`/general?analysis=<id>` opens that analysis straight away. The Monologue screen uses it for
+its "full measurements and coaching" link.
 
 In Next.js the folder name is the address: `src/app/practice/page.tsx` becomes `/practice`.
 The page files are deliberately tiny. They only pick which feature to show; the real work is
@@ -137,17 +150,20 @@ navigation links from `components/MainNav.tsx`.
 
 | Function | Request | Used for |
 | --- | --- | --- |
-| `getHealth` | `GET /api/health` | The notice when the API, worker or speech model is missing |
+| `getHealth` | `GET /api/health` | The notice when the API, worker, speech model or AI model is missing |
 | `getOptions` | `GET /api/analysis-options` | Profiles, languages and upload limits for the form |
-| `submitAnalysis` | `POST /api/analyses` | Sending a recording |
+| `submitAnalysis` | `POST /api/analyses` | Sending a recording: a take, or with `role: "reference"` and a `title`, a reference |
 | `getJob` | `GET /api/jobs/{id}` | Following a job, once a second |
 | `cancelJob` | `POST /api/jobs/{id}/cancel` | Cancel, or discard a failed job's audio |
 | `retryJob` | `POST /api/jobs/{id}/retry` | Retry a failed job |
-| `getAnalysis` | `GET /api/analyses/{id}` | The full result |
-| `listAnalyses` | `GET /api/analyses?limit=20` | The history |
+| `getAnalysis` | `GET /api/analyses/{id}` | The full result, including its coaching |
+| `requestCoaching` | `POST /api/analyses/{id}/coaching` | Asking the AI model to write the coaching again |
+| `listAnalyses` | `GET /api/analyses?limit=20`, or `…&role=reference` | The history of takes; the reference recordings |
+| `getComparison` | `GET /api/analyses/{id}/comparison/{referenceId}` | A take set against the chosen reference |
+| `getWaveform` | `GET /api/analyses/{id}/waveform` | The outline of a sound wave. Only called when the waveform picture is switched on |
 | `deleteAnalysis` | `DELETE /api/analyses/{id}` | Delete one analysis |
 | `deleteAnalysisAudio` | `DELETE /api/analyses/{id}/audio` | Delete only a kept recording |
-| `clearAnalyses` | `DELETE /api/analyses` | Clear all history |
+| `clearAnalyses` | `DELETE /api/analyses` | Clear the history of takes. References are not touched |
 | `analysisAudioUrl` | `GET /api/analyses/{id}/audio` | Address of a kept recording, for the player |
 
 - Every failure becomes an `ApiError` carrying the backend's own `code` and `message`, or
@@ -360,12 +376,13 @@ end time.
 ### 6.1 What it does
 
 You pick a delivery profile, record yourself or choose an audio file, and press **Analyse
-recording**. The page then follows the analysis job, shows the results, and keeps a history
-you can reopen, compare against, and delete.
+recording**. The page then follows the analysis job, shows the results with coaching on what
+to change for the next take, and keeps a history you can reopen, compare against, and delete.
 
-The measuring itself happens in the backend (see the science document). This screen's job is
-everything around it: getting the audio, following the job honestly, and showing the numbers
-with their caveats.
+The measuring and the coaching both happen in the backend (see the science document). This
+screen's job is everything around them: getting the audio, following the job honestly,
+showing the numbers with their caveats, and making it plain who wrote the coaching and what
+it rests on.
 
 ### 6.2 The files, in the order data flows through them
 
@@ -382,7 +399,7 @@ with their caveats.
         │
         ├──▶ recorder.ts        microphone recording  ──▶  the browser's MediaRecorder
         │
-        └──▶ healthMonitor.ts   is the API / worker / speech model there?
+        └──▶ healthMonitor.ts   is the API / worker / speech model / AI model there?
 ```
 
 | File | In one sentence |
@@ -394,6 +411,7 @@ with their caveats.
 | `healthMonitor.ts` | Asks the backend how it is every 10 seconds, only while the screen is open. |
 | `validation.ts` | Is this file an audio type, non-empty and under the size limit? |
 | `compare.ts` | The difference between two attempts, metric by metric. |
+| `coaching.ts` | What to play for a piece of evidence, which phrase a correction is practised on, what to do when the AI model is unavailable, and whether asking again could help. |
 | `timeline.ts` | Scales, axis ticks and "what is happening at this moment" for the chart. |
 | `audioDuration.ts` | Works out the length of a browser-made recording so it can be seeked. |
 | `format.ts` | Text for times, numbers, changes, profile names, stage names. |
@@ -423,7 +441,7 @@ backend, a microphone and the passage of time without a browser.
 | --- | --- | --- |
 | `idle` | Nothing | No analysis in progress |
 | `submitting` | "Sending the recording…" | The upload request is in flight |
-| `tracking` | Queue position or the four stages, and Cancel | The job is `queued` or `running`; its status is fetched once a second |
+| `tracking` | Queue position or the five stages, and Cancel | The job is `queued` or `running`; its status is fetched once a second |
 | `loading_result` | "Loading the result" | The job succeeded; the full result is being fetched |
 | `done` | "Analysis finished", and the results | The result is on screen and in the history |
 | `cancelled` | "Analysis cancelled" | The worker has really stopped |
@@ -434,12 +452,21 @@ Rules the store enforces:
 - **One at a time.** `submit()` does nothing while a run is `submitting`, `tracking` or
   `loading_result`, so a double click cannot start two analyses. The Analyse button is also
   switched off, and the backend has its own guard (the idempotency key).
-- **Stages, not percentages.** The backend reports which of four stages it is in. The screen
-  lists them with done / in progress / waiting. It never invents a percentage.
+- **Stages, not percentages.** The backend reports which of five stages it is in; the last,
+  "Writing the coaching", is the AI model at work. The screen lists them with done / in
+  progress / waiting. It never invents a percentage.
 - **A cancelled job is not called cancelled early.** After pressing Cancel on a running job
   the screen says "Cancelling" and keeps checking until the backend reports `cancelled`.
 - **Old answers are ignored.** Each run has a number. If you dismiss a run and start another,
   a late answer belonging to the first one changes nothing.
+
+**A second kind of run.** Pressing "Write the coaching again" (see 6.9a) starts a run that
+goes through the same phases with one difference at the start: instead of uploading audio,
+it asks the backend for a coaching job. The store remembers which kind the run is in two
+extra fields, `runKind` (`"analysis"` or `"coaching"`) and `coachingFor` (the analysis the
+coaching belongs to). The run panel uses them to choose its words and to show one stage
+instead of five. Because it is the same run, the same rules apply: one at a time, followed
+once a second, survives a refresh, can be cancelled.
 
 ### 6.4 Following a job
 
@@ -463,6 +490,8 @@ Rules the store enforces:
 | The job failed, and the backend says a retry can work | **Retry**, **Discard** | The backend is still holding the audio; Retry needs no new upload. Discard deletes it |
 | The job failed for good | The reason; Dismiss | Record or upload again |
 | The job no longer exists | A message; Dismiss | For example, history was cleared in another tab |
+| The AI model could not write the coaching *during an analysis* | Nothing to do: the analysis succeeds, and the Coaching section says it was written from fixed rules and why | Coaching is optional; the measurements must not be lost to it |
+| "Write the coaching again" failed | The reason, what to do about it (for example the command to start Ollama), **Try again**, Dismiss. Shown both in the run panel and beside the button | The earlier coaching is untouched, so nothing was lost |
 
 ### 6.6 Recording
 
@@ -528,10 +557,10 @@ From top to bottom, in `Results.tsx`:
 | Warnings | Anything that affects how far the numbers can be trusted |
 | Summary | **Speech-active WPM** as the one large figure; then whole-clip WPM (labelled "including pauses"), words, time speaking, pauses, median and longest pause |
 | Recording | The player, and the timeline chart |
+| Coaching | Who wrote it; a four-line delivery summary; up to three corrections; what is already working; targets for the next take; what is uncertain or not measured; a button to have it written again. See 6.9a |
 | Pace | Your typical pace, pace variation, slowest and fastest segment; phrases well away from your typical pace; the segments table |
 | Pauses | Average, total, pause share, silence before/after; the pauses table |
 | Voice | Loudness and pitch variation, pitch range, median pitch, voice above background, hesitation sounds, breaths (unavailable); emphasis candidates |
-| Coaching | What the chosen profile looks at, and a plain note that AI coaching is not built yet |
 | Compare | This attempt against an earlier one |
 | Details | The transcript, and the settings that produced the numbers |
 
@@ -541,8 +570,54 @@ How the caveats are shown:
 - A value that is an estimate carries an **Estimate** label.
 - Each headline number has one line under it saying what it is. The formulas for the two
   WPMs are always visible, not hidden in a tooltip.
-- Measurements the chosen profile depends on most carry a **Profile focus** tag. The app
-  does not yet say whether they are good or bad for that profile.
+- Measurements the chosen profile depends on most carry a **Profile focus** tag. Whether
+  they suit the profile is said in the Coaching section.
+
+### 6.9a The Coaching section
+
+Drawn by `Coaching.tsx` from the `coaching` object in the result. It sits directly under the
+recording and its chart, above the detailed tables, because it is the answer to "what do I
+do next", and its play buttons use the player just above it.
+
+| Part | Where the words come from |
+| --- | --- |
+| "Worded by the AI model llama3.1:8b…" or "Written from fixed rules, not by the AI model" | `coaching.source`, `coaching.model`, `coaching.notice` |
+| Delivery summary: Pace, Pauses, Voice, Clarity | `coaching.summary`. Written by the backend's code |
+| Each correction's title, **Why it matters** and **Drill** | The AI model, or a template |
+| Each correction's **Measured** line | The finding it points at. Written by the backend's code |
+| Each correction's **Practise on** line | The phrase's own words from the transcript, looked up by this screen. Never the model's wording |
+| What is already working | A note (AI model or template) and the finding it rests on |
+| Targets for the next take | `coaching.nextTake`. Always written by template |
+| Uncertain or not measured | `coaching.caveats`. Always written by the backend's code |
+
+So in every correction the reader can see three different things side by side: what was
+measured, what the coach makes of it, and the exact stretch of audio to listen to. **Play**
+beside a phrase plays that phrase; beside a pause it plays the pause with a second and a
+half either side.
+
+How the three sources look:
+
+| `source` | What is shown |
+| --- | --- |
+| `ai` | One muted line: which model, that it runs on this computer, that it was given the transcript and measurements and never the audio, when, and how long it took. If some of its suggestions were removed by the checks, a warning says how many |
+| `rules` | A notice: "Written from fixed rules, not by the AI model", the reason, and what to do about it, with the command where there is one (`ollama serve`, `ollama pull llama3.1:8b`). The corrections are still shown in full |
+| `none` | Only the reason (no speech, or too short), the summary and the caveats |
+| no coaching stored | "No coaching is stored for this analysis", and the button |
+
+**Writing it again.** The button at the bottom ("Write the coaching again", or "Ask the AI
+model for coaching" when the current coaching is not from the model) calls
+`store.regenerateCoaching(analysisId)`. It is:
+
+- switched off while any run is in progress, and when the health check says the AI model is
+  not available, each time saying why in the line beside it;
+- not shown at all when asking again could not change anything: there was nothing to coach
+  on, or nothing measured needs correcting;
+- followed in two places at once: the run panel near the top of the page, and one line
+  beside the button itself, because the panel may be scrolled out of view.
+
+When the new coaching arrives it replaces the old on screen. If you opened a different
+analysis while waiting, you are left where you are; the new coaching is there when you go
+back.
 
 ### 6.10 The timeline chart
 
@@ -602,25 +677,161 @@ it stays open. The screen shows the first problem it finds, with the exact comma
 | Database not usable | The backend cannot use its database… |
 | Worker not running | The analysis worker is not running. You can submit a recording, but it will wait… |
 | Speech model missing | The speech model is not downloaded, so analyses will fail… |
+| AI model not available (Ollama not running, model not installed, or its address not on this computer) | AI coaching is not available… Recordings are still measured in full, and the coaching is written from fixed rules instead… with the command to fix it |
 
-### 6.14 Accessibility
+The last one is the only notice that does not stand in the way of anything: it is an
+ordinary notice, not a warning, and it is not shown at all if AI coaching was switched off
+on purpose (`AI_COACHING=off`).
+
+### 6.14 Reference recordings and the Monologue screen
+
+A **reference** is a recording you supply to compare your takes with, such as the original
+performance. Phase 5 adds three things built on it: a library of references, a comparison
+of a take with the chosen reference, and a picture of the two sound waves. All three appear
+in two places:
+
+| Where | What it is for |
+| --- | --- |
+| `/monologue` | Practising one monologue against its original. Three numbered steps: the reference, your take, the comparison |
+| Inside the results on `/general` | The same comparison for any take, as one more section under the coaching |
+
+Both screens use **the same store**. `useGeneralPractice.ts` creates one for the whole app,
+so a reference chosen on one screen is the chosen one on the other, and a take analysed on
+the Monologue screen is already open when you follow its link to General Practice.
+
+**What the store gained** (`generalStore.ts`):
+
+| State | Meaning |
+| --- | --- |
+| `references` | The reference recordings, fetched with `role=reference` |
+| `selectedReferenceId` | The chosen one. Saved in `localStorage`, so it is still chosen tomorrow |
+| `referenceDetail` | The chosen reference's own full result, for studying it |
+| `comparison` | The take on view against the chosen reference: `none`, `loading`, `ready` or `error` |
+| `waveforms` | Sound-wave outlines by analysis ID. Empty until one is asked for |
+| `runRole` | Whether the run in progress is for a take or a reference |
+
+| Action | What it does |
+| --- | --- |
+| `selectReference(id)` | Chooses a reference, or none |
+| `deleteReference(id)` | Deletes one, after a confirmation |
+| `submit({ …, role: "reference", title })` | Adds one. It is the ordinary `submit`, so it is followed, cancelled and recovered like any analysis |
+| `loadWaveform(id)` | Fetches one outline, once |
+
+**The comparison keeps itself up to date.** No component asks for it. Whenever the take on
+view or the chosen reference changes, the store works out which pair is now wanted and
+fetches that comparison, unless it already has it. This lives in one function,
+`syncWithSelection`, called from the one place where state is set. A slow answer for a pair
+that is no longer wanted is thrown away.
+
+**Adding a reference does not disturb what you are looking at.** When a reference job
+finishes, the take on view stays on view; the new reference joins the list, becomes the
+chosen one, and the take is at once compared with it.
+
+**The Monologue page** (`MonologuePractice.tsx`), top to bottom:
+
+1. **The reference recording.** `ReferenceLibrary`: a menu of your references, "Add a
+   reference recording" (name, file, language, keep), and delete. Under it, folded away,
+   "Study this reference": the ordinary results view in a lighter mode
+   (`<Results mode="reference">`) with its player, timeline chart, pace, pauses and voice
+   sections, and without coaching or comparisons.
+2. **Your take.** The same record-or-upload picker as General Practice. There is no profile
+   to choose: this screen is about matching the reference, so the take is analysed with the
+   neutral profile.
+3. **Your take against the reference.** A menu of your takes, then `ReferenceComparison`,
+   then a link to the take's full measurements and coaching in General Practice.
+
+### 6.15 The comparison section
+
+Drawn by `ReferenceComparison.tsx` from the `comparison` in the store. The comparing itself
+is done by the backend (science document, section 14); this component only shows it.
+
+| Part | What it shows |
+| --- | --- |
+| Two players | "Reference: <its name>" and "Your take". Each has its own player, so one can be heard straight after the other |
+| The note | How well the two could be lined up: "97% of the reference's words were found in your take…". A warning when they could not be |
+| Biggest differences | Up to five sentences written by the backend, each with **Reference** and **Yours** to hear that spot in both |
+| Pause by pause | After which words; the reference's pause; yours; the difference; listen to both. "No pause" where one has none, "Not found in your take" where the spot could not be located |
+| Phrase by phrase | Each phrase of the reference; its pace in both; the difference in WPM and as a percentage. A phrase too short or too poorly matched is listed without a pace, and says why |
+| The recordings as wholes | Fourteen figures: yours, the reference's, the difference |
+| What this comparison does not tell you | Folded away: what is not compared (loudness, how high the voice is), and any warnings about either recording |
+| Show waveform comparison (visual only) | A checkbox, off by default. See 6.16 |
+
+A **Reference** or **Yours** button is switched off when that recording is not available to
+play: it was not kept and is not in this page's memory.
+
+The wording is always "difference". The line under the list says so: "Differences, not
+mistakes. Whether to follow the reference at each point is your decision."
+
+### 6.16 The waveform picture
+
+`WaveformComparison.tsx`, with its arithmetic in `waveform.ts`. It is switched on by the
+checkbox "Show waveform comparison (visual only)", which is **off every time** the section
+is opened.
+
+- **Nothing is fetched until it is switched on.** Ticking the box calls `loadWaveform` for
+  the two recordings; that is the first moment the outlines are requested. Confirmed in the
+  browser: no waveform request before ticking, two after.
+- **Switching it on or off changes nothing else.** It fetches a picture and draws it. It
+  submits nothing, starts no job, and no figure on the page is taken from it. A store test
+  checks that the analysis on view, the run and the comparison are the very same objects
+  before and after.
+
+What is drawn (a hand-made SVG, like the timeline chart):
+
+- One lane per recording on a shared time axis in seconds, each named above its lane: the
+  reference in orange, your take in blue. The legend's checkboxes hide either one.
+- **Each keeps its real length.** The axis is as long as the longer of the two; the shorter
+  simply ends earlier. Neither is stretched.
+- **One above the other** by default, or **Overlaid** in one lane, half see-through.
+- **Shift your take by … seconds.** A number you type. The two are never lined up for you.
+  The sentence above the chart always says what the shift is ("Your take is shifted 6.5 s
+  later"), and it changes only the picture.
+- **Height is relative waveform amplitude.** By default both are drawn on the same scale,
+  where full height is the loudest a recording can be. "Stretch each waveform to its own
+  loudest point" is off by default, and when on says that it hides any real difference in
+  level.
+- Moving over the picture shows where that moment falls in each recording.
+- Above the chart, in words: each recording's length and the shift. The picture is never
+  the only way to learn them.
+
+When something is missing, it says which and why:
+
+| Situation | What is shown |
+| --- | --- |
+| Only one recording exists | Its waveform alone, and that a second is needed to compare |
+| A recording was analysed before Phase 5 | "No waveform is stored for … Analysing it again will store one" |
+| The outline could not be loaded | The reason, for that recording only |
+
+The outline arrives with at most 2,000 points per recording. `outlineColumns` merges them
+down to one lowest/highest pair per pixel column, so the drawing is two shapes however long
+the recording is.
+
+### 6.17 Accessibility
 
 - Every control is a real button, input or link with a visible focus outline.
 - Profiles are radio buttons in a group; the record/upload switch is a pair of toggle buttons.
 - Status changes in the run panel are announced politely to screen readers; errors are
   announced as alerts.
 - Tables have captions and header cells. Play buttons say what they play ("Play segment 3").
+- Every table in the comparison has a caption and header cells. The listen buttons say
+  what they play ("Play the reference around “…I am the danger”"). The waveform has a
+  written summary of both lengths and the shift, and its lanes are named in words as well
+  as by colour. The two colours were checked for colour-blind separation in light and dark.
+- The corrections are a numbered list, and each one's parts (Measured, Why it matters,
+  Drill, Practise on) are a labelled list, so a screen reader announces which is which. The
+  progress line beside "Write the coaching again" is announced when it changes.
 - Trust is never shown by colour alone: "Estimate" and "Unavailable" are written out.
 - Tables scroll sideways inside their own box on a phone; the page itself never does.
 
 ## 7. What is saved in the browser
 
-Two `localStorage` keys, and nothing else:
+Three `localStorage` keys, and nothing else:
 
 | Key | Written by | Holds |
 | --- | --- | --- |
 | `monologue-coach.practice.v1` | Daily Practice | All saved checklist days, as JSON |
-| `monologue-coach.general.active-job` | General Practice | The ID of an analysis still in progress, so a refresh can pick it up. Removed when the job ends |
+| `monologue-coach.general.active-job` | General Practice, Monologue | The ID of an analysis still in progress, so a refresh can pick it up. Removed when the job ends |
+| `monologue-coach.reference.selected` | General Practice, Monologue | The ID of the chosen reference recording. Removed when none is chosen, or when that reference no longer exists |
 
 The checklist's value looks like this:
 
@@ -628,7 +839,8 @@ The checklist's value looks like this:
 { schemaVersion: 1, days: { "2026-10-10": { ...record }, "2026-10-11": { ...record } } }
 ```
 
-General Practice saves **no results and no audio in the browser**. Results live in the
+General Practice and Monologue save **no results and no audio in the browser**. The
+reference recordings themselves are in the backend's database and data folder, not here. Results live in the
 backend's database. A recording you just made or chose is held in the page's memory so it
 can be played back with its result; it is gone when the tab is closed or refreshed, unless
 you ticked "Keep this recording", in which case the backend stores it.
@@ -767,7 +979,11 @@ Each entry says what was chosen, what was considered, and what was decided again
   your own take, and says plainly that comparing it side by side with the original is not
   built yet.
 - **Why:** a link to a page that is not there, or a button that pretends to work, would be
-  misleading. The note will be replaced when the comparison screen arrives in Phase 5.
+  misleading.
+- **Since Phase 5:** the comparison exists, so step 4 now links to the Monologue screen, and
+  so does step 1 ("Listen and observe"), where the original can be played and its measured
+  pauses and pace read. Step 1's note still says what is left to the ear: breathing, and
+  emphasis made by slowing down, are not measured.
 
 ### F15. Styling with Tailwind CSS
 
@@ -809,7 +1025,8 @@ Each entry says what was chosen, what was considered, and what was decided again
 
 ### F19. Stages are shown, never a percentage
 
-- **Chosen:** the four stages with done / in progress / waiting.
+- **Chosen:** the stages (five since Phase 4, when "Writing the coaching" was added) with
+  done / in progress / waiting.
 - **Why:** the backend knows which stage it is in. It does not know that it is "62% done",
   and a made-up bar that crawls or jumps teaches people to distrust it.
 
@@ -883,12 +1100,14 @@ Each entry says what was chosen, what was considered, and what was decided again
 - **Trade-off accepted:** after a refresh, an analysis whose recording was not kept has no
   audio to play.
 
-### F28. Coaching is a labelled gap, not a mock-up
+### F28. Coaching is a labelled gap, not a mock-up *(Phase 3; replaced in Phase 4)*
 
-- **Chosen:** the results show which measurements the profile depends on, and a note that
-  corrections and drills arrive with AI coaching.
-- **Decided against:** placeholder "tips" generated from fixed thresholds dressed up as
-  coaching, which would look finished and be wrong.
+- **Chosen in Phase 3:** the results showed which measurements the profile depends on, and
+  a note that corrections and drills would arrive with AI coaching.
+- **Decided against then:** placeholder "tips" dressed up as coaching, which would have
+  looked finished while nothing stood behind them.
+- **Now:** the gap is filled (F30 to F35). Coaching from fixed rules does exist in Phase 4,
+  but it is built on the same findings as the AI coaching, and it is labelled as what it is.
 
 ### F29. The end of a segment is watched every frame, with a fallback
 
@@ -898,24 +1117,175 @@ Each entry says what was chosen, what was considered, and what was decided again
   phrase by up to a quarter of a second. Frame checks are precise but pause in a background
   tab, where the time events still arrive.
 
+### F30. Every correction shows what was measured, beside what the coach says
+
+- **Chosen:** three labelled parts in each correction: **Measured** (the finding, written
+  by code), **Why it matters** and **Drill** (the coach's words), and **Practise on** (the
+  phrase, with Play).
+- **Why:** it lets you judge the advice. If the coach says "slow down" you can see the 240
+  WPM it rests on, and hear the phrase, without taking anything on trust.
+- **Decided against:** one paragraph per correction with the figures woven into the prose.
+  It reads more naturally, but you could no longer tell a measured figure from the model's
+  wording.
+
+### F31. The practice phrase is looked up in the transcript, not taken from the coach
+
+- **Chosen:** the backend sends only which segment to practise on; the screen shows that
+  segment's own words and times.
+- **Why:** an AI model can misquote. The words under "Practise on" are therefore always
+  exactly what the speech recogniser heard, and Play always plays exactly that stretch.
+
+### F32. Who wrote the coaching is always stated
+
+- **Chosen:** a line at the top of the section says whether the AI model or fixed rules
+  wrote it; for the AI model, that it ran on this computer and was never given the audio;
+  for rules, why the model was not used and how to fix that.
+- **Why:** the two are different things with different weaknesses. A model can be fluent and
+  wrong; templates are safe and generic. The reader should know which they are reading.
+- **Decided against:** showing both the same way, or a small "AI" badge that explains
+  nothing.
+
+### F33. Coaching sits near the top of the results
+
+- **Chosen:** directly under the recording and its chart, above the Pace, Pauses and Voice
+  tables.
+- **Why:** it answers "what should I do next?", which is why someone records a take. The
+  tables are the evidence, for anyone who wants to check.
+- **Decided against:** leaving it below the tables, where it sat as a placeholder in Phase
+  3, a long scroll away.
+
+### F34. Writing the coaching again reuses the run, not a second mechanism
+
+- **Chosen:** `regenerateCoaching()` starts an ordinary run of a different kind. Polling,
+  back-off, cancel, resume after refresh and "one at a time" all come from the code that
+  already follows an analysis.
+- **Why:** a second, parallel tracker would be a second copy of the trickiest logic in the
+  store, and would allow two jobs to be in progress at once.
+- **Decided against:** a separate small state machine just for coaching.
+- **Cost accepted:** only one thing can be in progress, so the button is switched off while
+  an analysis is running.
+
+### F35. The AI model being unavailable is a notice, not an error
+
+- **Chosen:** an ordinary notice at the top of the screen, and a disabled button with the
+  reason beside it. Nothing is blocked.
+- **Why:** everything except the wording of the coaching still works, and saying so plainly
+  is more useful than a red box.
+- **Decided against:** hiding the Coaching section when the model is unavailable (the
+  rule-based coaching is still worth reading), and treating it like a missing worker (which
+  really does stop everything).
+
+### F36. One store for both screens
+
+- **Chosen:** General Practice and Monologue share the single store created in
+  `useGeneralPractice.ts`.
+- **Why:** they show the same things: the same takes, the same references, the same run in
+  progress. With one store, a reference chosen on one screen is chosen on the other, a job
+  started on one is followed on the other, and there is one place where "only one run at a
+  time" is enforced.
+- **Decided against:** a second store for the Monologue screen. Two stores following jobs
+  would be two copies of the trickiest code, and could each start a run.
+
+### F37. The comparison follows what is on screen; there is no "Compare" button
+
+- **Chosen:** the store fetches the comparison whenever the take on view or the chosen
+  reference changes.
+- **Why:** it takes a few thousandths of a second, so there is nothing to wait for and
+  nothing to confirm. It also means no component can forget to ask, and two components
+  cannot ask for different pairs.
+- **Decided against:** a button (a step with no purpose), and fetching from inside a
+  component when it appears (the same request from two places, on two screens).
+
+### F38. The Monologue screen reuses the results view, and links to General Practice for the rest
+
+- **Chosen:** the reference is studied in the ordinary results view with a `mode` that
+  hides what does not apply. A take's full results stay in General Practice, one link away.
+- **Why:** a second results view would have to be kept in step with the first for ever. The
+  Monologue screen can stay about one question: where does my take differ from the original?
+- **Decided against:** showing the take's full results, coaching and all, on the Monologue
+  screen as well: a very long page that says the same thing in two places.
+
+### F39. A reference is kept by default; a take is not
+
+- **Chosen:** "Keep this recording on this device" starts ticked when adding a reference,
+  and unticked for a take, with the reason written beside each.
+- **Why:** a take is usually listened to once, and the brief says not to store raw audio
+  indefinitely by default. A reference is added precisely to be played and compared against
+  on other days, and without its audio the listen buttons and the daily "listen and
+  observe" step have nothing to play. The choice is still visible and the user's.
+- **Decided against:** off for both (a reference that goes silent on the next visit), and
+  keeping a reference without asking.
+
+### F40. The waveform is off by default and fetched only when switched on
+
+- **Chosen:** a checkbox, unticked each time; the outlines are requested when it is ticked.
+- **Why:** it is a visual aid some people want and many do not. Leaving it off costs
+  nothing: no request, no drawing. It also keeps a picture that proves nothing out of the
+  way of the figures that do.
+
+### F41. The two waves are never lined up automatically, and each keeps its real length
+
+- **Chosen:** both start at zero; a shift is a number the user types and can see; the
+  shorter recording simply ends earlier.
+- **Why:** lining them up by machine would assert that a moment in one corresponds to a
+  moment in the other. The comparison does establish that, through the words; a picture
+  shifted by eye must not look as if it did. Stretching one to the other's length would
+  falsely suggest they took the same time.
+- **Decided against:** auto-alignment, and scaling both to the same width.
+
+### F42. One above the other by default; overlaid on request
+
+- **Chosen:** two lanes sharing a time axis, with "Overlaid" as an option.
+- **Why:** two dense shapes on top of each other are hard to tell apart even in two
+  colours, and the pauses, which are what one looks for, are easiest to compare when each
+  wave has its own lane. Overlaying is still there for anyone who wants it.
+
+### F43. Both waves share one scale unless the user asks otherwise
+
+- **Chosen:** full height means the loudest a recording can be, for both. "Stretch each to
+  its own loudest point" is an explicit option that says what it hides.
+- **Why:** a quiet recording drawn as tall as a loud one would imply they were equally
+  loud. The honest default is that a quiet recording looks thin; the option exists because
+  a thin shape is hard to read.
+
+### F44. Every difference can be heard in both recordings
+
+- **Chosen:** each difference, each pause row and each phrase row has **Reference** and
+  **Yours**, playing that spot in each, a pause with a second and a half either side.
+- **Why:** the checklist's first step is "listen and observe". A table that says the
+  original holds 1.6 seconds where you held 2.6 is far more useful when both can be heard
+  one after the other.
+- **Decided against:** one shared player that switches recordings (it loses your place in
+  both).
+
+### F45. An element's width is measured through a callback, not a ref object
+
+- **Chosen:** `useElementWidth` is handed its element by a callback.
+- **Why:** found in the browser. The waveform chart shows "loading" first and draws its
+  chart area only once the outlines arrive. The first version attached its size watcher
+  when the component appeared, found no chart area yet, and never looked again, so the chart
+  stayed zero pixels wide and blank. A callback is told when the element appears, whenever
+  that is.
+
 ### Decisions already made for later phases *(not built yet)*
 
 | Topic | Decision | Instead of |
 | --- | --- | --- |
-| Reference comparison | Available both on a Monologue screen and inside General Practice | Only one of the two |
-| Waveform overlay | Drawn in the browser from the audio already loaded there, off by default | Sending audio to the backend just to draw it |
-| Coaching display | Each correction links to the segment it is about, and can be played | A block of text with no way to hear the spot |
+| Feedback on coaching | "Useful / not useful" on each correction, saved against that analysis | A free-text box only |
 
 ## 9. Tests
 
-Run with the command in the README. Current result: **132 tests pass**.
+Run with the command in the README. Current result: **183 tests pass**. 32 are new in
+Phase 5.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
 | `features/practice/practiceState.test.ts` | 23 | Start, pause/resume, reset, expiry exactly once, skip, manual tick/untick, a stale timer cannot complete a step, progress numbers, config changes |
 | `features/practice/practiceStore.test.ts` | 24 | Saving and restoring after a refresh, new-day rollover, midnight edge cases, reset today vs. clear history, damaged or unavailable storage, two tabs |
 | `features/practice/format.test.ts` | 9 | `03:00`-style text, durations, local dates vs. UTC |
-| `features/general/generalStore.test.ts` | 23 | Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history |
+| `features/general/generalStore.test.ts` | 46 | Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one |
+| `features/general/waveform.test.ts` | 16 | The shared timeline is as long as the longer recording; a shift moves a recording without changing its length; points that share a pixel keep their extremes; a quiet recording stays quiet unless stretched; nothing is drawn beyond full scale; round time-axis values, including before zero; where a moment falls in each recording |
+| `features/general/coaching.test.ts` | 12 | What is played for a phrase, a pause and a whole-recording measurement; the practice line always coming from the transcript; the help for each reason the AI model is unavailable; when writing again is and is not offered; the progress shown beside the button |
 | `features/general/recorder.test.ts` | 19 | Record, elapsed time from the clock, stop at the limit, WebM vs. MP4, discard at every stage, each kind of microphone problem, empty capture, microphone always released |
 | `features/general/helpers.test.ts` | 22 | Time and number formatting, missing values never shown as 0, file checks, comparison arithmetic, axis ticks, loudness scale, "what is at this moment", label fitting |
 | `features/general/healthMonitor.test.ts` | 5 | Checks only while watched, every 10 seconds, reports the worker or backend going away, stops when the screen is left |
@@ -951,7 +1321,7 @@ With the real API and worker running, and real audio files:
 | A Hindi MP3 | Devanagari transcript; language shown as chosen |
 | Delete one analysis; clear all history | Both confirmed first; list empties |
 | Phone width, desktop width, light and dark | Layout holds; chart adapts its labels |
-| Checklist step 4 | Links to General Practice |
+| Checklist step 4 | Links to General Practice (to the Monologue screen since Phase 5) |
 
 **Not checked with a real microphone.** The browser used for these checks blocks microphone
 access, so the "access was blocked" message was confirmed for real, but an actual recording
@@ -959,3 +1329,53 @@ was not. The recording path was instead run with a simulated microphone (a test 
 into the browser's real `MediaRecorder`): it recorded, played back, uploaded, was analysed,
 and its segments could be played, both from memory and after being kept and reloaded. A
 first recording with a real microphone, in Chrome and in Safari, is still worth doing.
+
+### Checked by hand in the browser at the end of Phase 4
+
+With the real API, the real worker and the real `llama3.1:8b` in Ollama:
+
+| Check | Result |
+| --- | --- |
+| Open a stored analysis | The Coaching section shows the source line, the four-line summary, the corrections with Measured / Why it matters / Drill / Practise on, what is working, targets, and caveats |
+| Play beside "Practise on" | Played the phrase from 0:00.0 and stopped at 0:04.07; the phrase ends at 0:04.1 |
+| Press "Write the coaching again" | Run panel: "Writing the coaching again", one stage, Cancel. The button is switched off and says the model is writing. About 20 s later: "New coaching written", and the section shows the new coaching |
+| The same, with the worker pointed at an address where no Ollama is running | Run panel: "New coaching could not be written", the reason, `ollama serve`, "left as it was", Try again, Dismiss. The same reason beside the button. The earlier coaching still on screen |
+| Open the screen with the AI model unavailable | An ordinary notice at the top with the command; nothing blocked |
+| Open an analysis made while the model was unavailable | "Written from fixed rules, not by the AI model", the reason and the command; three template corrections shown in full |
+| Phone width (375 px) | No sideways scrolling; each correction's parts stack |
+
+**Not checked:** dark mode for the new section was not seen (the browser used for the checks
+stayed in light mode; the section uses only colours already used elsewhere on the page). The
+real-microphone check left open at the end of Phase 3 is still open.
+
+### Checked by hand in the browser at the end of Phase 5
+
+With the real API and worker, and synthesised English and Hindi recordings:
+
+| Check | Result |
+| --- | --- |
+| Open `/monologue` with two references and two takes stored | Both menus filled; "Choose or add a reference recording in step 1" |
+| Choose a reference and a take | Two players; "97% of the reference's words were found…"; three differences; pause, phrase and whole-recording tables |
+| Press **Reference**, then **Yours**, on the first difference | The reference played from 7.9 s, the take from 14.5 s: the same spot in each |
+| Tick "Show waveform comparison" | No waveform request before, two after. Orange reference and blue take, each its real length (17.1 s and 22.5 s) on one axis |
+| Type a shift of 6.5 | "Your take is shifted 6.5 s later"; the axis grows to fit; moving over the picture reads 0:07.3 in the reference and 0:00.8 in the take |
+| Choose "Overlaid" | One lane, both waves half see-through |
+| Add a reference from a file, with a name | Progress shows four stages and "Measuring the reference recording"; then "Reference added"; it is listed and chosen |
+| An English take with a Hindi reference chosen | "Only 0% of the reference's words were found…"; only the whole-recording table |
+| "Study this reference" | The reference's name as heading; player, chart, pace, pauses, voice; no coaching, no "earlier attempt", no close or delete buttons |
+| Delete a reference | Asks first; then it is gone from the menu and the backend, and no reference is chosen |
+| Reload the page | The chosen reference is still chosen |
+| Follow "full measurements and coaching in General Practice" | `/general?analysis=<id>` opens that take, with the comparison section under its coaching |
+| Phone width (375 px) | No sideways scrolling; the players stack; the chart is 317 px wide |
+| `/practice` | Steps 1 and 4 link to `/monologue`; the navigation has Monologue |
+
+Two faults were found this way and fixed: the blank waveform chart (decision F45), and a
+development server that kept serving an old stylesheet after a production build had been
+run beside it, so the reference was drawn black until the server was restarted. The second
+is not a fault in the app, but it is worth knowing: after `npm run build`, restart
+`npm run dev`.
+
+**Not checked:** dark mode for the new sections (the browser used stayed in light mode; the
+two chart colours were validated for the dark surface by the palette checker, not by eye),
+adding a reference by recording it (references are added from a file only), and, as in
+earlier phases, a real microphone.

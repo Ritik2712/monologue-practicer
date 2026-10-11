@@ -34,6 +34,8 @@ body {
   --viz-grid: #e1e0d9;
   --viz-axis: #c3c2b7;
   --viz-series-1: #2a78d6;
+  /* The second series (a reference recording beside your own take). */
+  --viz-series-2: #eb6834;
   /* A lighter step of the same blue: the unfilled part of a meter. */
   --viz-track: #cde2fb;
 }
@@ -46,6 +48,7 @@ body {
     --viz-grid: #2c2c2a;
     --viz-axis: #383835;
     --viz-series-1: #3987e5;
+    --viz-series-2: #d95926;
     --viz-track: #184f95;
   }
 }

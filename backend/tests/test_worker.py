@@ -6,8 +6,10 @@ import time
 from sqlalchemy import select
 
 from app import job_queue, uploads
+from app.coaching.coach import Coach
 from app.models import Analysis, Job, WorkerState
 from app.pipeline.errors import PipelineError
+from tests.conftest import FakeChat, answer_within
 
 
 def get(session_factory, job_id: str) -> Job:
@@ -298,3 +300,267 @@ def test_a_second_worker_notices_the_first(session_factory, clock, make_worker):
 
     clock.advance(seconds=60)  # the other one stopped reporting
     assert not worker.another_worker_is_running()
+
+
+# --- Coaching ----------------------------------------------------------------------------
+
+
+def coaching_job(session_factory, clock) -> str:
+    """Queues a coaching job for the one stored analysis and returns the job's ID."""
+    with session_factory() as session:
+        analysis = session.execute(select(Analysis)).scalar_one()
+        job, _ = job_queue.create_coaching_job(session, analysis, clock())
+        return job.id
+
+
+def test_the_language_model_words_the_coaching_as_the_last_stage(
+    session_factory, add_job, make_worker
+):
+    job_id = add_job(profile="thomas_shelby")
+    llm = FakeChat(answer_within)
+    seen: list[tuple[str, str | None]] = []
+    llm.during = lambda: seen.append(
+        (get(session_factory, job_id).status, get(session_factory, job_id).stage)
+    )
+
+    make_worker(llm).process_next_job()
+
+    assert seen == [("running", "generating_feedback")]
+    (analysis,) = analyses(session_factory)
+    assert (analysis.coaching["source"], analysis.coaching["model"]) == ("ai", "fake-llm")
+    # Coaching is stored beside the measurements, not inside them.
+    assert "coaching" not in analysis.result
+
+
+def test_a_model_that_cannot_answer_does_not_fail_the_analysis(
+    session_factory, add_job, make_worker
+):
+    job_id = add_job(profile="thomas_shelby")
+    make_worker(FakeChat(model_status="not_running")).process_next_job()
+
+    assert get(session_factory, job_id).status == "succeeded"
+    (analysis,) = analyses(session_factory)
+    assert analysis.coaching["source"] == "rules"
+    assert analysis.coaching["notice"]["code"] == "not_running"
+    assert analysis.coaching["corrections"]
+
+
+def test_a_crash_in_the_coaching_step_still_saves_the_measurements(
+    session_factory, add_job, make_worker
+):
+    class BrokenCoach(Coach):
+        def generate(self, body, **kwargs):
+            raise RuntimeError("a bug nobody planned for")
+
+    job_id = add_job()
+    make_worker(coach=BrokenCoach(None)).process_next_job()
+
+    assert get(session_factory, job_id).status == "succeeded"
+    (analysis,) = analyses(session_factory)
+    assert analysis.coaching is None
+    assert analysis.result["metrics"]["speechActiveWpm"]["value"] == 180.0
+
+
+def test_cancelling_while_the_model_is_writing_stores_nothing(
+    session_factory, data_dir, clock, add_job, make_worker
+):
+    job_id = add_job(profile="thomas_shelby")
+    llm = FakeChat(answer_within)
+
+    def cancel() -> None:
+        with session_factory() as session:
+            job_queue.request_cancel(session, job_id, clock(), data_dir)
+
+    llm.during = cancel
+    make_worker(llm).process_next_job()
+
+    assert get(session_factory, job_id).status == "cancelled"
+    assert analyses(session_factory) == []
+    assert upload_files(data_dir) == []
+
+
+def test_a_coaching_job_replaces_the_coaching_and_nothing_else(
+    session_factory, clock, add_job, make_worker
+):
+    add_job(profile="thomas_shelby")
+    make_worker().process_next_job()
+    (before,) = analyses(session_factory)
+    assert before.coaching["source"] == "rules"
+    job_id = coaching_job(session_factory, clock)
+
+    make_worker(FakeChat(answer_within)).process_next_job()
+
+    job = get(session_factory, job_id)
+    assert (job.kind, job.status, job.stage, job.analysis_id) == (
+        "coaching",
+        "succeeded",
+        None,
+        before.id,
+    )
+    (after,) = analyses(session_factory)
+    assert after.coaching["source"] == "ai"
+    assert after.result == before.result
+
+
+def test_a_coaching_job_that_cannot_reach_the_model_fails_and_changes_nothing(
+    session_factory, clock, add_job, make_worker
+):
+    add_job(profile="thomas_shelby")
+    make_worker().process_next_job()
+    (before,) = analyses(session_factory)
+    job_id = coaching_job(session_factory, clock)
+
+    make_worker(FakeChat(model_status="model_missing")).process_next_job()
+
+    job = get(session_factory, job_id)
+    assert (job.status, job.error_code, job.error_retryable) == ("failed", "model_missing", False)
+    assert analyses(session_factory)[0].coaching == before.coaching
+
+
+def test_a_coaching_job_fails_when_templates_are_all_that_is_on_offer(
+    session_factory, clock, add_job, make_worker
+):
+    add_job(profile="thomas_shelby")
+    make_worker().process_next_job()
+    job_id = coaching_job(session_factory, clock)
+
+    make_worker().process_next_job()  # no language model at all
+
+    job = get(session_factory, job_id)
+    assert (job.status, job.error_code) == ("failed", "ai_off")
+    assert job.error_message == "AI coaching is switched off in the settings."
+
+
+def test_a_cancelled_coaching_job_leaves_the_old_coaching_in_place(
+    session_factory, data_dir, clock, add_job, make_worker
+):
+    add_job(profile="thomas_shelby")
+    make_worker().process_next_job()
+    (before,) = analyses(session_factory)
+    job_id = coaching_job(session_factory, clock)
+    llm = FakeChat(answer_within)
+
+    def cancel() -> None:
+        with session_factory() as session:
+            job_queue.request_cancel(session, job_id, clock(), data_dir)
+
+    llm.during = cancel
+    make_worker(llm).process_next_job()
+
+    assert get(session_factory, job_id).status == "cancelled"
+    assert analyses(session_factory)[0].coaching == before.coaching
+
+
+def test_a_stopping_worker_hands_a_coaching_job_back_to_the_queue(
+    session_factory, clock, add_job, make_worker
+):
+    add_job(profile="thomas_shelby")
+    make_worker().process_next_job()
+    job_id = coaching_job(session_factory, clock)
+    llm = FakeChat(answer_within)
+    worker = make_worker(llm)
+    llm.during = worker.stop_event.set
+
+    worker.process_next_job()
+
+    job = get(session_factory, job_id)
+    assert (job.status, job.attempt) == ("queued", 0)
+
+
+def test_a_coaching_job_left_running_by_a_crash_is_requeued_without_any_audio(
+    session_factory, clock, add_job, make_worker
+):
+    add_job(profile="thomas_shelby")
+    make_worker().process_next_job()
+    job_id = coaching_job(session_factory, clock)
+    with session_factory() as session:
+        job_queue.claim_next_job(session, clock())  # a worker took it, then died
+
+    worker = make_worker(FakeChat(answer_within))
+    worker.recover(stale_after_seconds=0)
+    assert get(session_factory, job_id).status == "queued"
+
+    worker.process_next_job()
+    assert get(session_factory, job_id).status == "succeeded"
+
+
+def test_the_heartbeat_reports_whether_the_language_model_is_available(
+    session_factory, make_worker
+):
+    make_worker(FakeChat(model_status="model_missing")).beat()
+    with session_factory() as session:
+        state = session.get(WorkerState, 1)
+        assert (state.coach_model, state.coach_status) == ("fake-llm", "model_missing")
+
+
+# --- Reference recordings and waveforms ---------------------------------------------------
+
+
+def test_a_reference_is_measured_like_a_take_but_gets_no_coaching(
+    session_factory, add_job, make_worker
+):
+    job_id = add_job(role="reference", title="The original", profile="thomas_shelby")
+    llm = FakeChat(answer_within)
+    seen: list[str | None] = []
+    worker = make_worker(llm)
+    original_set_stage = job_queue.set_stage
+
+    def record_stage(session, job, stage, now):
+        seen.append(stage)
+        original_set_stage(session, job, stage, now)
+
+    job_queue.set_stage = record_stage
+    try:
+        worker.process_next_job()
+    finally:
+        job_queue.set_stage = original_set_stage
+
+    assert get(session_factory, job_id).status == "succeeded"
+    (analysis,) = analyses(session_factory)
+    assert (analysis.role, analysis.title) == ("reference", "The original")
+    assert (analysis.result["role"], analysis.result["title"]) == ("reference", "The original")
+    # The same measurements as any take.
+    assert analysis.result["metrics"]["speechActiveWpm"]["value"] == 180.0
+    # No coaching stage, no call to the language model, nothing stored.
+    assert "generating_feedback" not in seen and seen[-1] == "measuring_audio"
+    assert llm.calls == [] and analysis.coaching is None
+
+
+def test_a_take_is_stored_as_a_take(session_factory, add_job, make_worker):
+    add_job()
+    make_worker().process_next_job()
+    (analysis,) = analyses(session_factory)
+    assert (analysis.role, analysis.title, analysis.result["role"]) == ("take", None, "take")
+
+
+def test_the_waveform_outline_is_stored_beside_the_measurements_not_in_them(
+    session_factory, add_job, make_worker
+):
+    add_job()  # nine seconds of a steady tone at 0.3 of full scale
+    make_worker().process_next_job()
+    (analysis,) = analyses(session_factory)
+
+    outline = analysis.waveform
+    assert outline["durationSeconds"] == 9.0
+    assert len(outline["minimum"]) == len(outline["maximum"]) == 1800  # 5 ms each
+    assert max(outline["maximum"]) == 0.3 and min(outline["minimum"]) == -0.3
+    assert "waveform" not in analysis.result
+
+
+def test_the_measurements_are_the_same_whether_or_not_a_waveform_is_drawn(
+    session_factory, add_job, make_worker, monkeypatch
+):
+    from app import worker as worker_module
+
+    add_job()
+    make_worker().process_next_job()
+    monkeypatch.setattr(worker_module, "waveform_outline", lambda samples: None)
+    add_job()
+    make_worker().process_next_job()
+
+    with_picture, without_picture = analyses(session_factory)
+    assert with_picture.waveform is not None and without_picture.waveform is None
+    ignored = {"analysisId", "jobId", "createdAt"}
+    assert {k: v for k, v in with_picture.result.items() if k not in ignored} == {
+        k: v for k, v in without_picture.result.items() if k not in ignored
+    }

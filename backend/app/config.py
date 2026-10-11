@@ -34,6 +34,15 @@ class Settings:
     max_job_attempts: int
     worker_poll_seconds: float
     log_level: str
+    # False switches the language model off: coaching then comes from fixed templates only.
+    ai_coaching: bool
+    # The Ollama server and model used for coaching. The address must be on this computer.
+    ollama_base_url: str
+    ollama_model: str
+    # How long one answer from the model may take before it is abandoned.
+    ollama_timeout_seconds: float
+    # How much text the model can take in at once, in tokens.
+    ollama_context_tokens: int
 
 
 def _number(name: str, default: float) -> float:
@@ -63,6 +72,12 @@ def get_settings() -> Settings:
         max_job_attempts=int(_number("MAX_JOB_ATTEMPTS", 2)),
         worker_poll_seconds=_number("WORKER_POLL_SECONDS", 1),
         log_level=(os.environ.get("LOG_LEVEL") or "INFO").upper(),
+        ai_coaching=(os.environ.get("AI_COACHING") or "on").strip().lower()
+        not in ("off", "0", "false", "no"),
+        ollama_base_url=os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434",
+        ollama_model=os.environ.get("OLLAMA_MODEL") or "llama3.1:8b",
+        ollama_timeout_seconds=_number("OLLAMA_TIMEOUT_SECONDS", 180),
+        ollama_context_tokens=int(_number("OLLAMA_CONTEXT_TOKENS", 8192)),
     )
 
 

@@ -144,16 +144,20 @@ export function useSegmentPlayer() {
   return { audioProps, playRange, currentTime };
 }
 
-/** The pixel width of an element, kept up to date as the layout changes. */
+/**
+ * The pixel width of an element, kept up to date as the layout changes.
+ *
+ * The element is handed over through a callback, not a ref object, so this also works for
+ * an element that appears later than the component does (after its data has loaded).
+ */
 export function useElementWidth<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
+  const [element, setElement] = useState<T | null>(null);
   const [width, setWidth] = useState(0);
   useEffect(() => {
-    const element = ref.current;
     if (!element) return;
     const observer = new ResizeObserver(([entry]) => setWidth(Math.round(entry.contentRect.width)));
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
-  return { ref, width };
+  }, [element]);
+  return { ref: setElement, width };
 }

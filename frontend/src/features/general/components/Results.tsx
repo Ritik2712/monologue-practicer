@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { Button } from "@/components/Button";
 
+import { PAUSE_CONTEXT_SECONDS } from "../coaching";
 import { compareAttempts, earlierAttempts } from "../compare";
 import {
   FLAG_LABELS,
@@ -22,11 +23,13 @@ import {
 import type {
   AnalysisResult,
   AnalysisSummary,
+  CoachStatus,
   DeliveryProfile,
   MetricName,
   SpeechSegment,
 } from "../types";
 import { useSegmentPlayer } from "../useGeneralPractice";
+import { Coaching, type Regeneration } from "./Coaching";
 import {
   FOCUS_RING,
   FocusTag,
@@ -41,18 +44,29 @@ import { TimelineChart } from "./TimelineChart";
 
 type ResultsProps = {
   analysis: AnalysisResult;
+  /**
+   * "take" (the default) shows everything. "reference" is the lighter view for studying a
+   * reference recording: its measurements, without coaching or comparisons.
+   */
+  mode?: "take" | "reference";
+  /** The comparison with a reference recording, drawn by the page that owns the references. */
+  referenceSection?: ReactNode;
   /** The chosen delivery profile's description, when the options have loaded. */
   profile: DeliveryProfile | undefined;
   history: AnalysisSummary[];
   /** Where the recording can be played from, or null if it is not available. */
   audioSrc: string | null;
+  /** Whether the local AI model is available, as the worker last reported. Null if unknown. */
+  coach: { status: CoachStatus; model: string | null } | null;
+  /** True while an analysis or a coaching job is in progress. */
+  busy: boolean;
+  /** How the latest request to write this analysis's coaching again is going. */
+  regeneration: Regeneration;
+  onRegenerateCoaching: () => void;
   onClose: () => void;
   onDelete: () => void;
   onDeleteAudio: () => void;
 };
-
-/** Seconds of audio played either side of a pause, so the pause is heard in context. */
-const PAUSE_CONTEXT_SECONDS = 1.5;
 
 const PACE_LABELS = { typical: "Typical", faster: "Faster", slower: "Slower" } as const;
 
@@ -75,9 +89,15 @@ const SETTING_LABELS: Record<string, [label: string, unit: string]> = {
 
 export function Results({
   analysis,
+  mode = "take",
+  referenceSection,
   profile,
   history,
   audioSrc,
+  coach,
+  busy,
+  regeneration,
+  onRegenerateCoaching,
   onClose,
   onDelete,
   onDeleteAudio,
@@ -88,6 +108,7 @@ export function Results({
   const [compareId, setCompareId] = useState<string | null>(null);
 
   const m = analysis.metrics;
+  const isReference = mode === "reference";
   const canPlay = audioSrc !== null;
   const focus = new Set<MetricName>(profile?.focus.map((item) => item.metric));
   const isFocus = (name: MetricName) => focus.has(name);
@@ -124,19 +145,23 @@ export function Results({
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 id="results-heading" className="text-xl font-semibold">
-            Results
+            {isReference ? (analysis.title ?? "The reference") : "Results"}
           </h2>
           <p className={`mt-1 text-sm ${MUTED}`}>
-            {formatDateTime(analysis.createdAt)} · {profileName(analysis.profile)} profile ·{" "}
-            {language} · {formatSpan(analysis.durationSeconds)}
+            {isReference
+              ? "The reference recording, measured the same way as your takes"
+              : `${formatDateTime(analysis.createdAt)} · ${profileName(analysis.profile)} profile`}{" "}
+            · {language} · {formatSpan(analysis.durationSeconds)}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button onClick={onClose}>Close results</Button>
-          <Button variant="danger" onClick={onDelete}>
-            Delete this analysis
-          </Button>
-        </div>
+        {!isReference && (
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onClose}>Close results</Button>
+            <Button variant="danger" onClick={onDelete}>
+              Delete this analysis
+            </Button>
+          </div>
+        )}
       </header>
 
       {analysis.warnings.length > 0 && (
@@ -234,6 +259,24 @@ export function Results({
           onSeek={canPlay ? (seconds) => playRange(seconds) : undefined}
         />
       </Section>
+
+      {/* --- Coaching ------------------------------------------------------------------ */}
+      {/* A reference is someone else's performance: there is nothing to coach it on. */}
+      {!isReference && (
+        <Coaching
+          coaching={analysis.coaching}
+          segments={analysis.segments}
+          profile={profile}
+          coach={coach}
+          busy={busy}
+          regeneration={regeneration}
+          onRegenerate={onRegenerateCoaching}
+          playButton={playButton}
+        />
+      )}
+
+      {/* --- Against a reference recording ---------------------------------------------- */}
+      {!isReference && referenceSection}
 
       {/* --- Pace ---------------------------------------------------------------------- */}
       <Section
@@ -489,31 +532,8 @@ export function Results({
         </div>
       </Section>
 
-      {/* --- Profile and coaching -------------------------------------------------------- */}
-      <Section id="coaching-heading" title="Coaching">
-        {profile && profile.focus.length > 0 && (
-          <div className="text-sm">
-            <p>
-              For the <span className="font-medium">{profile.name}</span> profile, the measurements
-              marked “Profile focus” above matter most:
-            </p>
-            <ul className="mt-1 list-disc space-y-0.5 pl-5">
-              {profile.focus.map((item) => (
-                <li key={item.metric + item.label}>
-                  <span className="font-medium">{item.label}</span> — {item.looksFor.toLowerCase()}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <Notice kind="info">
-          Prioritised corrections and practice drills are not part of this version. They arrive
-          with AI coaching, which will explain these measurements against the chosen profile. Until
-          then, the numbers above are measurements only, with no judgement attached.
-        </Notice>
-      </Section>
-
       {/* --- Compare ------------------------------------------------------------------- */}
+      {!isReference && (
       <Section
         id="compare-heading"
         title="Compare with an earlier attempt"
@@ -586,6 +606,7 @@ export function Results({
           </p>
         )}
       </Section>
+      )}
 
       {/* --- Details ------------------------------------------------------------------- */}
       <div className="flex flex-col gap-2">

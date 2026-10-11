@@ -1,5 +1,5 @@
 """The worker: a separate program that takes jobs from the queue one at a time and runs
-the audio pipeline on them, so the API never has to wait for slow work.
+the audio pipeline and the coaching on them, so the API never has to wait for slow work.
 
 Start it from the backend folder, next to the API:
 
@@ -19,12 +19,14 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import job_queue, uploads
+from app import job_queue, schemas, uploads
+from app.coaching.coach import Coach, CoachingUnavailable
 from app.config import settings
-from app.models import Job, WorkerState, utcnow
+from app.models import Analysis, Job, WorkerState, utcnow
 from app.pipeline.errors import JobCancelled, PipelineError, WorkerStopping
 from app.pipeline.runner import PipelineDeps, run_analysis
 from app.pipeline.settings import DEFAULT_SETTINGS, AnalysisSettings
+from app.pipeline.waveform import waveform_outline
 
 logger = logging.getLogger("app.worker")
 
@@ -32,12 +34,22 @@ HEARTBEAT_SECONDS = 3
 MAINTENANCE_SECONDS = 60
 # An upload no job refers to is left alone this long, in case its job is just being created.
 STRAY_UPLOAD_SECONDS = 3600
+# How often the worker asks Ollama whether the language model is available.
+COACH_CHECK_SECONDS = 15
 
 STAGE_DESCRIPTIONS = {
     "preparing_audio": "reading the audio",
     "detecting_speech": "detecting speech",
     "transcribing": "transcribing",
     "measuring_audio": "measuring the audio",
+    "generating_feedback": "writing the coaching",
+}
+
+
+COACH_HELP = {
+    "not_running": "Start Ollama (open the Ollama app, or run: ollama serve).",
+    "model_missing": "The model '{model}' is not installed. To install it: ollama pull {model}",
+    "not_local": "OLLAMA_BASE_URL must point at this computer, e.g. http://localhost:11434.",
 }
 
 
@@ -53,10 +65,15 @@ class Worker:
         max_attempts: int = 2,
         failed_audio_retention_hours: float = 24,
         speech_model_ready: Callable[[], bool] = lambda: True,
+        coach: Coach | None = None,
         clock: Callable[[], datetime] = utcnow,
     ) -> None:
         self.session_factory = session_factory
         self.deps = deps
+        # With no language model given, coaching comes from fixed templates.
+        self.coach = coach or Coach(None)
+        self._coach_status: str | None = None
+        self._coach_checked_at = float("-inf")
         self.data_dir = data_dir
         self.analysis_settings = analysis_settings
         self.max_audio_seconds = max_audio_seconds
@@ -76,14 +93,15 @@ class Worker:
             if job is None:
                 return False
             job_id, short_id = job.id, job.id[:8]
-            audio_path = job.audio_path
+            kind, role, attempt = job.kind, job.role, job.attempt
+            # Copied out now: the row is not read again until the job finishes.
+            audio_path, analysis_id = job.audio_path, job.analysis_id
             profile, language = job.profile, job.language_hint
-            attempt = job.attempt
 
         self.current_job_id = job_id
         started = time.monotonic()
         stage = "preparing_audio"
-        logger.info("job %s started (attempt %d)", short_id, attempt)
+        logger.info("%s job %s started (attempt %d)", kind, short_id, attempt)
 
         def on_stage(name: str) -> None:
             nonlocal stage
@@ -93,7 +111,7 @@ class Worker:
             logger.info("job %s: %s", short_id, name)
 
         def check() -> None:
-            # Called by the pipeline between steps: the only places a job can stop safely.
+            # Called between steps: the only places a job can stop safely.
             with self.session_factory() as session:
                 if job_queue.is_cancel_requested(session, job_id):
                     raise JobCancelled
@@ -101,25 +119,11 @@ class Worker:
                 raise WorkerStopping
 
         try:
-            if not audio_path or not uploads.audio_exists(audio_path, self.data_dir):
-                raise PipelineError("audio_missing", "The uploaded audio is no longer available.")
-            body = run_analysis(
-                uploads.absolute(audio_path, self.data_dir),
-                profile=profile,
-                language=language,
-                settings=self.analysis_settings,
-                max_seconds=self.max_audio_seconds,
-                deps=self.deps,
-                on_stage=on_stage,
-                check=check,
-            )
-            check()
-            with self.session_factory() as session:
-                job = session.get(Job, job_id)
-                saved = job_queue.complete_job(
-                    session, job, body, self.analysis_settings.version, self.clock(), self.data_dir
-                )
-            if saved is None:
+            if kind == job_queue.COACHING:
+                saved = self._write_coaching_again(job_id, analysis_id, on_stage, check)
+            else:
+                saved = self._analyse(job_id, audio_path, profile, language, role, on_stage, check)
+            if not saved:
                 raise JobCancelled
             logger.info("job %s succeeded in %.1fs", short_id, time.monotonic() - started)
         except JobCancelled:
@@ -141,13 +145,104 @@ class Worker:
                 "unexpected_error",
                 f"Something went wrong while {STAGE_DESCRIPTIONS.get(stage, stage)} "
                 f"({type(error).__name__}).",
-                True,
+                kind == job_queue.ANALYSIS,
             )
             logger.error("job %s failed unexpectedly: %s", short_id, type(error).__name__)
             logger.debug("job %s traceback", short_id, exc_info=True)
         finally:
             self.current_job_id = None
         return True
+
+    def _analyse(
+        self,
+        job_id: str,
+        audio_path: str | None,
+        profile: str,
+        language: str,
+        role: str,
+        on_stage: Callable[[str], None],
+        check: Callable[[], None],
+    ) -> bool:
+        """Measures the recording, writes its coaching and stores both. False if cancelled.
+
+        A reference recording is measured in exactly the same way but gets no coaching:
+        there is nothing to coach the original performer on.
+        """
+        if not audio_path or not uploads.audio_exists(audio_path, self.data_dir):
+            raise PipelineError("audio_missing", "The uploaded audio is no longer available.")
+        pictures: list[schemas.Waveform] = []
+        body = run_analysis(
+            uploads.absolute(audio_path, self.data_dir),
+            profile=profile,
+            language=language,
+            settings=self.analysis_settings,
+            max_seconds=self.max_audio_seconds,
+            deps=self.deps,
+            on_stage=on_stage,
+            check=check,
+            on_audio=lambda samples: pictures.append(waveform_outline(samples)),
+        )
+        check()
+        coaching = None
+        if role != job_queue.REFERENCE:
+            on_stage("generating_feedback")
+            coaching = self._coach_safely(body, check)
+            check()
+        with self.session_factory() as session:
+            job = session.get(Job, job_id)
+            saved = job_queue.complete_job(
+                session,
+                job,
+                body,
+                self.analysis_settings.version,
+                self.clock(),
+                self.data_dir,
+                coaching=coaching,
+                waveform=pictures[0] if pictures else None,
+            )
+        return saved is not None
+
+    def _coach_safely(
+        self, body: schemas.AnalysisBody, check: Callable[[], None]
+    ) -> schemas.Coaching | None:
+        """Coaching must never cost the user their measurements.
+
+        If the coaching step breaks in a way nobody planned for, the result is saved
+        without coaching, and the screen offers to write it again.
+        """
+        try:
+            return self.coach.generate(body, now=self.clock(), check=check)
+        except (JobCancelled, WorkerStopping):
+            raise
+        except Exception as error:
+            logger.error("coaching failed unexpectedly: %s", type(error).__name__)
+            logger.debug("coaching traceback", exc_info=True)
+            return None
+
+    def _write_coaching_again(
+        self,
+        job_id: str,
+        analysis_id: str | None,
+        on_stage: Callable[[str], None],
+        check: Callable[[], None],
+    ) -> bool:
+        """Asks the language model for new coaching on a stored analysis. False if cancelled."""
+        with self.session_factory() as session:
+            analysis = session.get(Analysis, analysis_id) if analysis_id else None
+            stored = analysis.result if analysis else None
+        if stored is None:
+            raise PipelineError("analysis_gone", "The analysis this coaching was for was deleted.")
+        body = schemas.AnalysisBody.model_validate(stored)
+        on_stage("generating_feedback")
+        try:
+            # Template coaching would be no improvement on what is already stored, so
+            # anything short of an answer from the model fails the job and changes nothing.
+            coaching = self.coach.generate(body, now=self.clock(), check=check, require_model=True)
+        except CoachingUnavailable as error:
+            raise PipelineError(error.code, error.message) from None
+        check()
+        with self.session_factory() as session:
+            return job_queue.complete_coaching_job(session, job_id, coaching, self.clock())
 
     def _fail(self, job_id: str, code: str, message: str, retryable: bool) -> None:
         with self.session_factory() as session:
@@ -174,9 +269,18 @@ class Worker:
                 speech_model=self.deps.transcriber.name,
                 speech_model_ready=self.speech_model_ready(),
                 starting=starting,
+                coach_model=self.coach.model_name,
+                coach_status=self.coach_status(),
             )
             if self.current_job_id:
                 job_queue.touch_job(session, self.current_job_id, now)
+
+    def coach_status(self) -> str:
+        """Whether the language model could answer, checked afresh every few seconds."""
+        if time.monotonic() - self._coach_checked_at > COACH_CHECK_SECONDS:
+            self._coach_status = self.coach.status()
+            self._coach_checked_at = time.monotonic()
+        return self._coach_status or "unknown"
 
     def recover(self, *, stale_after_seconds: float) -> None:
         with self.session_factory() as session:
@@ -257,10 +361,12 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Library loggers can print details of the audio; keep them to warnings.
+    # Library loggers can print details of the audio or the requests; keep them to warnings.
     logging.getLogger("faster_whisper").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     from app.db import SessionLocal
+    from app.llm import OllamaChat
     from app.pipeline.transcribe import WhisperTranscriber
     from app.speech_model import local_model_path
 
@@ -273,9 +379,20 @@ def main() -> int:
         return model_check["ready"]
 
     transcriber = WhisperTranscriber(settings.whisper_model, settings.whisper_compute_type)
+    language_model = (
+        OllamaChat(
+            settings.ollama_model,
+            base_url=settings.ollama_base_url,
+            timeout_seconds=settings.ollama_timeout_seconds,
+            context_tokens=settings.ollama_context_tokens,
+        )
+        if settings.ai_coaching
+        else None
+    )
     worker = Worker(
         SessionLocal,
         PipelineDeps(transcriber=transcriber),
+        coach=Coach(language_model),
         max_audio_seconds=settings.max_audio_seconds,
         max_attempts=settings.max_job_attempts,
         failed_audio_retention_hours=settings.failed_audio_retention_hours,
@@ -301,6 +418,19 @@ def main() -> int:
             "Speech model '%s' is not downloaded. Jobs will fail until you run: "
             "uv run python -m app.speech_model download",
             settings.whisper_model,
+        )
+    coach_status = worker.coach_status()
+    if coach_status == "ready":
+        logger.info("AI coaching ready. Language model: %s.", settings.ollama_model)
+    elif coach_status == "off":
+        logger.info("AI coaching is switched off (AI_COACHING=off). Coaching uses fixed rules.")
+    else:
+        # Never fixed automatically: this app does not start Ollama or download models.
+        logger.warning(
+            "AI coaching is not available (%s). Analyses still work; coaching will use fixed "
+            "rules. %s",
+            coach_status,
+            COACH_HELP.get(coach_status, "").format(model=settings.ollama_model),
         )
     try:
         worker.run_forever(settings.worker_poll_seconds)

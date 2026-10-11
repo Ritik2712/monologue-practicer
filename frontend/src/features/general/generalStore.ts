@@ -1,6 +1,7 @@
 /**
- * The state of the General Practice screen, and everything that changes it: submitting a
- * recording, following its job, showing a result, and managing the history.
+ * The state of the General Practice and Monologue screens, and everything that changes it:
+ * submitting a recording, following its job, showing a result, managing the history, and
+ * keeping the reference recordings and the comparison with the chosen one.
  *
  * Like the checklist's store it knows nothing about React. The backend client, the timer
  * and the browser storage are passed in, so tests can script the backend and move time.
@@ -10,19 +11,26 @@ import type {
   AnalysisOptions,
   AnalysisResult,
   AnalysisSummary,
+  Comparison,
+  JobKind,
   JobStatus,
   LanguageHint,
   Profile,
+  Role,
+  Waveform,
 } from "./types";
 
 /** Remembers a job that is still in progress, so a page refresh can pick it up again. */
 export const ACTIVE_JOB_KEY = "monologue-coach.general.active-job";
+/** Remembers which reference recording takes are being compared with. */
+export const SELECTED_REFERENCE_KEY = "monologue-coach.reference.selected";
 
 /** How often a job in progress is checked. Slow enough not to hammer the backend. */
 export const POLL_MS = 1000;
 /** When the backend stops answering, checks back off up to this long. */
 export const MAX_POLL_MS = 5000;
 export const HISTORY_LIMIT = 20;
+export const REFERENCE_LIMIT = 50;
 
 export type ErrorInfo = { code: string; message: string };
 
@@ -32,6 +40,10 @@ export type Submission = {
   profile: Profile;
   language: LanguageHint;
   retainAudio: boolean;
+  /** A take (the default), or a reference recording to compare takes against. */
+  role?: Role;
+  /** The name a reference is listed under. */
+  title?: string;
   /** An object URL for the same audio, so the result can be played back in this session. */
   previewUrl: string | null;
 };
@@ -56,6 +68,21 @@ export type ViewedState =
   | { status: "ready"; analysis: AnalysisResult }
   | { status: "error"; analysisId: string; message: string };
 
+/** A take set against the chosen reference. */
+export type ComparisonState =
+  | { status: "none" }
+  | { status: "loading"; takeId: string; referenceId: string }
+  | { status: "ready"; takeId: string; referenceId: string; data: Comparison }
+  | { status: "error"; takeId: string; referenceId: string; message: string };
+
+/** The outline of one recording's sound wave, fetched only when it is asked for. */
+export type WaveformState =
+  | { status: "loading" }
+  | { status: "ready"; data: Waveform }
+  /** Analysed before waveforms were stored. */
+  | { status: "missing" }
+  | { status: "error"; message: string };
+
 export type GeneralState = {
   options:
     | { status: "loading" }
@@ -68,7 +95,30 @@ export type GeneralState = {
     message: string | null;
   };
   run: RunState;
+  /**
+   * What the current run is doing: analysing a recording, or only writing the coaching of
+   * an analysis that already exists again.
+   */
+  runKind: JobKind;
+  /** The analysis whose coaching is being written again. Null for an ordinary analysis. */
+  coachingFor: string | null;
+  /** Whether the recording in the current run is a take or a reference. */
+  runRole: Role;
   viewed: ViewedState;
+  /** The reference recordings that takes can be compared with. */
+  references: {
+    status: "loading" | "ready" | "error";
+    items: AnalysisSummary[];
+    message: string | null;
+  };
+  /** The reference currently chosen. Remembered between visits. */
+  selectedReferenceId: string | null;
+  /** The chosen reference's own full result, for studying it. */
+  referenceDetail: ViewedState;
+  /** The take on view set against the chosen reference. Kept up to date by the store. */
+  comparison: ComparisonState;
+  /** Sound-wave outlines by analysis ID. Only what has been asked for. */
+  waveforms: Record<string, WaveformState>;
   notice: { kind: "info" | "error"; text: string } | null;
   /** Recordings held in this page's memory, by analysis ID. Gone after a refresh. */
   localAudio: Record<string, string>;
@@ -87,10 +137,21 @@ export type GeneralStore = {
   resubmit: () => void;
   cancel: () => void;
   retry: () => void;
+  /**
+   * Asks the local AI model to write an analysis's coaching again. The measurements are
+   * not touched. Returns false, doing nothing, if something is already in progress.
+   */
+  regenerateCoaching: (analysisId: string) => boolean;
   /** Clears a finished, failed or cancelled run so a new one can start. */
   dismissRun: () => void;
   openAnalysis: (analysisId: string) => void;
   closeAnalysis: () => void;
+  refreshReferences: () => void;
+  /** Chooses the reference that takes are compared with. Null chooses none. */
+  selectReference: (analysisId: string | null) => void;
+  deleteReference: (analysisId: string) => void;
+  /** Fetches a recording's sound-wave outline, once. Does nothing if it is already here. */
+  loadWaveform: (analysisId: string) => void;
   deleteAnalysis: (analysisId: string) => void;
   deleteAudio: (analysisId: string) => void;
   clearHistory: () => void;
@@ -114,7 +175,15 @@ const INITIAL: GeneralState = {
   options: { status: "loading" },
   history: { status: "loading", items: [], total: 0, message: null },
   run: { phase: "idle" },
+  runKind: "analysis",
+  coachingFor: null,
+  runRole: "take",
   viewed: { status: "none" },
+  references: { status: "loading", items: [], message: null },
+  selectedReferenceId: null,
+  referenceDetail: { status: "none" },
+  comparison: { status: "none" },
+  waveforms: {},
   notice: null,
   localAudio: {},
 };
@@ -137,9 +206,124 @@ export function createGeneralStore({
   /** Goes up whenever the run is replaced, so answers to old requests are ignored. */
   let runToken = 0;
 
-  function set(patch: Partial<GeneralState>) {
+  function apply(patch: Partial<GeneralState>) {
     state = { ...state, ...patch };
     listeners.forEach((listener) => listener());
+  }
+
+  function set(patch: Partial<GeneralState>) {
+    apply(patch);
+    // The chosen reference's details and the comparison follow from what is on view and
+    // which reference is chosen. They are brought up to date here, in one place, so no
+    // action has to remember to do it.
+    if ("viewed" in patch || "selectedReferenceId" in patch) syncWithSelection();
+  }
+
+  function syncWithSelection() {
+    const referenceId = state.selectedReferenceId;
+    const detail = state.referenceDetail;
+    const detailId =
+      detail.status === "ready"
+        ? detail.analysis.analysisId
+        : detail.status === "none"
+          ? null
+          : detail.analysisId;
+    if (referenceId === null) {
+      if (detail.status !== "none") apply({ referenceDetail: { status: "none" } });
+    } else if (detailId !== referenceId) {
+      apply({ referenceDetail: { status: "loading", analysisId: referenceId } });
+      api.getAnalysis(referenceId).then(
+        (analysis) => {
+          if (state.selectedReferenceId === referenceId) {
+            apply({ referenceDetail: { status: "ready", analysis } });
+          }
+        },
+        (error) => {
+          if (state.selectedReferenceId !== referenceId) return;
+          apply({
+            referenceDetail: {
+              status: "error",
+              analysisId: referenceId,
+              message: describeError(error).message,
+            },
+          });
+        },
+      );
+    }
+
+    // Only one of your own takes is compared with a reference.
+    const { viewed, comparison } = state;
+    const takeId =
+      viewed.status === "ready" && viewed.analysis.role === "take"
+        ? viewed.analysis.analysisId
+        : null;
+    if (takeId === null || referenceId === null) {
+      if (comparison.status !== "none") apply({ comparison: { status: "none" } });
+      return;
+    }
+    if (
+      comparison.status !== "none" &&
+      comparison.takeId === takeId &&
+      comparison.referenceId === referenceId
+    ) {
+      return;
+    }
+    apply({ comparison: { status: "loading", takeId, referenceId } });
+    const stillWanted = () =>
+      state.comparison.status === "loading" &&
+      state.comparison.takeId === takeId &&
+      state.comparison.referenceId === referenceId;
+    api.getComparison(takeId, referenceId).then(
+      (data) => {
+        if (stillWanted()) apply({ comparison: { status: "ready", takeId, referenceId, data } });
+      },
+      (error) => {
+        if (!stillWanted()) return;
+        apply({
+          comparison: {
+            status: "error",
+            takeId,
+            referenceId,
+            message: describeError(error).message,
+          },
+        });
+      },
+    );
+  }
+
+  function rememberReference(analysisId: string | null) {
+    try {
+      const storage = getStorage();
+      if (analysisId) storage?.setItem(SELECTED_REFERENCE_KEY, analysisId);
+      else storage?.removeItem(SELECTED_REFERENCE_KEY);
+    } catch {
+      // A convenience only: the choice still holds for this visit.
+    }
+  }
+
+  function selectReference(analysisId: string | null) {
+    if (analysisId === state.selectedReferenceId) return;
+    rememberReference(analysisId);
+    set({ selectedReferenceId: analysisId });
+  }
+
+  function refreshReferences() {
+    api.listAnalyses(REFERENCE_LIMIT, "reference").then(
+      ({ items }) => {
+        apply({ references: { status: "ready", items, message: null } });
+        // A reference deleted elsewhere can no longer be the chosen one.
+        const chosen = state.selectedReferenceId;
+        if (chosen && !items.some((item) => item.analysisId === chosen)) selectReference(null);
+      },
+      (error) =>
+        apply({
+          references: {
+            ...state.references,
+            status: "error",
+            message: describeError(error).message,
+          },
+        }),
+    );
   }
 
   function remember(jobId: string | null) {
@@ -201,6 +385,14 @@ export function createGeneralStore({
   }
 
   async function handleJob(job: JobStatus, token: number) {
+    // A job picked up after a page refresh says for itself what kind it is.
+    if (state.runKind !== job.kind || state.runRole !== job.role) {
+      set({
+        runKind: job.kind,
+        runRole: job.role,
+        coachingFor: job.kind === "coaching" ? job.analysisId : null,
+      });
+    }
     switch (job.status) {
       case "queued":
       case "running":
@@ -240,10 +432,28 @@ export function createGeneralStore({
       remember(null);
       const previewUrl = pending?.submission.previewUrl;
       pending = null;
+      const { viewed } = state;
+      const localAudio = previewUrl
+        ? { ...state.localAudio, [analysisId]: previewUrl }
+        : state.localAudio;
+      if (job.role === "reference") {
+        // A new reference joins the list and becomes the chosen one. Whatever take is on
+        // view stays there, and is now compared with it.
+        set({ run: { phase: "done", job, analysisId }, localAudio });
+        refreshReferences();
+        selectReference(analysisId);
+        return;
+      }
+      // New coaching is shown only if its analysis is still the one on screen: the user
+      // may have opened another while the model was writing.
+      const show =
+        job.kind !== "coaching" ||
+        viewed.status === "none" ||
+        (viewed.status === "ready" && viewed.analysis.analysisId === analysisId);
       set({
         run: { phase: "done", job, analysisId },
-        viewed: { status: "ready", analysis },
-        localAudio: previewUrl ? { ...state.localAudio, [analysisId]: previewUrl } : state.localAudio,
+        viewed: show ? { status: "ready", analysis } : viewed,
+        localAudio,
       });
       refreshHistory();
     } catch (error) {
@@ -265,6 +475,8 @@ export function createGeneralStore({
         profile: submission.profile,
         language: submission.language,
         retainAudio: submission.retainAudio,
+        role: submission.role,
+        title: submission.title,
         idempotencyKey: key,
       });
       if (token !== runToken) return;
@@ -331,20 +543,88 @@ export function createGeneralStore({
       loadOptions();
       refreshHistory();
       let jobId: string | null = null;
+      let referenceId: string | null = null;
       try {
         jobId = getStorage()?.getItem(ACTIVE_JOB_KEY) ?? null;
+        referenceId = getStorage()?.getItem(SELECTED_REFERENCE_KEY) ?? null;
       } catch {
         jobId = null;
       }
+      // The reference chosen last time is chosen again; the list then confirms it exists.
+      if (referenceId) set({ selectedReferenceId: referenceId });
+      refreshReferences();
       if (jobId) void poll(jobId, startRun());
     },
     loadOptions,
     refreshHistory,
+    refreshReferences,
+    selectReference,
+
+    deleteReference(analysisId) {
+      api.deleteAnalysis(analysisId).then(
+        () => {
+          apply({
+            references: {
+              ...state.references,
+              items: state.references.items.filter((item) => item.analysisId !== analysisId),
+            },
+            localAudio: forget([analysisId]),
+            notice: { kind: "info", text: "Reference deleted." },
+          });
+          if (state.selectedReferenceId === analysisId) selectReference(null);
+          refreshReferences();
+        },
+        (error) => set({ notice: { kind: "error", text: describeError(error).message } }),
+      );
+    },
+
+    loadWaveform(analysisId) {
+      if (state.waveforms[analysisId]) return;
+      const store = (waveform: WaveformState) =>
+        apply({ waveforms: { ...state.waveforms, [analysisId]: waveform } });
+      store({ status: "loading" });
+      api.getWaveform(analysisId).then(
+        (data) => store({ status: "ready", data }),
+        (error) => {
+          const info = describeError(error);
+          store(
+            info.code === "waveform_not_stored"
+              ? { status: "missing" }
+              : { status: "error", message: info.message },
+          );
+        },
+      );
+    },
 
     submit(submission) {
       if (isBusy()) return false;
       pending = { submission, key: newKey() };
+      set({ runKind: "analysis", runRole: submission.role ?? "take", coachingFor: null });
       void send(startRun());
+      return true;
+    },
+
+    regenerateCoaching(analysisId) {
+      if (isBusy()) return false;
+      pending = null;
+      const token = startRun();
+      set({
+        run: { phase: "submitting" },
+        runKind: "coaching",
+        coachingFor: analysisId,
+        notice: null,
+      });
+      api.requestCoaching(analysisId).then(
+        (job) => {
+          if (token === runToken) void handleJob(job, token);
+        },
+        (error) => {
+          if (token !== runToken) return;
+          set({
+            run: { phase: "failed", job: null, error: describeError(error), canResubmit: false },
+          });
+        },
+      );
       return true;
     },
 
@@ -449,18 +729,23 @@ export function createGeneralStore({
     deleteAudio(analysisId) {
       api.deleteAnalysisAudio(analysisId).then(
         () => {
-          const { viewed } = state;
-          set({
-            history: {
-              ...state.history,
-              items: state.history.items.map((item) =>
-                item.analysisId === analysisId ? { ...item, audioRetained: false } : item,
-              ),
+          const { viewed, referenceDetail } = state;
+          const withoutAudio = (item: AnalysisSummary) =>
+            item.analysisId === analysisId ? { ...item, audioRetained: false } : item;
+          const updated = (shown: ViewedState): ViewedState =>
+            shown.status === "ready" && shown.analysis.analysisId === analysisId
+              ? { status: "ready", analysis: { ...shown.analysis, audioRetained: false } }
+              : shown;
+          // Applied directly: nothing here changes what is on view or which reference is
+          // chosen, so there is nothing to bring up to date.
+          apply({
+            history: { ...state.history, items: state.history.items.map(withoutAudio) },
+            references: {
+              ...state.references,
+              items: state.references.items.map(withoutAudio),
             },
-            viewed:
-              viewed.status === "ready" && viewed.analysis.analysisId === analysisId
-                ? { status: "ready", analysis: { ...viewed.analysis, audioRetained: false } }
-                : viewed,
+            viewed: updated(viewed),
+            referenceDetail: updated(referenceDetail),
             // The user asked for the recording to go, so the copy in memory goes too.
             localAudio: forget([analysisId]),
             notice: { kind: "info", text: "Recording deleted. The measurements were kept." },

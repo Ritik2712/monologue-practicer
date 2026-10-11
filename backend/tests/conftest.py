@@ -2,6 +2,7 @@
 audio files, and stand-ins for the slow parts of the pipeline."""
 
 import io
+import json
 import math
 import struct
 import wave
@@ -14,9 +15,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-from app import job_queue, uploads
+from app import job_queue, schemas, uploads
+from app.coaching.coach import Coach
 from app.db import Base, get_session, make_engine
 from app.dependencies import get_data_dir, get_now
+from app.llm import LlmError, Message, Reply
 from app.main import app
 from app.pipeline import acoustics
 from app.pipeline.runner import PipelineDeps
@@ -64,6 +67,242 @@ class FakeTranscriber:
             language=self.language,
             language_probability=self.language_probability,
         )
+
+
+class FakeChat:
+    """Stands in for the language model: gives prepared answers and records what it was asked."""
+
+    name = "fake-llm"
+    context_tokens = 8192
+
+    def __init__(self, *replies: str | dict | Exception, model_status: str = "ready") -> None:
+        # Each call takes the next reply; the last one is repeated if more calls come.
+        self.replies = list(replies)
+        self.model_status = model_status
+        self.calls: list[tuple[list[Message], dict]] = []
+        # Runs in the middle of answering, e.g. to request cancellation at that moment.
+        self.during: Callable[[], None] | None = None
+
+    def status(self) -> str:
+        return self.model_status
+
+    def complete_json(self, messages, schema, *, max_tokens, check=lambda: None) -> Reply:
+        self.calls.append((list(messages), schema))
+        if self.model_status != "ready":
+            raise LlmError(self.model_status, f"The model is {self.model_status}.")
+        if self.during:
+            self.during()
+        check()
+        reply = self.replies[min(len(self.calls), len(self.replies)) - 1]
+        if isinstance(reply, Exception):
+            raise reply
+        if callable(reply):
+            reply = reply(schema)
+        if isinstance(reply, dict):
+            reply = json.dumps(reply)
+        return Reply(text=reply, truncated=False, seconds=1.5)
+
+
+def answer_within(schema: dict) -> dict:
+    """A well-behaved model answer: one correction per allowed slot, naming real findings."""
+    corrections = schema["properties"]["corrections"]
+    fields = corrections["items"]["properties"]
+    working = schema["properties"]["working"]
+    return {
+        "corrections": [
+            {
+                "finding": finding,
+                "segment": fields["segment"]["enum"][0],
+                "title": f"Work on {finding}",
+                "why": "A listener loses the thread here.",
+                "drill": "Say the line again, slowly, 3 times.",
+            }
+            for finding in fields["finding"]["enum"][: corrections["maxItems"]]
+        ],
+        "working": [
+            {"finding": finding, "note": "Keep this."}
+            for finding in working.get("items", {})
+            .get("properties", {})
+            .get("finding", {})
+            .get("enum", [])[:1]
+        ],
+    }
+
+
+def metric(value: float | None, unit: str = "", quality: str = "measured") -> schemas.MetricValue:
+    return schemas.MetricValue(
+        value=value, unit=unit, quality="unavailable" if value is None else quality
+    )
+
+
+def make_segment(
+    index: int, start: float, end: float, text: str, **fields
+) -> schemas.SpeechSegment:
+    words = len(text.split())
+    values = {
+        "id": f"seg-{index + 1}",
+        "index": index,
+        "section_index": 0,
+        "start_seconds": start,
+        "end_seconds": end,
+        "speech_active_seconds": end - start,
+        "transcript": text or None,
+        "word_count": words,
+        "segment_wpm": round(words / ((end - start) / 60), 1) if words else None,
+        "pace_vs_typical": None,
+        "quality": "measured",
+        "reliable": True,
+        "flags": [],
+        "confidence": 0.9,
+        "mean_energy_db": -20.0,
+        "energy_delta_db": 0.0,
+        "median_pitch_hz": 180.0,
+        "pitch_delta_semitones": 0.0,
+    }
+    return schemas.SpeechSegment(**{**values, **fields})
+
+
+def make_pause(index: int, start: float, end: float) -> schemas.PauseEvent:
+    duration = round(end - start, 3)
+    return schemas.PauseEvent(
+        id=f"pause-{index + 1}",
+        index=index,
+        start_seconds=start,
+        end_seconds=end,
+        duration_seconds=duration,
+        significance="short" if duration < 1 else "medium" if duration < 5 else "long",
+        after_segment_id=f"seg-{index + 1}",
+        before_segment_id=f"seg-{index + 2}",
+        starts_new_section=duration >= 5,
+    )
+
+
+# A 17-second take of four phrases. The third is rushed; the pauses are 0.6, 0.7 and 0.8 s.
+TAKE_SEGMENTS = (
+    (0.0, 4.0, "You clearly do not know who you are talking to"),
+    (4.6, 8.6, "so let me clue you in on one small thing"),
+    (9.3, 12.3, "I am not in danger Skylar I am the danger and you should know that by now"),
+    (13.1, 17.1, "a guy opens his door and gets shot"),
+)
+
+
+def make_body(profile: str = "custom", **overrides) -> schemas.AnalysisBody:
+    """A complete measured recording for the coaching tests, built without any audio.
+
+    Keyword arguments named after a metric (snake_case) replace that metric's value; `None`
+    makes it unavailable. `segments`, `pauses`, `words`, `warnings`, `hesitations` and
+    `emphasis_candidates` replace those lists.
+    """
+    duration_seconds = overrides.pop("duration_seconds", 17.3)
+    segments = overrides.pop("segments", None)
+    if segments is None:
+        segments = [make_segment(i, a, b, text) for i, (a, b, text) in enumerate(TAKE_SEGMENTS)]
+        segments[2].pace_vs_typical = "faster"
+    pauses = overrides.pop("pauses", None)
+    if pauses is None:
+        pauses = [
+            make_pause(i, segments[i].end_seconds, segments[i + 1].start_seconds)
+            for i in range(len(segments) - 1)
+        ]
+    words = overrides.pop("words", None)
+    if words is None:
+        words = [
+            schemas.WordTiming(
+                text=text,
+                start_seconds=s.start_seconds,
+                end_seconds=s.end_seconds,
+                confidence=0.9,
+                segment_id=s.id,
+            )
+            for s in segments
+            for text in (s.transcript or "").split()
+        ]
+    values = {
+        "total_word_count": metric(len(words), "words"),
+        "speech_active_seconds": metric(sum(s.speech_active_seconds for s in segments), "seconds"),
+        "speech_active_wpm": metric(160.0, "words/minute"),
+        "whole_clip_wpm": metric(120.0, "words/minute"),
+        "pace_variation": metric(24.0, "words/minute"),
+        "pace_min_wpm": metric(120.0, "words/minute"),
+        "pace_max_wpm": metric(340.0, "words/minute"),
+        "typical_segment_wpm": metric(150.0, "words/minute"),
+        "pause_count": metric(float(len(pauses)), "count"),
+        "total_pause_seconds": metric(sum(p.duration_seconds for p in pauses), "seconds"),
+        "average_pause_seconds": metric(0.7, "seconds"),
+        "median_pause_seconds": metric(0.7, "seconds") if pauses else metric(None, "seconds"),
+        "longest_pause_seconds": metric(0.8, "seconds") if pauses else metric(None, "seconds"),
+        "pause_ratio": metric(0.105, "ratio"),
+        "leading_silence_seconds": metric(0.0, "seconds"),
+        "trailing_silence_seconds": metric(0.2, "seconds"),
+        "energy_variation": metric(4.5, "dB"),
+        "signal_to_noise": metric(40.0, "dB", "estimated"),
+        "pitch_median_hz": metric(180.0, "Hz"),
+        "pitch_range_hz": metric(60.0, "Hz"),
+        "pitch_range_semitones": metric(6.0, "semitones"),
+        "pitch_variation_semitones": metric(3.0, "semitones"),
+        "filler_word_count": metric(0.0, "count", "estimated"),
+        "breath_count": metric(None, "count"),
+        "clipping_ratio": metric(0.0, "ratio"),
+    }
+    lists = {
+        key: overrides.pop(key, []) for key in ("warnings", "hesitations", "emphasis_candidates")
+    }
+    for name in list(overrides):
+        if name in values:
+            value = overrides.pop(name)
+            values[name] = (
+                value
+                if isinstance(value, schemas.MetricValue)
+                else metric(value, values[name].unit)
+            )
+    assert not overrides, f"unknown fields: {sorted(overrides)}"
+    return schemas.AnalysisBody(
+        profile=profile,
+        language=schemas.LanguageInfo(code="en", source="declared", confidence=None),
+        duration_seconds=duration_seconds,
+        transcript=" ".join(s.transcript or "" for s in segments) or None,
+        segments=segments,
+        pauses=pauses,
+        words=words,
+        metrics=schemas.Metrics(**values),
+        energy_timeline=schemas.EnergyTimeline(seconds_per_point=0.25, unit="dBFS", values=[]),
+        settings={"version": 1, "min_pause_ms": 500},
+        pipeline=schemas.PipelineInfo(
+            speech_model="fake-model", voice_activity_detector="silero-vad", pitch_tracker="pyin"
+        ),
+        **lists,
+    )
+
+
+def make_recording(
+    phrases: list[tuple[float, float, str]], profile: str = "custom", **overrides
+) -> schemas.AnalysisBody:
+    """A measured recording built from phrases given as (start, end, "the words").
+
+    The gaps between phrases become its pauses, and each phrase's words are spread evenly
+    across it, which is what the comparison tests need to reason about exact times.
+    """
+    segments = [make_segment(i, a, b, text) for i, (a, b, text) in enumerate(phrases)]
+    pauses = [
+        make_pause(i, segments[i].end_seconds, segments[i + 1].start_seconds)
+        for i in range(len(segments) - 1)
+    ]
+    words = []
+    for segment in segments:
+        spoken = (segment.transcript or "").split()
+        step = (segment.end_seconds - segment.start_seconds) / max(1, len(spoken))
+        words += [
+            schemas.WordTiming(
+                text=text,
+                start_seconds=round(segment.start_seconds + k * step, 4),
+                end_seconds=round(segment.start_seconds + (k + 1) * step, 4),
+                confidence=0.9,
+                segment_id=segment.id,
+            )
+            for k, text in enumerate(spoken)
+        ]
+    overrides.setdefault("duration_seconds", (segments[-1].end_seconds + 0.5) if segments else 1.0)
+    return make_body(profile, segments=segments, pauses=pauses, words=words, **overrides)
 
 
 def make_words(start: float, end: float, count: int, probability: float = 0.9) -> list[Word]:
@@ -170,12 +409,14 @@ def make_worker(session_factory, data_dir: Path, clock: FakeClock, transcriber: 
     The scripted recording has speech at 0.5-4.5 s and 6.0-8.0 s, with a 1.5 s pause between.
     """
 
-    def build(**overrides) -> Worker:
+    def build(llm: FakeChat | None = None, **overrides) -> Worker:
         deps = PipelineDeps(
             transcriber=transcriber,
             detect_speech=fake_vad([(0.5, 4.5), (6.0, 8.0)]),
             measure_pitch=no_pitch,
         )
+        # Without a language model, coaching comes from the templates.
+        overrides.setdefault("coach", Coach(llm))
         return Worker(session_factory, deps, data_dir=data_dir, clock=clock, **overrides)
 
     return build
@@ -205,6 +446,8 @@ def add_job(session_factory, data_dir: Path, clock: FakeClock):
                 audio_path=audio_path,
                 idempotency_key=fields.pop("idempotency_key", None),
                 now=clock(),
+                role=fields.pop("role", "take"),
+                title=fields.pop("title", None),
             )
         # Later jobs must sort after earlier ones.
         clock.advance(seconds=1)

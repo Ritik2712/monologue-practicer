@@ -6,13 +6,16 @@ import {
   createGeneralStore,
   MAX_POLL_MS,
   POLL_MS,
+  SELECTED_REFERENCE_KEY,
   type Submission,
 } from "./generalStore";
-import type { AnalysisResult, AnalysisSummary, JobStatus } from "./types";
+import type { AnalysisResult, AnalysisSummary, Comparison, JobStatus } from "./types";
 
 function job(overrides: Partial<JobStatus> = {}): JobStatus {
   return {
     jobId: "job-1",
+    kind: "analysis",
+    role: "take",
     status: "queued",
     stage: null,
     cancelRequested: false,
@@ -30,9 +33,16 @@ function job(overrides: Partial<JobStatus> = {}): JobStatus {
   };
 }
 
-const analysis = (id = "analysis-1") => ({ analysisId: id, audioRetained: false }) as AnalysisResult;
+const analysis = (id = "analysis-1") =>
+  ({ analysisId: id, role: "take", audioRetained: false }) as AnalysisResult;
 const summary = (id: string, audioRetained = false) =>
-  ({ analysisId: id, audioRetained, metrics: {} }) as AnalysisSummary;
+  ({ analysisId: id, role: "take", audioRetained, metrics: {} }) as AnalysisSummary;
+const reference = (id: string, title = "The original") =>
+  ({ analysisId: id, role: "reference", title, audioRetained: true, metrics: {} }) as AnalysisSummary;
+const referenceResult = (id: string) =>
+  ({ analysisId: id, role: "reference", title: "The original", audioRetained: true }) as AnalysisResult;
+const comparison = (takeId: string, referenceId: string) =>
+  ({ takeId, referenceId, differences: [] }) as unknown as Comparison;
 
 const submission: Submission = {
   audio: new Blob(["audio"]),
@@ -55,6 +65,9 @@ function setup(stored: Record<string, string> = {}) {
     cancelJob: vi.fn(),
     retryJob: vi.fn(),
     getAnalysis: vi.fn().mockResolvedValue(analysis()),
+    requestCoaching: vi.fn(),
+    getComparison: vi.fn(),
+    getWaveform: vi.fn(),
     listAnalyses: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     deleteAnalysis: vi.fn().mockResolvedValue(undefined),
     deleteAnalysisAudio: vi.fn().mockResolvedValue(undefined),
@@ -482,5 +495,436 @@ describe("history", () => {
 
     store.dismissNotice();
     expect(store.getSnapshot().notice).toBeNull();
+  });
+});
+
+describe("writing the coaching again", () => {
+  const coachingJob = (overrides: Partial<JobStatus> = {}) =>
+    job({ jobId: "job-c", kind: "coaching", analysisId: "analysis-1", ...overrides });
+
+  /** A store with analysis-1 open on screen. */
+  async function withOpenAnalysis() {
+    const context = setup();
+    context.store.openAnalysis("analysis-1");
+    await settle();
+    context.api.requestCoaching.mockResolvedValue(coachingJob());
+    return context;
+  }
+
+  it("follows a coaching job and shows the new coaching in place", async () => {
+    const { store, api, storage, tick, run } = await withOpenAnalysis();
+    const rewritten = { ...analysis(), coaching: { source: "ai" } } as AnalysisResult;
+
+    expect(store.regenerateCoaching("analysis-1")).toBe(true);
+    expect(run().phase).toBe("submitting");
+    expect(store.getSnapshot()).toMatchObject({ runKind: "coaching", coachingFor: "analysis-1" });
+    await settle();
+
+    expect(api.requestCoaching).toHaveBeenCalledWith("analysis-1");
+    expect(api.submitAnalysis).not.toHaveBeenCalled(); // no audio is sent again
+    expect(run()).toMatchObject({ phase: "tracking", job: { kind: "coaching" } });
+    expect(storage.get(ACTIVE_JOB_KEY)).toBe("job-c");
+
+    api.getJob.mockResolvedValue(coachingJob({ status: "running", stage: "generating_feedback" }));
+    await tick();
+    expect(run()).toMatchObject({ phase: "tracking", job: { stage: "generating_feedback" } });
+
+    api.getJob.mockResolvedValue(coachingJob({ status: "succeeded" }));
+    api.getAnalysis.mockResolvedValue(rewritten);
+    await tick();
+
+    expect(run()).toMatchObject({ phase: "done", analysisId: "analysis-1" });
+    expect(store.getSnapshot().viewed).toEqual({ status: "ready", analysis: rewritten });
+    expect(storage.has(ACTIVE_JOB_KEY)).toBe(false);
+  });
+
+  it("does nothing while another run is in progress", async () => {
+    const { store, api } = await withOpenAnalysis();
+    store.submit(submission);
+    await settle();
+
+    expect(store.regenerateCoaching("analysis-1")).toBe(false);
+    expect(api.requestCoaching).not.toHaveBeenCalled();
+    expect(store.getSnapshot().runKind).toBe("analysis");
+  });
+
+  it("does not pull the user away from another analysis they opened meanwhile", async () => {
+    const { store, api, tick, run } = await withOpenAnalysis();
+    store.regenerateCoaching("analysis-1");
+    await settle();
+
+    api.getAnalysis.mockResolvedValue(analysis("analysis-2"));
+    store.openAnalysis("analysis-2");
+    await settle();
+
+    api.getJob.mockResolvedValue(coachingJob({ status: "succeeded" }));
+    api.getAnalysis.mockResolvedValue(analysis("analysis-1"));
+    await tick();
+
+    expect(run().phase).toBe("done");
+    expect(store.getSnapshot().viewed).toMatchObject({ analysis: { analysisId: "analysis-2" } });
+  });
+
+  it("says why when the model could not write it, and can try again", async () => {
+    const { store, api, tick, run } = await withOpenAnalysis();
+    store.regenerateCoaching("analysis-1");
+    await settle();
+
+    const error = { code: "not_running", message: "Ollama is not running.", retryable: false };
+    api.getJob.mockResolvedValue(coachingJob({ status: "failed", error }));
+    await tick();
+
+    expect(run()).toMatchObject({ phase: "failed", error, canResubmit: false });
+    expect(store.getSnapshot().coachingFor).toBe("analysis-1");
+    // The analysis on screen, with its earlier coaching, is untouched.
+    expect(store.getSnapshot().viewed).toMatchObject({ analysis: { analysisId: "analysis-1" } });
+
+    expect(store.regenerateCoaching("analysis-1")).toBe(true);
+    await settle();
+    expect(api.requestCoaching).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a request that never reached the backend", async () => {
+    const { store, api, run } = await withOpenAnalysis();
+    api.requestCoaching.mockRejectedValue(new ApiError("unreachable", "No backend.", 0));
+    store.regenerateCoaching("analysis-1");
+    await settle();
+
+    expect(run()).toMatchObject({
+      phase: "failed",
+      job: null,
+      error: { code: "unreachable", message: "No backend." },
+    });
+  });
+
+  it("recognises a coaching job picked up after a page refresh", async () => {
+    const { store, api } = setup({ [ACTIVE_JOB_KEY]: "job-c" });
+    api.getJob.mockResolvedValue(coachingJob({ status: "running", stage: "generating_feedback" }));
+    store.init();
+    await settle();
+
+    expect(store.getSnapshot()).toMatchObject({ runKind: "coaching", coachingFor: "analysis-1" });
+  });
+
+  it("goes back to an ordinary run when a recording is submitted afterwards", async () => {
+    const { store, api, tick } = await withOpenAnalysis();
+    store.regenerateCoaching("analysis-1");
+    await settle();
+    api.getJob.mockResolvedValue(coachingJob({ status: "cancelled" }));
+    await tick();
+
+    store.submit(submission);
+    expect(store.getSnapshot()).toMatchObject({ runKind: "analysis", coachingFor: null });
+  });
+});
+
+describe("reference recordings", () => {
+  /** A backend holding the given references, and takes that open as themselves. */
+  function withReferences(ids: string[], stored: Record<string, string> = {}) {
+    const context = setup(stored);
+    const { api } = context;
+    api.listAnalyses.mockImplementation((_limit: number, role?: string) =>
+      Promise.resolve(
+        role === "reference"
+          ? { items: ids.map((id) => reference(id)), total: ids.length }
+          : { items: [], total: 0 },
+      ),
+    );
+    api.getAnalysis.mockImplementation((id: string) =>
+      Promise.resolve(id.startsWith("ref") ? referenceResult(id) : analysis(id)),
+    );
+    api.getComparison.mockImplementation((takeId: string, referenceId: string) =>
+      Promise.resolve(comparison(takeId, referenceId)),
+    );
+    return context;
+  }
+
+  it("loads the references separately from the history of takes", async () => {
+    const { store, api } = withReferences(["ref-1", "ref-2"]);
+    store.init();
+    await settle();
+
+    expect(api.listAnalyses).toHaveBeenCalledWith(50, "reference");
+    expect(store.getSnapshot().references).toMatchObject({ status: "ready" });
+    expect(store.getSnapshot().references.items.map((item) => item.analysisId)).toEqual([
+      "ref-1",
+      "ref-2",
+    ]);
+    expect(store.getSnapshot().history.items).toEqual([]);
+    // Nothing is chosen until the user chooses.
+    expect(store.getSnapshot().selectedReferenceId).toBeNull();
+  });
+
+  it("remembers the chosen reference and loads it for study", async () => {
+    const { store, storage } = withReferences(["ref-1"]);
+    store.init();
+    await settle();
+
+    store.selectReference("ref-1");
+    expect(storage.get(SELECTED_REFERENCE_KEY)).toBe("ref-1");
+    expect(store.getSnapshot().referenceDetail).toEqual({ status: "loading", analysisId: "ref-1" });
+    await settle();
+    expect(store.getSnapshot().referenceDetail).toMatchObject({
+      status: "ready",
+      analysis: { analysisId: "ref-1" },
+    });
+
+    store.selectReference(null);
+    expect(storage.has(SELECTED_REFERENCE_KEY)).toBe(false);
+    expect(store.getSnapshot().referenceDetail).toEqual({ status: "none" });
+  });
+
+  it("chooses again the reference that was chosen last time", async () => {
+    const { store } = withReferences(["ref-1"], { [SELECTED_REFERENCE_KEY]: "ref-1" });
+    store.init();
+    await settle();
+    expect(store.getSnapshot().selectedReferenceId).toBe("ref-1");
+    expect(store.getSnapshot().referenceDetail.status).toBe("ready");
+  });
+
+  it("drops a remembered reference that no longer exists", async () => {
+    const { store, storage } = withReferences(["ref-2"], { [SELECTED_REFERENCE_KEY]: "ref-gone" });
+    store.init();
+    await settle();
+    expect(store.getSnapshot().selectedReferenceId).toBeNull();
+    expect(storage.has(SELECTED_REFERENCE_KEY)).toBe(false);
+  });
+
+  it("adds a reference without disturbing the take on view", async () => {
+    const { store, api, tick } = withReferences([]);
+    store.init();
+    store.openAnalysis("take-1");
+    await settle();
+
+    api.submitAnalysis.mockResolvedValue(job({ role: "reference" }));
+    store.submit({ ...submission, role: "reference", title: "The original", previewUrl: "blob:ref" });
+    expect(store.getSnapshot().runRole).toBe("reference");
+    await settle();
+    expect(api.submitAnalysis).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "reference", title: "The original" }),
+    );
+
+    api.listAnalyses.mockImplementation((_limit: number, role?: string) =>
+      Promise.resolve(
+        role === "reference" ? { items: [reference("ref-new")], total: 1 } : { items: [], total: 0 },
+      ),
+    );
+    api.getJob.mockResolvedValue(job({ role: "reference", status: "succeeded", analysisId: "ref-new" }));
+    await tick();
+    await settle();
+
+    const state = store.getSnapshot();
+    expect(state.run).toMatchObject({ phase: "done", analysisId: "ref-new" });
+    // The take stays on view, the new reference is listed and chosen, and can be played.
+    expect(state.viewed).toMatchObject({ status: "ready", analysis: { analysisId: "take-1" } });
+    expect(state.references.items.map((item) => item.analysisId)).toEqual(["ref-new"]);
+    expect(state.selectedReferenceId).toBe("ref-new");
+    expect(state.localAudio).toEqual({ "ref-new": "blob:ref" });
+    // And the take is at once compared with it.
+    expect(state.comparison).toMatchObject({ status: "ready", takeId: "take-1", referenceId: "ref-new" });
+  });
+
+  it("deletes a reference, and stops comparing with it", async () => {
+    const { store, api } = withReferences(["ref-1", "ref-2"]);
+    store.init();
+    await settle();
+    store.selectReference("ref-1");
+    await settle();
+
+    api.listAnalyses.mockImplementation((_limit: number, role?: string) =>
+      Promise.resolve(
+        role === "reference" ? { items: [reference("ref-2")], total: 1 } : { items: [], total: 0 },
+      ),
+    );
+    store.deleteReference("ref-1");
+    await settle();
+
+    expect(api.deleteAnalysis).toHaveBeenCalledWith("ref-1");
+    const state = store.getSnapshot();
+    expect(state.references.items.map((item) => item.analysisId)).toEqual(["ref-2"]);
+    expect(state.selectedReferenceId).toBeNull();
+    expect(state.notice).toEqual({ kind: "info", text: "Reference deleted." });
+  });
+
+  it("clearing the history of takes keeps the references", async () => {
+    const { store } = withReferences(["ref-1"]);
+    store.init();
+    await settle();
+    store.selectReference("ref-1");
+    store.clearHistory();
+    await settle();
+
+    expect(store.getSnapshot().references.items).toHaveLength(1);
+    expect(store.getSnapshot().selectedReferenceId).toBe("ref-1");
+  });
+});
+
+describe("comparing a take with the chosen reference", () => {
+  async function ready() {
+    const context = setup();
+    const { api, store } = context;
+    api.listAnalyses.mockImplementation((_limit: number, role?: string) =>
+      Promise.resolve(
+        role === "reference"
+          ? { items: [reference("ref-1"), reference("ref-2")], total: 2 }
+          : { items: [], total: 0 },
+      ),
+    );
+    api.getAnalysis.mockImplementation((id: string) =>
+      Promise.resolve(id.startsWith("ref") ? referenceResult(id) : analysis(id)),
+    );
+    api.getComparison.mockImplementation((takeId: string, referenceId: string) =>
+      Promise.resolve(comparison(takeId, referenceId)),
+    );
+    store.init();
+    await settle();
+    return context;
+  }
+
+  it("is fetched as soon as a take is on view and a reference is chosen", async () => {
+    const { store, api } = await ready();
+    store.openAnalysis("take-1");
+    await settle();
+    expect(store.getSnapshot().comparison).toEqual({ status: "none" });
+    expect(api.getComparison).not.toHaveBeenCalled();
+
+    store.selectReference("ref-1");
+    expect(store.getSnapshot().comparison).toEqual({
+      status: "loading",
+      takeId: "take-1",
+      referenceId: "ref-1",
+    });
+    await settle();
+    expect(api.getComparison).toHaveBeenCalledWith("take-1", "ref-1");
+    expect(store.getSnapshot().comparison).toMatchObject({
+      status: "ready",
+      data: { takeId: "take-1", referenceId: "ref-1" },
+    });
+  });
+
+  it("follows a change of reference or of take, and is not fetched twice for the same pair", async () => {
+    const { store, api } = await ready();
+    store.selectReference("ref-1");
+    store.openAnalysis("take-1");
+    await settle();
+    expect(api.getComparison).toHaveBeenCalledTimes(1);
+
+    store.selectReference("ref-2");
+    await settle();
+    expect(store.getSnapshot().comparison).toMatchObject({ status: "ready", referenceId: "ref-2" });
+
+    store.openAnalysis("take-2");
+    await settle();
+    expect(store.getSnapshot().comparison).toMatchObject({ status: "ready", takeId: "take-2" });
+    expect(api.getComparison).toHaveBeenCalledTimes(3);
+
+    // The same pair again, e.g. after new coaching replaced the take on view.
+    store.selectReference("ref-2");
+    await settle();
+    expect(api.getComparison).toHaveBeenCalledTimes(3);
+  });
+
+  it("goes away when the take is closed or no reference is chosen", async () => {
+    const { store } = await ready();
+    store.selectReference("ref-1");
+    store.openAnalysis("take-1");
+    await settle();
+
+    store.closeAnalysis();
+    expect(store.getSnapshot().comparison).toEqual({ status: "none" });
+
+    store.openAnalysis("take-1");
+    await settle();
+    store.selectReference(null);
+    expect(store.getSnapshot().comparison).toEqual({ status: "none" });
+  });
+
+  it("is never made between a reference and itself or another reference", async () => {
+    const { store, api } = await ready();
+    store.selectReference("ref-1");
+    store.openAnalysis("ref-2"); // a reference opened for study, not a take
+    await settle();
+    expect(api.getComparison).not.toHaveBeenCalled();
+    expect(store.getSnapshot().comparison).toEqual({ status: "none" });
+  });
+
+  it("says why when the comparison could not be made", async () => {
+    const { store, api } = await ready();
+    api.getComparison.mockRejectedValue(new ApiError("reference_not_found", "No such reference.", 404));
+    store.selectReference("ref-1");
+    store.openAnalysis("take-1");
+    await settle();
+    expect(store.getSnapshot().comparison).toEqual({
+      status: "error",
+      takeId: "take-1",
+      referenceId: "ref-1",
+      message: "No such reference.",
+    });
+  });
+
+  it("ignores an answer for a pair that is no longer wanted", async () => {
+    const { store, api } = await ready();
+    let answer: (value: Comparison) => void = () => {};
+    api.getComparison.mockImplementationOnce(
+      () => new Promise<Comparison>((resolve) => (answer = resolve)),
+    );
+    store.selectReference("ref-1");
+    store.openAnalysis("take-1");
+    await settle();
+
+    store.selectReference("ref-2");
+    await settle();
+    answer(comparison("take-1", "ref-1")); // the slow first answer arrives last
+    await settle();
+    expect(store.getSnapshot().comparison).toMatchObject({ status: "ready", referenceId: "ref-2" });
+  });
+});
+
+describe("waveform outlines", () => {
+  const outline = { durationSeconds: 2, secondsPerPoint: 1, minimum: [-0.1, -0.2], maximum: [0.1, 0.2] };
+
+  it("are fetched only when asked for, and only once", async () => {
+    const { store, api } = setup();
+    api.getWaveform.mockResolvedValue(outline);
+    expect(store.getSnapshot().waveforms).toEqual({});
+
+    store.loadWaveform("take-1");
+    expect(store.getSnapshot().waveforms).toEqual({ "take-1": { status: "loading" } });
+    store.loadWaveform("take-1");
+    await settle();
+
+    expect(api.getWaveform).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot().waveforms["take-1"]).toEqual({ status: "ready", data: outline });
+  });
+
+  it("tell a recording analysed before waveforms existed from a real failure", async () => {
+    const { store, api } = setup();
+    api.getWaveform.mockRejectedValueOnce(new ApiError("waveform_not_stored", "None stored.", 404));
+    store.loadWaveform("old");
+    api.getWaveform.mockRejectedValueOnce(new ApiError("unreachable", "No backend.", 0));
+    store.loadWaveform("new");
+    await settle();
+
+    expect(store.getSnapshot().waveforms).toEqual({
+      old: { status: "missing" },
+      new: { status: "error", message: "No backend." },
+    });
+  });
+
+  it("does not change the analysis on view, the run or the comparison", async () => {
+    const { store, api } = setup();
+    api.getWaveform.mockResolvedValue(outline);
+    store.openAnalysis("analysis-1");
+    await settle();
+    const before = store.getSnapshot();
+
+    store.loadWaveform("analysis-1");
+    await settle();
+
+    const after = store.getSnapshot();
+    expect(after.viewed).toBe(before.viewed);
+    expect(after.run).toBe(before.run);
+    expect(after.comparison).toBe(before.comparison);
+    expect(api.submitAnalysis).not.toHaveBeenCalled();
   });
 });

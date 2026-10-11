@@ -23,13 +23,24 @@ export default function Home() {
       </Link>
 
       <Link
+        href="/monologue"
+        className="block rounded-lg border border-zinc-200 p-4 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:border-zinc-800 dark:hover:bg-zinc-900 dark:focus-visible:outline-indigo-400"
+      >
+        <span className="font-semibold">Monologue</span>
+        <span className="mt-1 block text-sm text-zinc-600 dark:text-zinc-400">
+          Compare your take with the original recording, pause by pause and phrase by phrase,
+          and listen to both side by side.
+        </span>
+      </Link>
+
+      <Link
         href="/general"
         className="block rounded-lg border border-zinc-200 p-4 hover:bg-zinc-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 dark:border-zinc-800 dark:hover:bg-zinc-900 dark:focus-visible:outline-indigo-400"
       >
         <span className="font-semibold">General Practice</span>
         <span className="mt-1 block text-sm text-zinc-600 dark:text-zinc-400">
           Record or upload your voice and see your pace, pauses, loudness and pitch, phrase by
-          phrase.
+          phrase, with coaching for the next take.
         </span>
       </Link>
 

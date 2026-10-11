@@ -36,6 +36,13 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # "analysis" measures an uploaded recording. "coaching" only writes the coaching of an
+    # analysis that already exists, and has no audio of its own.
+    kind: Mapped[str] = mapped_column(String(16), default="analysis", server_default="analysis")
+    # Whose recording this is: the user's own "take", or a "reference" to compare takes with.
+    role: Mapped[str] = mapped_column(String(16), default="take", server_default="take")
+    # The name the user gave a reference recording.
+    title: Mapped[str | None] = mapped_column(String(120))
     # queued -> running -> succeeded | failed | cancelled
     status: Mapped[str] = mapped_column(String(16), index=True)
     # What the worker is doing right now; only meaningful while running.
@@ -69,13 +76,20 @@ class Job(Base):
 
 
 class Analysis(Base):
-    """The stored result of a job that succeeded. Never updated in place."""
+    """The stored result of a job that succeeded.
+
+    The measurements in `result` are never changed afterwards. Only `coaching` can be
+    written again, because it is an interpretation of them.
+    """
 
     __tablename__ = "analyses"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     job_id: Mapped[str] = mapped_column(String(32), index=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, index=True)
+    # "take" or "reference". References are listed separately and get no coaching.
+    role: Mapped[str] = mapped_column(String(16), default="take", server_default="take", index=True)
+    title: Mapped[str | None] = mapped_column(String(120))
     profile: Mapped[str] = mapped_column(String(32))
     language: Mapped[str] = mapped_column(String(16))
     duration_seconds: Mapped[float] = mapped_column(Float)
@@ -83,8 +97,13 @@ class Analysis(Base):
     # Version of the thresholds that produced the numbers (also stored in full inside `result`).
     settings_version: Mapped[int] = mapped_column(Integer)
     revision: Mapped[int] = mapped_column(Integer, default=1)
-    # The complete AnalysisResult as JSON.
+    # The complete AnalysisResult as JSON, without the coaching.
     result: Mapped[dict] = mapped_column(JSON)
+    # The coaching for this result, as JSON. Null for results stored before coaching existed.
+    coaching: Mapped[dict | None] = mapped_column(JSON)
+    # The outline of the sound wave, for drawing only. Kept apart from the measurements,
+    # which never read it. Null for results stored before waveforms existed.
+    waveform: Mapped[dict | None] = mapped_column(JSON)
     # Only set when the user asked for the recording to be kept.
     audio_path: Mapped[str | None] = mapped_column(String(255))
 
@@ -100,3 +119,7 @@ class WorkerState(Base):
     heartbeat_at: Mapped[datetime] = mapped_column(UtcDateTime)
     speech_model: Mapped[str] = mapped_column(String(64))
     speech_model_ready: Mapped[bool] = mapped_column(Boolean)
+    # The language model used for coaching, and whether it could answer when last checked:
+    # ready, not_running, model_missing, not_local or off.
+    coach_model: Mapped[str | None] = mapped_column(String(64))
+    coach_status: Mapped[str | None] = mapped_column(String(32))

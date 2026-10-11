@@ -98,6 +98,8 @@ function ProfileDetails({ profile }: { profile: DeliveryProfile }) {
 // --- Recording and uploading -------------------------------------------------------------
 
 type AudioPickerProps = {
+  /** The heading above the picker. */
+  title?: string;
   limits: UploadLimits;
   source: AudioSource;
   onSourceChange: (source: AudioSource) => void;
@@ -115,6 +117,7 @@ function formatElapsed(ms: number): string {
 }
 
 export function AudioPicker({
+  title = "2. Add your audio",
   limits,
   source,
   onSourceChange,
@@ -143,7 +146,7 @@ export function AudioPicker({
 
   return (
     <div>
-      <h2 className="text-lg font-semibold">2. Add your audio</h2>
+      <h2 className="text-lg font-semibold">{title}</h2>
       <div
         role="group"
         aria-label="How to add your audio"
