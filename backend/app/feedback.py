@@ -9,6 +9,11 @@ A piece of feedback does exactly one of three things:
 
 Which of the three, and which setting, is decided here from what was measured, by ordinary
 code. No feedback ever changes a stored measurement.
+
+Feedback is taken on reference recordings too, with two differences. A reference has no
+coaching, so its pauses cannot be labelled and there is nothing to rate. And its reports
+count towards a setting only alongside a report from one of the user's own takes
+(`app.calibration.engine` holds that rule).
 """
 
 from dataclasses import dataclass, field
@@ -20,7 +25,7 @@ from sqlalchemy.orm import Session
 from app import schemas, wpm_review
 from app.calibration import engine, store
 from app.calibration.registry import ADAPTIVE, CORRECTION_KINDS, MIN_PAUSE, priority_name
-from app.job_queue import TAKE, new_id
+from app.job_queue import REFERENCE, new_id
 from app.models import Analysis, CalibrationVersion, Feedback
 from app.pipeline.settings import DEFAULT_SETTINGS
 
@@ -192,9 +197,14 @@ def save(
     session: Session, analysis: Analysis, request: schemas.FeedbackRequest, now: datetime
 ) -> Feedback:
     """Stores one piece of feedback, replacing any earlier feedback on the same thing."""
-    if analysis.role != TAKE:
+    if analysis.role == REFERENCE and (
+        request.category in PAUSE_LABELS or request.category in COACHING_CATEGORIES
+    ):
         raise FeedbackError(
-            409, "not_a_take", "Feedback is given on your own takes, not on a reference."
+            409,
+            "not_for_reference",
+            "A reference recording has no coaching, so its pauses are not labelled and there "
+            "is nothing to rate. Mistakes in how it was measured can be reported.",
         )
     body = schemas.AnalysisBody.model_validate(analysis.result)
     coaching = schemas.Coaching.model_validate(analysis.coaching) if analysis.coaching else None
@@ -345,8 +355,7 @@ NO_VOTE_MESSAGES = {
     ),
     "missed_speech": (
         "Saved. The detector heard no speech for {pause_seconds} there. No minimum pause "
-        "explains a silence that long, so this changes no setting. If you were speaking, it "
-        "was too quiet for the detector to pick up."
+        "explains a silence that long, so this changes no setting. {unheard}"
     ),
     "no_silence": (
         "Saved. The detector heard speech straight through at that point, without a gap of "
@@ -368,6 +377,16 @@ NO_VOTE_MESSAGES = {
 }
 
 
+# Why the detector may have heard nothing where there was speech, by whose recording it is.
+UNHEARD = {
+    False: "If you were speaking, it was too quiet for the detector to pick up.",
+    True: (
+        "If someone was speaking, it was too quiet, or too far under music or other sound, "
+        "for the detector to pick up."
+    ),
+}
+
+
 def _lower(label: str) -> str:
     return f"the {label[0].lower()}{label[1:]}"
 
@@ -378,6 +397,7 @@ def _message(
     versions: dict[int, CalibrationVersion],
     tallies: dict[str, engine.Tally],
     labels_used: dict[str, str],
+    on_reference: bool = False,
 ) -> tuple[str, str]:
     """(effect, one sentence saying what this feedback does)."""
     if row.category in PAUSE_LABELS:
@@ -441,6 +461,7 @@ def _message(
         return "recorded", NO_VOTE_MESSAGES[reason].format(
             pause_seconds=f"{(row.features.get('pause_ms') or 0) / 1000:.1f} s",
             silence_ms=row.features.get("silence_ms"),
+            unheard=UNHEARD[on_reference],
         )
     if row.category in WPM_CATEGORIES:
         return (
@@ -459,9 +480,10 @@ def _message(
                     "words; this result is unchanged."
                 ),
             )
+        said = "as they are said in the recording" if on_reference else "as you said them"
         return (
             "recorded",
-            "Saved. Nothing is worked out again until you supply the words as you said them.",
+            f"Saved. Nothing is worked out again until you supply the words {said}.",
         )
     return "recorded", "Saved."
 
@@ -493,14 +515,17 @@ def list_items(session: Session, analysis: Analysis) -> list[schemas.FeedbackIte
     }
     body: schemas.AnalysisBody | None = None
     labels_used = (analysis.coaching or {}).get("labelsUsed") or {}
+    on_reference = analysis.role == REFERENCE
 
     items = []
     for row in rows:
-        effect, message = _message(row, current, versions, tallies, labels_used)
+        effect, message = _message(row, current, versions, tallies, labels_used, on_reference)
         review = None
         if row.category in WPM_CATEGORIES:
             body = body or schemas.AnalysisBody.model_validate(analysis.result)
-            review = wpm_review.review(body, row.target_id, WPM_CATEGORIES[row.category])
+            review = wpm_review.review(
+                body, row.target_id, WPM_CATEGORIES[row.category], on_reference
+            )
         items.append(
             schemas.FeedbackItem(
                 id=row.id,

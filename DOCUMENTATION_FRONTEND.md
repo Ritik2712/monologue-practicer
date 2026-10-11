@@ -9,8 +9,8 @@ picture and the glossary. The Python side is in
 
 Everything described here is built.
 
-**Last updated:** end of Phase 6 (feedback on a result, the calibration panel, corrected
-transcripts and analysing a recording again).
+**Last updated:** end of Phase 7 (picking the word a missed pause came after, feedback on
+a reference recording, and "What your feedback adds up to" in the calibration panel).
 
 ## Contents
 
@@ -93,6 +93,8 @@ frontend/
             │   ├── FeedbackControls.tsx  The controls beside a pause, a phrase and a correction
             │   ├── FeedbackSection.tsx   Everything said about one result, gathered in one place
             │   ├── CalibrationPanel.tsx  The settings in force; undo, reset, on/off
+            │   ├── FeedbackSummaryPanel.tsx  What the feedback adds up to; the notes; the
+            │   │                             button that asks the AI model to pick some out
             │   ├── MonologuePractice.tsx The whole Monologue page, assembled
             │   ├── ReferenceLibrary.tsx  Choose, add and delete reference recordings
             │   ├── ReferenceComparison.tsx  A take against a reference, with both to play
@@ -108,7 +110,7 @@ Why `features/practice/` and `features/general/`, and not everything in `compone
 feature keeps its own logic, storage and screens together in one folder. `components/` is
 only for things several features share.
 
-The development server runs on port **3210** by default (`npm run dev`). A fixed port
+The development server runs on port **1234** by default (`npm run dev`). A fixed port
 matters more than usual here: the browser keeps saved data per address, so a changing port
 would hide the checklist's history (decision F16).
 
@@ -143,8 +145,8 @@ navigation links from `components/MainNav.tsx`.
 ## 4. How the frontend talks to the backend
 
 - All backend addresses are built by `src/lib/api.ts`. For example
-  `apiUrl("/api/health")` gives `http://localhost:8000/api/health`.
-- The base address defaults to `http://localhost:8000`. To change it, create
+  `apiUrl("/api/health")` gives `http://localhost:4321/api/health`.
+- The base address defaults to `http://localhost:4321`. To change it, create
   `frontend/.env.local` containing `NEXT_PUBLIC_API_BASE_URL=http://localhost:9000`.
 - The browser calls the backend directly; requests do not pass through Next.js
   (decision G2 in the main document).
@@ -779,15 +781,19 @@ chosen one, and the take is at once compared with it.
    again" (6.20). Under it, folded away,
    "Study this reference": the ordinary results view in a lighter mode
    (`<Results mode="reference">`) with its player, timeline chart, pace, pauses and voice
-   sections, and without coaching or comparisons.
+   sections, and without coaching or comparisons. Since Phase 7 it also carries the
+   feedback controls that make sense for a reference (6.22).
 2. **Your take.** The same record-or-upload picker as General Practice. There is no profile
    to choose: this screen is about matching the reference, so the take is analysed with the
    neutral profile.
 3. **Your take against the reference.** A menu of your takes (a later revision of a
    recording says which it is), then `ReferenceComparison`, then a link to the take's full
-   measurements and coaching in General Practice, which is also where feedback is given.
-   When the take and the reference were analysed with a different minimum pause, the
-   comparison opens with a warning saying so.
+   measurements and coaching in General Practice, which is also where feedback on a take
+   is given. When the take and the reference were analysed with a different minimum pause,
+   the comparison opens with a warning saying so.
+4. **Feedback and calibration.** The same panel as at the bottom of General Practice
+   (6.19), so that a notice saying "your feedback has just changed a setting" has
+   somewhere on this page to point to.
 
 ### 6.15 The comparison section
 
@@ -875,8 +881,8 @@ the recording is.
 ### 6.18 Feedback on a result
 
 Feedback is optional. A result is complete without it, and nothing on the page waits for
-it. It is offered only on your own takes in General Practice; a reference recording shows
-none of these controls, and the Monologue screen links to General Practice for it.
+it. This section describes it on one of your own takes, in General Practice. A reference
+recording takes a smaller set of the same controls, on the Monologue screen (6.22).
 
 There is no separate "feedback form". Each control sits next to the thing it is about, so
 that "which pause?" never has to be asked:
@@ -898,15 +904,36 @@ words. The screen never works that sentence out for itself.
  Where was the pause?
  Listed first are the silences the detector heard inside this phrase that were too short
  to count as pauses.
-   (•) At 0:02.6: a silence of 0.32 s, after "to."        Play
+   ( ) At 0:04.3: a silence of 0.36 s, after "am"         Play
+   (•) After a word I pick
+         [you] [all] [know] [exactly] [who] [I] [am] ‖ pause here [so] [say] [my] name
+         Between "am" and "so", at about 0:04.4. The nearest silence the detector
+         heard is 0.36 s long, at 0:04.3.                  Play
    ( ) Where the player is now: 0:03.4
    ( ) I cannot say exactly where
 ```
 
 Each candidate can be played with a second either side. "Where the player is now" is
 available when the recording is playing or paused at a point inside the phrase. These are
-the three ways of pointing at a moment: a silence the app measured, the playhead, or not
-at all, in which case the report is saved and the backend says it cannot count.
+the four ways of pointing at a moment: a silence the app measured, a word, the playhead,
+or not at all, in which case the report is saved and the backend says it cannot count.
+
+**Picking a word** (Phase 7) is for when you know *where in the sentence* you paused and
+not at what time, and it is the only precise way when the recording was not kept and
+cannot be played. Each word of the phrase is a button, except the last: a pause after the
+last word is the end of the phrase, which is a pause already. Pressing a word means "the
+pause came after this one". The screen then says what it will send and what the detector
+heard there:
+
+| Step | Where | What happens |
+| --- | --- | --- |
+| The gaps | `wordGaps` in `feedback.ts` | For each pair of neighbouring words, the moment halfway between the end of one and the start of the next, kept inside the phrase |
+| The preview | `silenceNear` in `feedback.ts` | The silence nearest that moment, if one lies within half a second. This is the backend's own rule, copied only to show its answer in advance |
+| Saving | `store.give` | The ordinary missed-pause report with `atSeconds` set to that moment. The backend needed no change |
+
+Until a word is pressed, "Save this report" is off and says "Pick a word above first."
+Words are shown without the punctuation the speech recogniser attaches to them ("Skyler."
+is shown as "Skyler"), here and wherever a word is named.
 
 **Saying the words are wrong.** The form shows the phrase's words in a box to edit. "Save
 corrected words" sends them (6.20). "Only flag it, without correcting" saves a note that
@@ -931,7 +958,7 @@ How it is built:
 | File | Role |
 | --- | --- |
 | `feedbackStore.ts` | A store of its own, in the same style as the others. Holds the feedback on the result on view, the calibration, and any adjustment just made. `watch(analysisId)` switches it to another result; `give`, `remove`, `undo`, `reset`, `setAdaptive` each send one request and take in the answer |
-| `feedback.ts` | Pure helpers: which entry belongs to which pause or phrase, the silences inside a phrase, whether the labels have changed since the coaching was written, how a result's minimum pause is worded |
+| `feedback.ts` | Pure helpers: which entry belongs to which pause or phrase, the silences inside a phrase, the gaps between its words and the silence nearest a moment, whether the labels have changed since the coaching was written, how a result's minimum pause is worded, the line beside the "ask the AI model" button |
 | `FeedbackControls.tsx` | `PauseFeedbackSelect`, `SegmentReport`, `CorrectionRating`, `FeedbackEntry`, `WpmReviewView` |
 | `FeedbackSection.tsx` | The gathered list and the adjustment notice |
 | `useFeedback(analysisId)` | Connects the store to React and tells it which result is on view |
@@ -943,17 +970,19 @@ belongs to the whole app.
 
 ### 6.19 The calibration panel
 
-At the bottom of the General Practice page, under the history: **Feedback and
-calibration**. It is there whether or not a result is on view.
+At the bottom of the General Practice page, under the history, and at the bottom of the
+Monologue page: **Feedback and calibration**. It is there whether or not a result is on
+view.
 
 | Part | Shows |
 | --- | --- |
 | A badge | "Still calibrating", "Adjusted from your feedback" or "Automatic adjustment off" |
 | One line | The settings version, how many pieces of feedback are stored, how many reports are waiting to count |
-| A summary sentence | Written by the backend. While nothing has moved: "Still calibrating: every setting is at its default. A setting moves only after 3 reports that agree, from at least 2 different recordings." |
+| A summary sentence | Written by the backend. While nothing has moved: "Still calibrating: every setting is at its default. A setting moves only after 3 reports that agree, from at least 2 different recordings, at least 1 of them about a take of your own. Reports waiting: 0." |
 | A table | For each adjustable setting: its value now, its default, its allowed range, and where it stands ("At its default. 2 of the 3 reports needed for lowering it, from 1 of the 2 recordings needed."), with its confidence |
 | Three controls | **Undo last adjustment**, **Reset to defaults** (asks first), and a tick box, **Adjust settings automatically from my feedback** |
-| Three fold-away parts | What changed, and why (every version, newest first, with its reason and counts) · How a setting gets adjusted (the rules, in words) · Thresholds that feedback never changes |
+| **What your feedback adds up to** | The counted facts, your notes, and the notes the AI model picked out (6.23) |
+| Three fold-away parts | What changed, and why (every version, newest first, with its reason and counts) · How a setting gets adjusted (the rules, in words, including the one about reference recordings) · Thresholds that feedback never changes |
 
 There are twelve "priority of corrections about …" settings. Listing all twelve at 1.0
 would bury the one that matters, so only those with a rating waiting, or that have moved,
@@ -998,6 +1027,111 @@ own row in the history; the screen only has to say how they are related.
   phone.
 - Reset asks for confirmation in the same dialog as every other irreversible action, and
   focus returns to the button afterwards.
+- The words to pick from are buttons in a group named "The word the pause came after".
+  Each announces itself in full ("The pause came after “am”, word 7 of the phrase") and
+  whether it is pressed. They are 44 px tall like every other control, and wrap onto as
+  many lines as the phrase needs. The "‖ pause here" mark beside the pressed word is for
+  the eye only; a screen reader is told by the pressed state.
+- The line beside "Ask the AI model…" is a status region, so "Waiting for the worker…" and
+  "The AI model is choosing" are announced as they change.
+
+### 6.22 Feedback on a reference recording
+
+Opened under "Study this reference" on the Monologue screen, a reference shows the same
+results view as before with a smaller set of the feedback controls:
+
+| Where | On a take | On a reference |
+| --- | --- | --- |
+| Each pause | Intentional · Accidental · Not a pause: I was still speaking · Too short to split the phrase | Not a pause: someone is still speaking · Too short to split the phrase |
+| Each phrase, "Report a problem" | A pause was missed · WPM too high · too low · The words are wrong | The same four |
+| Coaching corrections | Useful · Not useful | None: a reference has no coaching |
+| The gathered section | "Your feedback on this result" | "Your feedback on this reference" |
+
+The two labels are missing because a label only changes how the coaching reads a pause,
+and a reference has none. The backend refuses them too; the screen simply does not offer
+them (`REFERENCE_PAUSE_CHOICES` in `feedback.ts`).
+
+**Correcting a reference's words** is the part most likely to be used: a misheard word in
+the reference spoils the line-up of every take compared with it. It works as on a take,
+with three differences in what happens afterwards (`store.correctTranscript`):
+
+- the corrected reference **becomes the chosen one**, so the comparison on screen is at
+  once with the corrected words;
+- the take on view stays on view;
+- the notice says "Saved as revision 2 of this reference, and chosen… The earlier one is
+  still in the list, unchanged, until you delete it."
+
+The header of a reference with more than one revision says which it is and links to the
+others; following a link chooses that revision as the reference.
+
+**Reports on a reference** are saved and shown like any other. What differs is said in
+words wherever it matters: under the pauses table, in the note at the foot of the gathered
+section, in each report's own sentence ("All of them are about reference recordings, and
+a setting moves only once a take of your own shows the same thing"), and in "How a setting
+gets adjusted" in the panel.
+
+How it is wired: there is one feedback store for the whole app, and it watches one
+analysis at a time. On General Practice that is the take on view. On the Monologue screen
+it is the reference being studied (`useFeedback(referenceDetail?.analysisId ?? null)`).
+The two screens are never on view together, so one store is enough.
+
+### 6.23 What your feedback adds up to
+
+A part of the calibration panel (`FeedbackSummaryPanel.tsx`), in three layers, each of
+which works without the one below it:
+
+```
+ What your feedback adds up to
+ • 12 pieces of feedback in all, on 3 recordings: 6 on your own takes and 6 on reference…
+ • What it is about, largest group first: missed pauses (5), WPM figures (3), …
+ • Missed pauses you reported: 5. At 5 of them the detector had heard a silence lasting
+   between 324 and 356 ms, which was shorter than the minimum pause at the time…
+ Counted by the app from your stored feedback, so it is always up to date. The AI model
+ has no part in these lines.
+
+ ┌ The most telling, as picked by the AI model ────────────────────────────────────────┐
+ │ "yahan maine jaan-boojhkar ruka tha"              On a pause you said the app missed │
+ │ "lost my place here"                              On a pause you labelled accidental │
+ │ "feels slower than this when I listen back"       On a WPM figure you said the app…  │
+ │ Picked from 10 notes by the AI model llama3.1:8b, running on this computer, on        │
+ │ 11 Oct, 15:48 in 2.5 s. The model only chose: every word above is yours…              │
+ └──────────────────────────────────────────────────────────────────────────────────────┘
+ [ Ask the AI model to pick again ]   Optional. The local AI model is given your notes
+                                      as text and nothing else, and only chooses…
+ ▸ Your notes, as you wrote them (10)
+```
+
+| Layer | Comes from | Needs |
+| --- | --- | --- |
+| The facts | `GET /api/feedback-summary`, counted by the backend's code each time | Any feedback at all |
+| Your notes | The same answer: the latest 15, word for word, each with what it was about | A note |
+| The AI model's pick | A job started by the button | Five notes of three words or more, the worker, and Ollama |
+
+The screen writes none of these sentences. It shows what the backend sent.
+
+**The button** is off, with the reason beside it, when there are too few notes ("…once
+there are at least 5 notes of a few words or more (there are 3)") or the AI model is not
+available ("…not available right now: Ollama is not running. Nothing above depends on
+it."). While the job is waiting or running the button becomes **Stop**, and the line
+beside it follows the job. If the job fails, the reason is shown with the same help as a
+failed coaching job (how to start Ollama, and so on), and the button reads "Try again".
+
+**Out of date.** When a note is added, edited or removed after a pick, the box says "Out
+of date: your notes have changed since these were picked", and goes on showing what was
+picked. Feedback without a note changes the facts at once and leaves the pick current.
+
+How it is built: the summary lives in `feedbackStore.ts`, beside the calibration, because
+like the calibration it belongs to the whole app and not to one result.
+
+| Action | Does |
+| --- | --- |
+| `loadSummary()` | Fetches the facts, the notes and the last pick. Called once when a screen with the panel opens |
+| `askForSummary()` | Starts the job, then asks again every 2 seconds for as long as the answer says the job is queued or running |
+| `cancelSummary()` | Cancels that job through the ordinary job endpoint, then fetches the summary again |
+| after `give`, `remove`, `undo`, `reset`, `setAdaptive` | The summary is fetched again, because the facts are made from the feedback and the settings |
+
+A request for the summary that is answered late cannot overwrite a newer answer: each
+request carries a number, and only the answer to the latest one is used.
 
 ## 7. What is saved in the browser
 
@@ -1028,10 +1162,10 @@ Things to know about `localStorage`:
 - It belongs to one browser on one device. Chrome and Safari each have their own copy, and so
   does a private window. Nothing syncs.
 - Clearing the browser's site data deletes it.
-- It also depends on the address: `http://localhost:3210` and `http://localhost:3211` are
+- It also depends on the address: `http://localhost:1234` and `http://localhost:1235` are
   different sites to the browser and do not share data. That is why the development server
-  has a fixed default port (decision F16). If port 3210 is ever taken and Next.js picks
-  another, the checklist history saved under 3210 will not be visible there.
+  has a fixed default port (decision F16). If port 1234 is ever taken and Next.js picks
+  another, the checklist history saved under 1234 will not be visible there.
 
 You can look at the saved data in the browser's developer tools: Application (or Storage) →
 Local Storage → the site's address.
@@ -1172,13 +1306,18 @@ Each entry says what was chosen, what was considered, and what was decided again
 
 ### F16. A fixed port for the development server
 
-- **Chosen:** `npm run dev` starts on port 3210 unless told otherwise.
+- **Chosen:** `npm run dev` starts on port 1234 unless told otherwise. The API's commands
+  use port 4321, and that is the address the frontend calls by default.
 - **Why:** the browser stores saved data per address. Port 3000 was already in use on this
   machine, so the server would start on whichever port happened to be free, and checklist
-  data saved under one port is invisible under another. An uncommon fixed port keeps the
-  address stable.
+  data saved under one port is invisible under another. A fixed port keeps the address
+  stable. The two numbers themselves are the user's choice.
 - **Decided against:** leaving it to chance (3000, 3001, 3002…); moving the checklist's data
   to the backend just to escape this.
+- **Changed once:** the defaults were 3210 (frontend) and 8000 (API) until the user asked
+  for 1234 and 4321. Checklist history saved while the app ran on port 3210 is still in the
+  browser under that address and does not show on port 1234. To see it again, run
+  `PORT=3210 npm run dev`.
 
 ### F17. The same store pattern as the checklist
 
@@ -1578,23 +1717,97 @@ Each entry says what was chosen, what was considered, and what was decided again
 - **Why:** it mirrors the backend (decision B51). Otherwise a user without Ollama could
   label pauses and never see the labels reach their coaching.
 
+### F61. Words to pick from are buttons, and the last word is not one
+
+- **Chosen:** each word of the phrase is a toggle button; pressing it means "the pause
+  came after this word". The last word is plain text.
+- **Why:** a pause sits between two words, so there is one place fewer than there are
+  words. Making the last word a button would offer a place that is not inside the phrase:
+  the silence after it is the pause that ended the phrase.
+- **Decided against:** *markers between the words to click on* (a target a few pixels wide,
+  and nothing for a keyboard to land on); *a text box to type the word into* (a phrase can
+  say the same word twice).
+
+### F62. The screen previews what the detector heard, with the backend's own rule
+
+- **Chosen:** when a word is picked, the screen says which silence the report will be
+  about, using a copy of the backend's rule (the nearest silence within half a second).
+- **Why:** word times come from the speech recogniser and can be a fraction of a second
+  out, so "after this word" may land beside a silence and not on it. Showing which silence
+  it will be taken to mean lets the user see that before saving, and press Play to check.
+- **The cost, and how it is contained:** the rule exists in two places. The backend's
+  decides; the screen's only shows. `NEAR_SECONDS` in `feedback.ts` names the constant it
+  copies, and a test pins the half second.
+- **Decided against:** saving first and showing the backend's sentence afterwards (the
+  user finds out what they reported only once it is stored).
+
+### F63. Recognised words are shown without their punctuation, and Devanagari is kept whole
+
+- **Chosen:** `bareWord` strips punctuation from both ends of a word before it is shown on
+  a button or in a sentence.
+- **Why:** the recogniser returns "name," and "Skyler." as words. On screen that gave
+  `Between “my” and “name,”, at about…`.
+- **A fault the test caught:** the first version removed everything that is not a letter
+  or a digit, which turned "रुको" into "रुक": a Devanagari vowel sign is a *mark*, not a
+  letter, and it was being cut off the end of the word. Marks now count as part of the
+  word. The test with a Hindi word was written before the function was used anywhere.
+
+### F64. A reference gets its feedback on the Monologue screen, from the same components
+
+- **Chosen:** the results view already used for studying a reference takes the feedback
+  controls, with a flag that changes the choices offered and the wording.
+- **Why:** the place where a wrong word or a missed pause in the reference is noticed is
+  where the reference is being studied. A second set of components for references would
+  have drifted from the first.
+- **Decided against:** opening references in General Practice (that screen's history,
+  coaching and "compare with an earlier attempt" are all about takes).
+
+### F65. The calibration panel is on both screens
+
+- **Chosen:** the same panel at the bottom of the Monologue page as at the bottom of
+  General Practice.
+- **Why:** feedback can now be given on the Monologue page, and when it moves a setting
+  the notice links to the panel. A link to something on another page would be a dead end.
+
+### F66. The AI model's pick is followed by the feedback store, not by the run panel
+
+- **Chosen:** `feedbackStore.ts` starts the job and asks after it itself. The run panel,
+  which follows analyses and coaching jobs, knows nothing about it.
+- **Why:** the run panel is about the recording being worked on, and holds the screen's
+  one "a run is in progress" state, which switches off the Analyse buttons. Picking notes
+  takes a few seconds and is about no recording. Running it through the panel would have
+  greyed out the whole form for it.
+- **What it costs:** a second, much smaller, polling loop. It has no back-off and no
+  resume-after-refresh, and needs neither: the first answer after a refresh says whether a
+  job is still under way, and the loop picks up from there.
+
+### F67. The pick is shown as the notes themselves, marked when it is out of date
+
+- **Chosen:** the box shows the picked notes word for word, with what each was written
+  about, the model's name, the time and how long it took. Once the notes change, it says
+  so and still shows the pick.
+- **Why:** it is the user's own text, so there is nothing to mistrust in it; and an
+  out-of-date pick is still a true record of what was picked from what.
+- **Decided against:** hiding an out-of-date pick (the user would wonder where it went);
+  picking again automatically (the model's time is the user's to spend).
+
 ### Decisions already made for later phases
 
-None. Every phase in the plan is built.
+None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 9. Tests
 
-Run with the command in the README. Current result: **228 tests pass**. 45 are new in
-Phase 6.
+Run with the command in the README. Current result: **250 tests pass**. 22 are new in
+Phase 7.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
 | `features/practice/practiceState.test.ts` | 23 | Start, pause/resume, reset, expiry exactly once, skip, manual tick/untick, a stale timer cannot complete a step, progress numbers, config changes |
 | `features/practice/practiceStore.test.ts` | 24 | Saving and restoring after a refresh, new-day rollover, midnight edge cases, reset today vs. clear history, damaged or unavailable storage, two tabs |
 | `features/practice/format.test.ts` | 9 | `03:00`-style text, durations, local dates vs. UTC |
-| `features/general/generalStore.test.ts` | 57 | Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh |
-| `features/general/feedbackStore.test.ts` | 17 | Feedback and calibration loaded together for the result on view; an answer about a result the user has left is dropped, but its calibration kept; saving, removing, and staying busy until every save has finished; an adjustment announced until dismissed; a failed save keeps what was there and says why; undo and reset reword the list on view; the calibration's last good answer survives a failed check |
-| `features/general/feedback.test.ts` | 17 | Which entry belongs to which pause, phrase or correction (a rating never jumping to another correction); the silences inside a phrase, in order; the word before a moment; labels new, changed and removed since the coaching was written; the minimum pause read from the result and worded; when a result was made with older settings; how each piece of feedback and each revision is named |
+| `features/general/generalStore.test.ts` | 58 | Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh. A corrected reference becomes the chosen one, the take on view stays, and the comparison is fetched again with it |
+| `features/general/feedbackStore.test.ts` | 28 | Feedback and calibration loaded together for the result on view; an answer about a result the user has left is dropped, but its calibration kept; saving, removing, and staying busy until every save has finished; an adjustment announced until dismissed; a failed save keeps what was there and says why; undo and reset reword the list on view; the calibration's last good answer survives a failed check. The summary: loaded on request; asking the AI model and checking every two seconds until it has picked; a second click ignored; a refusal shown with the facts still on screen; a failed job shown and the checking stopped; checking carried on while the backend is briefly away; stopping a request; counted again after every change to feedback or settings, and not before the panel has asked; a late answer never replacing a newer one |
+| `features/general/feedback.test.ts` | 27 | Which entry belongs to which pause, phrase or correction (a rating never jumping to another correction); the silences inside a phrase, in order; the word before a moment; labels new, changed and removed since the coaching was written; the minimum pause read from the result and worded; when a result was made with older settings; how each piece of feedback and each revision is named. Picking a word: the gap after every word but the last, in time order, kept inside the phrase; **the silence a report will be about is the nearest within half a second**; words shown without punctuation, a Hindi word kept whole; which word a saved report came after, looking only at its own phrase. A reference is offered the two reports and neither label. The line beside the AI button in every state |
 | `features/general/waveform.test.ts` | 16 | The shared timeline is as long as the longer recording; a shift moves a recording without changing its length; points that share a pixel keep their extremes; a quiet recording stays quiet unless stretched; nothing is drawn beyond full scale; round time-axis values, including before zero; where a moment falls in each recording |
 | `features/general/coaching.test.ts` | 12 | What is played for a phrase, a pause and a whole-recording measurement; the practice line always coming from the transcript; the help for each reason the AI model is unavailable; when writing again is and is not offered; the progress shown beside the button |
 | `features/general/recorder.test.ts` | 19 | Record, elapsed time from the clock, stop at the limit, WebM vs. MP4, discard at every stage, each kind of microphone problem, empty capture, microphone always released |
@@ -1724,3 +1937,30 @@ the text a narrow column, so those buttons now sit under the text.
 names were read from the page's accessibility tree, not heard); and feedback given over
 many real sessions, which is what the calibration panel is for.
 
+
+### Checked by hand in the browser at the end of Phase 7
+
+With the real API, worker, speech model and AI model, in a complete copy of the project
+with its own database on other ports (so the user's own running app was not touched),
+after the end-to-end script had left a take, two references, 12 pieces of feedback and 10
+notes in it:
+
+| Check | Result |
+| --- | --- |
+| `/monologue`, choose a reference, open "Study this reference" | The pause list offers "Not a pause: someone is still speaking" and "Too short to split the phrase here", and neither label. Each phrase has "Report a problem". The section is headed "Your feedback on this reference" |
+| "Report a problem" on a phrase, "After a word I pick" | The phrase's words as buttons, the last word as plain text; "Save this report" off with "Pick a word above first." |
+| Pick "my" in "Say my name" | The button shows as pressed with "‖ pause here"; "Between “my” and “name”, at about 0:00.5. The detector heard no silence within half a second of there."; Play; Save on |
+| Pick "am" in the next phrase | "Between “am” and “so”, at about 0:04.4. The nearest silence the detector heard is 0.36 s long, at 0:04.3." That is the silence listed above it as "At 0:04.3: a silence of 0.36 s, after “am”" |
+| A report saved earlier on that phrase | Listed as "Segment 2: a pause was missed at 0:04.5, after “am”", with its note and the adjustment that counted it |
+| The panel at the bottom of the Monologue page | The settings table (minimum pause 400 ms, "changed"), then "What your feedback adds up to" with eleven lines, the box of picked notes marked "Out of date", the button, and "Your notes, as you wrote them (10)" |
+| "Ask the AI model to pick again" | A new pick within a few seconds: three notes word for word, one of them in Hinglish, "Picked from 10 notes by the AI model llama3.1:8b… in 2.5 s"; the out-of-date line gone; no errors in the console |
+| 375 px wide, dark mode | No sideways scrolling of the page. The list of facts wraps and reads clearly. The word buttons wrap onto two lines, each 44 px tall |
+
+Two faults were found this way and fixed: a word shown with the recogniser's punctuation
+attached (decision F63), and, in the test written for that fix, a Hindi word losing its
+last vowel sign.
+
+**Not checked:** a real microphone, as in every phase; a screen reader (the names and
+pressed states were read from the page's accessibility tree, not heard); the same controls
+on a take in General Practice, which are the same components and were not clicked through
+again; and notes written by a person over days of use.

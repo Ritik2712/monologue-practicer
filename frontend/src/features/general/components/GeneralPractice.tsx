@@ -153,7 +153,8 @@ export function GeneralPractice() {
 
   const viewed = state.viewed;
   const viewedAnalysis = viewed.status === "ready" ? viewed.analysis : null;
-  // Feedback is given on your own takes. With nothing on view, only the calibration loads.
+  // On this screen feedback is about the take on view; a reference gets its feedback on the
+  // Monologue screen. With nothing on view, only the calibration and the summary load.
   const feedback = useFeedback(viewedAnalysis?.role === "take" ? viewedAnalysis.analysisId : null);
   const audioSrc = viewedAnalysis ? audioSourceFor(viewedAnalysis, state.localAudio, generalApi) : null;
   const chosenReference = state.references.items.find(
@@ -317,7 +318,15 @@ export function GeneralPractice() {
         onRetry={() => store.refreshHistory()}
       />
 
-      <CalibrationPanel state={feedback.state} store={feedback.store} />
+      <CalibrationPanel
+        state={feedback.state}
+        store={feedback.store}
+        coach={
+          health.status === "reachable"
+            ? { status: health.health.coach, model: health.health.coachModel }
+            : null
+        }
+      />
 
       <ConfirmDialog
         open={confirmation !== null}

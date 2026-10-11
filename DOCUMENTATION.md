@@ -11,10 +11,12 @@ top to bottom and understand what each part does and why it was built that way.
 | [DOCUMENTATION_SCIENCE.md](DOCUMENTATION_SCIENCE.md) | How a recording is measured — speech detection, pauses, the three kinds of WPM, loudness, pitch — with formulas and limits; how the coaching is produced with a local AI model and how its answer is checked; how a take is compared with a reference recording; how feedback adjusts settings, and what it is not allowed to change; and the science decisions |
 | [README.md](README.md) | The commands to install, run and check the app |
 
-The documents are updated at the end of every phase. Every phase in the plan is now built.
-If the code and a document ever disagree, the code is right and the document needs fixing.
+The documents are updated at the end of every phase. Every phase in the original plan
+(0 to 6) is built, and Phase 7 added what Phase 6 had left out. If the code and a document
+ever disagree, the code is right and the document needs fixing.
 
-**Last updated:** end of Phase 6 (feedback, calibration and revisions).
+**Last updated:** end of Phase 7 (feedback on references, picking a word for a missed
+pause, the summary of your feedback, and one command to start everything).
 
 ## 1. What this app is
 
@@ -43,6 +45,13 @@ label on a pause changes how the coaching reads that pause. And when several rep
 agree, one setting moves a small step, inside a fixed range, with the reason shown and an
 undo. No feedback ever changes a measurement that is already stored.
 
+A reference recording takes feedback too, on the Monologue screen: its misheard words can
+be corrected, and mistakes in its pauses reported. The panel that shows the settings also
+counts up everything you have said so far, and on request the local AI model puts that
+count into a few sentences. That summary is only something to read.
+
+All three programs can be started with one command: `./run.sh`.
+
 ## 2. What is built so far
 
 | Phase | What | Frontend | Backend | Status |
@@ -54,6 +63,7 @@ undo. No feedback ever changes a measurement that is already stored.
 | 4 | AI coaching through the local Ollama model | The Coaching section of the results, "write the coaching again", a notice when the model is unavailable | Findings, templates, the Ollama client, checks on the model's answer, a coaching-only job, 1 new endpoint, 4 new database columns | **Built** |
 | 5 | Reference comparison, Monologue screen, waveform overlay | The Monologue screen, the reference library, the comparison section (also inside General Practice), the waveform picture, checklist links | Reference recordings as a role of analysis, lining up two transcripts, the comparison, the waveform outline, 2 new endpoints, 5 new database columns | **Built** |
 | 6 | Feedback and automatic calibration | Feedback controls beside each pause, phrase and correction; the list of what was said; the calibration panel with undo, reset and on/off; revisions in the header and history | Storing feedback; deciding what each piece counts towards; the adjustment rules; versions of the settings; corrected transcripts and fresh analyses as new revisions; 9 new endpoints, 3 new tables | **Built** |
+| 7 | What Phase 6 left out, and one command to start the app | Picking the word a missed pause came after; feedback controls on a reference, on the Monologue screen; "What your feedback adds up to" in the calibration panel, with a button to ask the AI model | Feedback and transcript corrections on references; the rule that a setting needs a report from one of your own takes; the facts counted from the feedback; a third kind of job that has the AI model word them, with checks; 2 new endpoints, 1 new table; `run.sh` | **Built** |
 
 Phase 1 was a frontend-only phase: the checklist runs completely in the browser and never
 calls the backend. Phase 2 was a backend-only phase. Phase 3 is where the two meet: the
@@ -63,6 +73,8 @@ produced and checked). Phase 5 again touched all three, about evenly: a new scre
 kind of recording, and a new piece of science (comparing two recordings). Phase 6 touched
 all three as well: the rules for what feedback may change (science), where it is stored
 and how old results stay traceable (backend), and the controls and the panel (frontend).
+Phase 7 was not in the original plan: it built three things Phase 6 had named as not
+built, and a script at the top of the project. It also touched all three documents.
 
 ## 3. The big picture
 
@@ -128,6 +140,7 @@ monologue coach/
 ├── DOCUMENTATION_SCIENCE.md     How the audio is measured, and the AI model
 ├── .env.example                 Template for optional settings (copy to .env)
 ├── .gitignore                   Files git should not track (secrets, database, caches)
+├── run.sh                       Starts, stops or reports on all three programs  → README
 ├── .claude/launch.json          Lets the Claude desktop app start the two dev servers
 ├── claude_monologue_coach_full_implementation_prompt.md   The original requirements
 ├── frontend/                    Everything that runs in the browser  → frontend document
@@ -153,6 +166,8 @@ monologue coach/
 | Feedback: labels, reports, notes | The same SQLite file, in the `feedback` table. Deleted with the analysis it is about | Only this computer | **Built** | Backend document |
 | Calibration: the adjusted settings and their history | The same SQLite file, in `calibration_versions`. Rows are only ever added | Only this computer | **Built** | Backend and science documents |
 | Later results of one recording (revisions) | The same SQLite file, as further rows in `analyses` | Only this computer | **Built** | Backend document |
+| What your feedback adds up to (the facts) | Nowhere: counted from the `feedback` table each time it is shown | Only this computer | **Built** | Science document |
+| The AI model's wording of those facts | The same SQLite file, one row in `feedback_summary`. A new one replaces it | Only this computer | **Built** | Backend and science documents |
 | The speech model | `~/.cache/huggingface/` (downloaded once) | Only this computer | **Built** | Science document |
 | The AI language model | Inside Ollama's own folder (`~/.ollama/`). Installed by you; this app never downloads it | Only this computer | **Built** | Science document |
 | Settings | Optional `.env` file in the project root | Only this computer | **Built** | README |
@@ -176,7 +191,7 @@ are in their own documents.
 
 ### G2. The frontend calls the backend directly
 
-- **Chosen:** the browser sends requests straight to `http://localhost:8000`. The backend
+- **Chosen:** the browser sends requests straight to `http://localhost:4321`. The backend
   allows this with a CORS rule (backend decision B4).
 - **Why:** later, audio files will be uploaded. Sending them straight to FastAPI avoids
   passing large files through a second server.
@@ -273,6 +288,35 @@ are in their own documents.
   a false claim. Measuring before promising is the rule this project has followed since
   Phase 4.
 
+### G11. A reference can be corrected, but it cannot retune the app by itself
+
+- **Chosen:** feedback is taken on reference recordings: wrong words can be corrected
+  (a new revision of the reference, which takes are then lined up with), and mistakes in
+  its pauses reported. Those reports count towards a setting, but a setting moves only if
+  at least one of the reports that agree is about one of the user's own takes.
+- **Why:** the comparison with a reference is only as good as the reference's own
+  measurement, so it has to be correctable. But a reference is often a film clip: another
+  voice, another room, sometimes music. The settings are meant to fit the user's
+  recordings. Asking for one take to show the same thing lets a reference's reports help
+  without letting them decide.
+- **Decided against:** refusing feedback on references (the Phase 6 choice, which left a
+  misheard reference uncorrectable); counting their reports exactly like a take's; keeping
+  a separate set of settings per recording, which the brief rules out.
+
+### G12. The AI model may put feedback into words; it decides nothing
+
+- **Chosen:** what the feedback adds up to is counted by code and always on screen. The
+  local AI model is asked only when the user presses a button, is given those counts and
+  the user's notes as text, and its answer is checked number by number before it is shown.
+  Nothing reads the summary: settings change by the fixed rules of G9 alone.
+- **Why:** this is the one use of the model the brief allows here ("may summarise
+  feedback"), with its condition that deterministic code applies and validates every
+  numeric change. Keeping the summary out of every calculation makes that condition true
+  by construction.
+- **Decided against:** letting the model suggest a value for a setting; writing a summary
+  automatically after every piece of feedback (half a minute of the model's time for a
+  sentence nobody asked for).
+
 ## 7. Glossary
 
 | Word | Meaning |
@@ -311,6 +355,8 @@ are in their own documents.
 | **Calibration** | The current values of the few settings feedback may adjust, with the history of every change. |
 | **Minimum pause** | The shortest silence that counts as a pause. 500 ms unless feedback has moved it. |
 | **Revision** | A later result made from a recording that already has one, stored beside the earlier result. |
+| **Fact (about your feedback)** | One line counted from the stored feedback by code, e.g. "Missed pauses you reported: 5". The AI model's summary may only restate these. |
+| **Session (of a program)** | A group of running programs that a terminal treats as one. `run.sh` gives each program its own, so that Ctrl+C reaches the script first and it can stop them in order. |
 | **Epoch milliseconds** | A moment in time written as the number of milliseconds since 1 January 1970 UTC. |
 | **Pure function** | A function whose result depends only on its inputs and that changes nothing else. Easy to test. |
 | **Reconcile** | Here: bringing saved state up to date with the real clock, e.g. finishing a timer that ended while the page was closed. |

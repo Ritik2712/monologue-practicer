@@ -82,6 +82,8 @@ function setup(stored: Record<string, string> = {}) {
     setAdaptive: vi.fn(),
     correctTranscript: vi.fn(),
     requestReanalysis: vi.fn(),
+    getFeedbackSummary: vi.fn(),
+    requestFeedbackSummary: vi.fn(),
   } satisfies Record<keyof GeneralApi, unknown>;
 
   const timers: { callback: () => void; ms: number }[] = [];
@@ -638,6 +640,32 @@ describe("revisions of a recording", () => {
     await settle();
     return context;
   }
+
+  it("chooses the corrected revision of a reference, and leaves the take on view alone", async () => {
+    const { store, api } = await withOpenAnalysis();
+    api.listAnalyses.mockResolvedValue({ items: [reference("ref-1")], total: 1 });
+    api.getComparison.mockResolvedValue(comparison("analysis-1", "ref-1"));
+    store.selectReference("ref-1");
+    await settle();
+    api.correctTranscript.mockResolvedValue({ ...referenceResult("ref-2"), revision: 2 });
+    api.listAnalyses.mockResolvedValue({
+      items: [reference("ref-2"), reference("ref-1")],
+      total: 2,
+    });
+    api.getAnalysis.mockResolvedValue(referenceResult("ref-2"));
+
+    store.correctTranscript("ref-1", [{ segmentId: "seg-1", text: "the real words" }]);
+    await settle();
+
+    const state = store.getSnapshot();
+    expect(state.correction).toEqual({ status: "idle" });
+    expect(state.selectedReferenceId).toBe("ref-2");
+    expect(state.viewed).toMatchObject({ status: "ready", analysis: { analysisId: "analysis-1" } });
+    expect(state.notice?.text).toContain("Saved as revision 2 of this reference");
+    // Both stay in the library, and the take is now compared with the corrected one.
+    expect(state.references.items.map((entry) => entry.analysisId)).toEqual(["ref-2", "ref-1"]);
+    expect(api.getComparison).toHaveBeenLastCalledWith("analysis-1", "ref-2");
+  });
 
   it("shows the new revision once the corrected words are saved", async () => {
     const { store, api } = await withOpenAnalysis();

@@ -11,8 +11,8 @@ the slow work: measuring the audio and getting the coaching written.
 
 Everything described here is built.
 
-**Last updated:** end of Phase 6 (feedback, calibration and revisions: nine new endpoints,
-three new tables, four new columns).
+**Last updated:** end of Phase 7 (feedback on reference recordings, what the feedback adds
+up to, a third kind of job, and `run.sh`: two new endpoints, one new table).
 
 ## Contents
 
@@ -36,9 +36,13 @@ of this project: you install and start it yourself, and only the worker talks to
 
 | Program | Command (from `backend/`) | What it does | Runs for |
 | --- | --- | --- | --- |
-| **API** | `uv run uvicorn app.main:app --reload --port 8000` | Answers the browser's requests. Never does slow work. | As long as you use the app |
+| **API** | `uv run uvicorn app.main:app --reload --port 4321` | Answers the browser's requests. Never does slow work. | As long as you use the app |
 | **Worker** | `uv run python -m app.worker` | Takes jobs from the queue one at a time: analyses the audio, then gets the coaching written. | As long as you use audio analysis |
 | **Model download** | `uv run python -m app.speech_model download` | Fetches the speech model. The only step that uses the internet. | Once |
+
+The API and the worker, together with the frontend, can also be started with one command
+from the project's top folder: `./run.sh`. What that script does, and why it is written
+the way it is, is in decision B56.
 
 ```
    Browser
@@ -85,6 +89,8 @@ backend/
 │   ├── job_queue.py      Every change to a job's status
 │   ├── history.py        Listing and deleting stored analyses
 │   ├── feedback.py       Saving feedback, and working out what each piece of it does
+│   ├── feedback_summary.py   What all the feedback adds up to: the facts, the notes, and
+│   │                     the few notes the AI model picks out
 │   ├── revisions.py      Later results of one recording: corrected transcripts, fresh analyses
 │   ├── transcript_correction.py   Works word counts and WPM out again from corrected words
 │   ├── wpm_review.py     Lays out what went into a WPM figure the user says looks wrong
@@ -98,7 +104,8 @@ backend/
 │   │   ├── analyses.py   Submit, read, list and delete analyses; kept audio; form options;
 │   │   │                 ask for coaching to be written again
 │   │   ├── jobs.py       GET /api/jobs/{id}, POST …/cancel, POST …/retry
-│   │   └── feedback.py   Feedback on an analysis; the calibration: read, undo, reset, on/off
+│   │   └── feedback.py   Feedback on an analysis; the calibration: read, undo, reset, on/off;
+│   │                     what the feedback adds up to
 │   ├── calibration/      The settings feedback may adjust (explained in the science document)
 │   │   ├── registry.py       Which settings are adjustable, and how far
 │   │   ├── engine.py         The rules that decide when a setting moves. No database
@@ -132,7 +139,8 @@ backend/
 │       ├── 0001_jobs_analyses_and_worker_state.py   Creates the three tables
 │       ├── 0002_coaching.py                         Adds the four coaching columns
 │       ├── 0003_references_and_waveforms.py         Adds role, title and the waveform outline
-│       └── 0004_feedback_and_calibration.py         Adds feedback, calibration and revisions
+│       ├── 0004_feedback_and_calibration.py         Adds feedback, calibration and revisions
+│       └── 0005_feedback_summary.py                 Adds the notes the AI model picked out
 ├── tests/                See section 10
 └── data/                 Created on first run; not in git
     ├── monologue_coach.db    The database
@@ -160,6 +168,10 @@ Which file to open for which question:
 | When does feedback move a setting, and by how much? | `app/calibration/engine.py` |
 | Which settings can move at all, and within what range? | `app/calibration/registry.py` |
 | What do undo and reset do? | `app/calibration/store.py` |
+| What may be said about a reference recording, and what not? | `app/feedback.py` (`save`) |
+| Why did reports on a reference not move a setting? | `app/calibration/engine.py` (`Tally.enough`) |
+| What are the lines under "What your feedback adds up to"? | `app/feedback_summary.py` (`build_digest`) |
+| What is the AI model asked about my notes, and what is done with its answer? | `app/feedback_summary.py` (`build_prompt`, `read_answer`) |
 | How is WPM worked out again after a transcript correction? | `app/transcript_correction.py` |
 | How does a recording get a second result? | `app/revisions.py` |
 | What do the delivery profiles say? | `app/profiles.py` |
@@ -169,7 +181,7 @@ Which file to open for which question:
 
 An **API endpoint** is an address the frontend can send a request to. Each one has a method
 (`GET` to read, `POST` to create or do something) and a path. While the API is running, an
-interactive version of this list is at `http://localhost:8000/docs`.
+interactive version of this list is at `http://localhost:4321/docs`.
 
 ### Built
 
@@ -197,13 +209,16 @@ interactive version of this list is at `http://localhost:8000/docs`.
 | `POST` | `/api/calibration/undo` | Puts back the value the most recent adjustment replaced | `routes/feedback.py` |
 | `POST` | `/api/calibration/reset` | Returns every setting to its default | `routes/feedback.py` |
 | `PUT` | `/api/calibration/adaptive` | Switches automatic adjustment on or off | `routes/feedback.py` |
-| `POST` | `/api/analyses/{analysisId}/transcript` | Stores a new revision of a take with corrected words, with WPM worked out again | `routes/analyses.py` |
+| `POST` | `/api/analyses/{analysisId}/transcript` | Stores a new revision of a take or a reference with corrected words, with WPM worked out again | `routes/analyses.py` |
 | `POST` | `/api/analyses/{analysisId}/reanalysis` | Queues a fresh analysis of the kept recording, with the settings in force now | `routes/analyses.py` |
+| `GET` | `/api/feedback-summary` | What all the stored feedback adds up to: the facts counted by code, the notes, and the notes the AI model last picked out | `routes/feedback.py` |
+| `POST` | `/api/feedback-summary` | Queues a job that asks the AI model to pick out the most telling notes | `routes/feedback.py` |
 
 Submitting, jobs, results and coaching are tested in `tests/test_api.py`; lists, deleting,
 kept audio, references, waveforms and the comparison in `tests/test_history_api.py`;
 feedback and calibration in `tests/test_feedback_api.py`; corrected transcripts and fresh
-analyses in `tests/test_revisions.py`.
+analyses in `tests/test_revisions.py`; what the feedback adds up to in
+`tests/test_feedback_summary.py`.
 
 ### `GET /api/health`
 
@@ -497,7 +512,8 @@ submitting a recording, it answers at once (`202`) with a job to poll:
 
 ### `POST /api/analyses/{analysisId}/feedback`
 
-Saves one piece of feedback on an analysis of one of your own takes. The body is JSON:
+Saves one piece of feedback on an analysis: one of your own takes, or a reference
+recording. The body is JSON:
 
 ```json
 { "category": "pause_missed", "targetId": "seg-1", "atSeconds": 2.78, "note": "a breath there" }
@@ -521,6 +537,15 @@ Saves one piece of feedback on an analysis of one of your own takes. The body is
 | `coaching_useful`, `coaching_not_useful` | A correction | A report towards raising or lowering the priority of that kind of correction |
 
 The rules behind this table, and the reasons, are in the science document (section 15).
+
+**On a reference recording** the four report categories, the two WPM categories and
+`transcript_wrong` are taken as on a take. The two labels and the two ratings are refused
+(`409 not_for_reference`): a reference has no coaching for a label to change or a rating
+to be about. A report on a reference counts towards a setting like any other, with one
+difference that is decided when the reports are counted, not when they are saved: a
+setting moves only if at least one of the reports that agree is about a take of your own.
+Until then `status` and each report's `message` end "All of them are about reference
+recordings, and a setting moves only once a take of your own shows the same thing."
 
 One row is kept per thing: feedback on the same pause replaces what was said about it
 before, and sending the same category again only changes the note. The answer is everything
@@ -552,8 +577,8 @@ the screen needs to redraw:
 | `adjustments` | The settings this request changed, each with its reason. Empty nearly every time |
 
 Refusals: `404 analysis_not_found`; `404 unknown_target` (no such pause, phrase or
-correction); `409 not_a_take` (feedback is not taken on a reference); `422 outside_target`
-(the time is not inside the phrase); `422 invalid_request`.
+correction); `409 not_for_reference` (a label or a rating on a reference);
+`422 outside_target` (the time is not inside the phrase); `422 invalid_request`.
 
 `GET /api/analyses/{analysisId}/feedback` returns the same shape without saving anything.
 `DELETE /api/feedback/{feedbackId}` takes one piece back and returns the same shape. An
@@ -573,7 +598,7 @@ The settings in force, and how they got there.
     { "name": "min_pause_ms", "group": "analysis", "label": "Minimum pause", "unit": "ms",
       "value": 400, "default": 500, "minimum": 250, "maximum": 800, "step": 50,
       "changed": true,
-      "pending": { "raiseCount": 0, "lowerCount": 0, "recordings": 0, "needed": 3 },
+      "pending": { "raiseCount": 0, "lowerCount": 0, "recordings": 0, "needed": 3, "takeReports": 0 },
       "supportingReports": 3, "confidence": "low",
       "status": "Changed from its default of 500 ms. No reports are waiting." }
   ],
@@ -585,7 +610,7 @@ The settings in force, and how they got there.
     { "version": 1, "cause": "defaults", "reason": "The defaults the app starts with." }
   ],
   "canUndo": true,
-  "rules": { "minReports": 3, "minRecordings": 2, "minAgreement": 0.75, "window": 10, "reversalReports": 5 }
+  "rules": { "minReports": 3, "minRecordings": 2, "minTakeReports": 1, "minAgreement": 0.75, "window": 10, "reversalReports": 5 }
 }
 ```
 
@@ -597,6 +622,7 @@ The settings in force, and how they got there.
 | `settings` | The 13 adjustable settings: the minimum pause, and a priority for each of the 12 kinds of correction. Each has explicit bounds |
 | `fixed` | The thresholds feedback never changes, shown so that nothing is hidden |
 | `changes` | The history, newest first. `cause` is `defaults`, `auto`, `undo` or `reset` |
+| `pending.takeReports` | How many of the waiting reports on the larger side are about your own takes. `rules.minTakeReports` (1) of them are needed before the setting can move |
 
 | Request | What it does | Refused with |
 | --- | --- | --- |
@@ -608,9 +634,9 @@ All three answer with the calibration in the shape above.
 
 ### `POST /api/analyses/{analysisId}/transcript`
 
-Corrects the words of one or more phrases of a take and stores the outcome as a **new
-revision**. It answers `201` with the new result, at once: there is no job, because no
-audio is read.
+Corrects the words of one or more phrases of a take or of a reference recording, and
+stores the outcome as a **new revision**. It answers `201` with the new result, at once:
+there is no job, because no audio is read.
 
 ```json
 { "corrections": [ { "segmentId": "seg-1", "text": "You clearly do not know who you are talking to" } ] }
@@ -619,11 +645,13 @@ audio is read.
 Word counts and the three WPM figures are worked out again from the corrected words and
 each phrase's own measured length (science document, section 15). Everything measured from
 the sound is copied unchanged. The result that was corrected is not modified. The new
-revision gets coaching from the fixed rules straight away, with a notice saying the AI
-model has not been asked yet.
+revision of a take gets coaching from the fixed rules straight away, with a notice saying
+the AI model has not been asked yet. The new revision of a reference keeps its role and
+its title and, like every reference, has no coaching. Both revisions of a reference stay
+in the library; a comparison is with whichever one is asked for.
 
 Refusals: `400 nothing_changed` (the words are the same as before); `404 unknown_target`;
-`409 not_a_take`; `404 analysis_not_found`.
+`404 analysis_not_found`.
 
 ### `POST /api/analyses/{analysisId}/reanalysis`
 
@@ -634,6 +662,58 @@ revision; the earlier result is not changed. Asking again while one is queued or
 returns that job (`200`).
 
 Refused with `409 audio_not_kept` when the recording was not kept.
+
+### `GET /api/feedback-summary`
+
+What everything said so far adds up to. Nothing is stored to answer it except the model's
+last pick: the facts and the notes are read from the `feedback` table each time.
+
+```json
+{
+  "feedbackCount": 12,
+  "facts": [
+    { "id": "f1", "text": "12 pieces of feedback in all, on 3 recordings: 6 on your own takes and 6 on reference recordings." },
+    { "id": "f2", "text": "What it is about, largest group first: missed pauses (5), WPM figures (3), pauses you labelled (2), coaching corrections (1), wrong words (1)." },
+    { "id": "f5", "text": "Missed pauses you reported: 5. At 5 of them the detector had heard a silence lasting between 324 and 356 ms, which was shorter than the minimum pause at the time and so was not counted as a pause." }
+  ],
+  "notes": [
+    { "about": "a pause you said the app missed", "text": "he stops for a beat here in the film" }
+  ],
+  "noteCount": 10, "pickableNotes": 9, "minNotes": 5,
+  "picked": {
+    "notes": [ { "about": "a pause you said the app missed", "text": "yahan maine jaan-boojhkar ruka tha" } ],
+    "model": "llama3.1:8b", "modelSeconds": 2.5, "generatedAt": "2026-10-11T10:18:02Z",
+    "noteCount": 10, "stale": false
+  },
+  "job": null
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `facts` | Sentences written by code from the stored feedback, in a fixed order. Each is about one thing only, and no two count the same feedback |
+| `notes` | The most recent 15 notes, oldest first, word for word, each with what it was written about |
+| `noteCount` | Every note there is, including any too old to be listed |
+| `pickableNotes` | The listed notes of three words or more: the only ones the AI model is offered |
+| `minNotes` | The AI model is asked only when it can be offered at least this many (5) |
+| `picked` | The notes the AI model last picked, as they read when it picked them, the most telling first. `null` until it has been asked. `stale` is `true` once the notes have changed |
+| `job` | The request to the AI model while it is queued or running, and after it failed until a later pick is stored. The usual job shape, with `kind` `"summary"` |
+
+How the facts are worded and why the AI model is only allowed to pick is in the science
+document (section 15).
+
+### `POST /api/feedback-summary`
+
+Queues a job of kind `summary` and answers `202` at once, in the shape above with `job`
+filled in. There is no separate job to poll: `GET /api/feedback-summary` says how it is
+going. Asking again while one is queued or running returns the same job (`200`). The job
+can be cancelled like any other, with `POST /api/jobs/{jobId}/cancel`.
+
+Refused with `409 too_few_notes` when fewer than five notes are worth offering.
+
+A summary job that fails says why in `job.error` (`not_running`, `model_missing`,
+`ai_off`, `timeout`, `bad_answer`) and stores nothing. It is never retryable: there is no
+audio to keep for it, and asking again costs a click.
 
 ### `GET /api/analysis-options`
 
@@ -772,17 +852,26 @@ While a job is `running`, its `stage` says what the worker is doing:
 | `transcribing` | Turning speech into words | about 20 seconds |
 | `measuring_audio` | Loudness, pitch, pauses, rates | a few seconds |
 | `generating_feedback` | Writing the coaching: findings, the AI model, checks | 20 to 50 seconds with the AI model (it does not depend much on the recording's length); under a second from templates |
+| `summarising_feedback` | Only in a `summary` job: the AI model picks out the most telling notes | 2 to 5 seconds, whatever the number of recordings |
 
 **Two roles.** An analysis job is for a `take` or a `reference`. A reference job runs the
 first four stages and stops: it has no `generating_feedback` stage and never calls the AI
 model. On this machine a 133-second reference took 24.6 seconds; the same recording as a
 take, with AI coaching, took 72.8.
 
-**Two kinds of job.** Everything above describes an `analysis` job. A `coaching` job is the
-small one created by `POST /api/analyses/{id}/coaching`: it has no audio, goes straight to
-`generating_feedback`, and replaces only the coaching of an analysis that already exists.
-Both kinds sit in the same table, wait in the same queue and are run by the same worker, one
-at a time, so the speech model and the AI model are never working at the same moment.
+**Three kinds of job.** Everything above describes an `analysis` job. A `coaching` job is
+the small one created by `POST /api/analyses/{id}/coaching`: it has no audio, goes straight
+to `generating_feedback`, and replaces only the coaching of an analysis that already exists.
+A `summary` job, created by `POST /api/feedback-summary`, is smaller still: it has neither
+audio nor an analysis. Its one stage is `summarising_feedback`, in which the AI model is
+asked which of the user's notes are the most telling, and its outcome is one row in the
+`feedback_summary` table. It takes two to five seconds. All three kinds sit in the same
+table, wait in the same queue and are run by the same worker, one at a time, so the speech
+model and the AI model are never working at the same moment.
+
+A job row always has a `role`, a `profile` and a `language_hint`, because the first kind of
+job needs them. A summary job fills them with the defaults (`take`, `custom`, `auto`); they
+mean nothing for it.
 
 ### The request and the worker, step by step
 
@@ -919,6 +1008,7 @@ At start-up and once a minute the worker also:
 | --- | --- | --- |
 | `create_job` | `POST /api/analyses` | Insert a queued job |
 | `create_coaching_job` | `POST /api/analyses/{id}/coaching` | Insert a queued coaching job, or return the one already in progress |
+| `create_summary_job` | `POST /api/feedback-summary` | Insert a queued summary job, or return the one already in progress |
 | `find_by_idempotency_key` | `POST /api/analyses` | Detect a repeated submission |
 | `to_status` | every job endpoint | Build the JSON status |
 | `request_cancel` | `POST …/cancel` | Cancel now, or set the flag |
@@ -928,6 +1018,7 @@ At start-up and once a minute the worker also:
 | `is_cancel_requested` | worker (`check`) | Read the cancel flag |
 | `complete_job`, `fail_job`, `finish_cancelled`, `release_job` | worker | The four ways a run ends |
 | `complete_coaching_job` | worker | Replace an analysis's coaching and mark the coaching job succeeded |
+| `complete_summary_job` | worker | Store the picked notes in place of the last pick and mark the summary job succeeded |
 | `recover_orphaned_jobs` | worker | Deal with jobs a dead worker left behind |
 | `expire_failed_audio` | worker | Delete audio kept too long |
 | `report_worker`, `worker_alive` | worker / API | The worker's own heartbeat |
@@ -1025,6 +1116,68 @@ that share a root are one family, numbered by `revision`.
 A revision appears in the history as its own row, marked with its number and reason. The
 earlier results stay readable, and stay exactly as they were.
 
+### Feedback on a reference recording
+
+A reference is an analysis like any other, with `role` `reference`, so the same endpoints
+serve it. Three things differ, each in one place:
+
+| What | Where | How |
+| --- | --- | --- |
+| Labels and ratings are refused | `feedback.save` | A reference has no coaching. `409 not_for_reference` |
+| Its reports cannot move a setting alone | `calibration/engine.py`, `Tally.enough` | Each report carries `own_take`, read from the analysis's role when the reports are counted (`store.pending_reports`). An adjustment needs `MIN_TAKE_REPORTS` (1) of the agreeing reports to have it |
+| A corrected reference has no coaching | `revisions.create_corrected` | The new revision is stored with `coaching` empty, like the reference it came from |
+
+Nothing about a report on a reference is stored differently. That is on purpose: whether
+it may count is a rule about the whole set of waiting reports, so it is decided when they
+are counted. If the rule is ever changed, the stored reports need no migration.
+
+The wording of two messages also depends on whose recording it is, because "if you were
+still speaking" is wrong about a film clip: the note on a pause too long to be explained
+by any setting (`feedback.UNHEARD`), and the review of a WPM figure (`wpm_review.review`,
+`on_reference=True`).
+
+### What the feedback adds up to
+
+`feedback_summary.py` has two halves that never mix.
+
+**The facts** (`build_digest`). Every request to `GET /api/feedback-summary` reads the
+whole `feedback` table, joined to `analyses` for the role, and writes ten or so sentences:
+how much feedback, what it is about, each kind with its measured figures, the settings,
+the notes. Nothing is cached. The table is small (a few rows per recording) and the
+sentences must always agree with it, so working them out again costs less than keeping a
+copy honest.
+
+**The pick** (`build_prompt`, `read_answer`, `pick`). A `summary` job gives the AI model
+the notes, numbered `n1`, `n2`, …, and asks for the numbers of the three most telling.
+
+```
+ POST /api/feedback-summary ──▶ jobs row (kind "summary", queued)
+                                        │
+ worker: build_digest ─▶ build_prompt ─▶ AI model ─▶ read_answer ─▶ feedback_summary row (id 1)
+                                                        │
+                              names only: ["n4", "n1", "n6"] ──▶ those notes, copied word for word
+```
+
+Four details of that path:
+
+- **Only notes worth offering are offered.** A note of fewer than three words is left out
+  of the prompt (`Digest.candidates`). The names in the answer are mapped back to
+  positions in the full list (`Prompt.names`).
+- **The answer can only name a note that exists.** The JSON schema sent to Ollama lists
+  the allowed names as an `enum`, so the model cannot produce any other.
+- **`read_answer` is forgiving and strict in the right places.** A name given twice counts
+  once, a name that is no note is passed over, extra names are dropped. Fewer than two
+  different notes is no pick: the model is asked once more, and then the job fails.
+- **What is stored is the notes, not the names.** `feedback_summary.picked` holds each
+  picked note's text and what it was about, as they read at the time, so the pick still
+  shows correctly after a note is edited. A fingerprint of the notes it was picked from is
+  stored beside it; when the current notes give a different fingerprint, the answer says
+  `stale`.
+
+The worker does this in `Worker._sum_up_feedback`. Like a coaching job, it stores nothing
+if it is cancelled at the last moment (`complete_summary_job` changes the table and the
+job's status in one transaction).
+
 ### Which function does what
 
 | Function | File | Does |
@@ -1040,6 +1193,9 @@ earlier results stay readable, and stay exactly as they were.
 | `correct_transcript` | `transcript_correction.py` | A stored result with corrected words → a new result. Pure: no database, no audio |
 | `create_corrected`, `create_reanalysis_job` | `revisions.py` | Store a corrected revision; queue a fresh analysis |
 | `review` | `wpm_review.py` | The arithmetic and the checks shown when a WPM figure is questioned |
+| `build_digest` | `feedback_summary.py` | Reads all stored feedback and writes the facts and the list of notes |
+| `build_prompt`, `read_answer`, `pick` | `feedback_summary.py` | What the AI model is asked about the notes, and what is made of its answer |
+| `describe` | `feedback_summary.py` | Everything `GET /api/feedback-summary` returns |
 
 ## 5. The database
 
@@ -1124,6 +1280,18 @@ are only ever added.
 
 **`calibration_state`** — a single row: `adaptive_enabled`, and when it last changed.
 
+**`feedback_summary`** — a single row (id 1): the notes the AI model last picked out.
+
+| Column | Meaning |
+| --- | --- |
+| `generated_at`, `model`, `model_seconds` | When it was picked, by which model, and how long the model took |
+| `note_count` | How many notes it was picked from |
+| `fingerprint` | Identifies those notes. When the notes now give a different one, the pick is out of date |
+| `picked` | The picked notes as they read at the time, as JSON: `[{"about", "text"}]`, the most telling first |
+
+The facts shown beside it are not stored anywhere. They are counted from `feedback` each
+time they are asked for.
+
 ### Migrations
 
 Tables are never created by hand. Every change to the structure is a **migration**: a
@@ -1141,6 +1309,7 @@ and the migrations ever disagree.
 | `0002_coaching` | Adds `jobs.kind`, `analyses.coaching`, `worker_state.coach_model` and `worker_state.coach_status`. Existing rows are kept: old jobs become kind `analysis`, old results simply have no coaching |
 | `0003_references_and_waveforms` | Adds `role` and `title` to `jobs` and `analyses`, and `analyses.waveform`. Existing rows are kept: everything stored so far becomes a `take`, with no waveform |
 | `0004_feedback_and_calibration` | Creates `feedback`, `calibration_versions` and `calibration_state`. Adds `jobs.source_analysis_id` and, to `analyses`, `calibration_version`, `root_id` and `revision_reason`. Existing rows are kept: every stored result becomes calibration version 1 and the first result of its own recording |
+| `0005_feedback_summary` | Creates `feedback_summary`. Changes no existing table. The new kind of job, `summary`, needed no migration: `jobs.kind` is text |
 
 **After updating the code to a new phase, run `uv run alembic upgrade head` once.** Until then
 the API reports `"database": "error"`, because the code expects columns the file does not
@@ -1741,14 +1910,17 @@ Each entry says what was chosen, what was considered, and what was decided again
 - **Decided against:** *a separate `recordings` table with results under it*: the right
   shape for a larger app, and a rewrite of every list and delete here.
 
-### B49. Feedback is taken on takes only
+### B49. Feedback is taken on takes only (replaced in Phase 7 by B52)
 
-- **Chosen:** feedback on a reference recording is refused (`409 not_a_take`).
-- **Why:** calibration is meant to fit the app to *the user's own* recordings: their
+- **Was chosen in Phase 6:** feedback on a reference recording was refused
+  (`409 not_a_take`).
+- **Why, then:** calibration is meant to fit the app to *the user's own* recordings: their
   microphone, their room, their way of speaking. A film clip is a different kind of sound,
   often with music, and reports about it would pull the settings the wrong way.
-- **Still possible:** a reference can be analysed again with the current settings, so that
-  it and the takes are cut the same way.
+- **What was wrong with it:** it protected the settings by making a reference impossible
+  to correct. A misheard word in the reference throws off the line-up of every take
+  compared with it, and nothing could be done about it. B52 keeps the protection and drops
+  the refusal.
 
 ### B50. Adjustable settings live in the database, not in `.env`
 
@@ -1767,14 +1939,102 @@ Each entry says what was chosen, what was considered, and what was decided again
 - **How it is told:** the stored coaching records the labels it used (`labelsUsed`); the
   worker compares them with the labels now on the analysis.
 
+### B52. A reference takes feedback; the rule that protects the settings sits in the engine
+
+- **Chosen:** `feedback.save` accepts reports, WPM reviews and transcript flags on a
+  reference, and `revisions.create_corrected` accepts its corrected words. The reason B49
+  gave is now met by one condition in `calibration/engine.py`: of the reports that agree,
+  at least one must be about a take.
+- **Why there:** B49's worry was about *what moves a setting*, and the engine is the one
+  place that decides that. A refusal at the door was a blunt way of saying it. The engine
+  rule is also visible: the waiting count and its sentence are on the calibration screen,
+  so a user can see that their reports on a reference were counted and what is missing.
+- **Why "at least one" and not "most":** a user with one monologue has one reference and
+  many takes; reports about the reference's pauses are real evidence about what they call
+  a pause. One take showing the same thing is enough to say it is not only the film's
+  sound. The other conditions (three reports, two recordings, three in four agreeing) all
+  still apply.
+- **Decided against:** storing a flag on each report saying whether it may count (the rule
+  would then be frozen into old rows); a separate calibration for references (the brief
+  rules out settings per profile, and two recordings cut by different rules cannot be
+  compared).
+
+### B53. The AI model's pick is a job; the facts are not
+
+- **Chosen:** the facts are worked out inside the request that asks for them. The pick is
+  a third kind of job in the same queue.
+- **Why:** the first costs a few thousandths of a second and must never be out of date.
+  The second calls the AI model, and only the worker has an AI model (B18): the API does
+  no slow work and never talks to Ollama. Going through the queue also means the pick
+  waits its turn behind an analysis, so the speech model and the AI model are never asked
+  to work at once.
+- **Decided against:** *calling Ollama from the API "because it is only two seconds"*: it
+  is two seconds when the model is loaded and thirty when it is not, and the rule that the
+  API never waits on a model is worth more than one exception. *A new table of summary
+  jobs:* every guarantee a job needs (one at a time, cancel, crash recovery) is already in
+  `jobs`.
+
+### B54. One stored pick, holding the notes themselves
+
+- **Chosen:** `feedback_summary` has one row. A new pick replaces it. The row holds the
+  picked notes' text, not their IDs.
+- **Why one row:** a pick is a reading aid, not a record. Nothing depends on what the
+  model picked last week, unlike a calibration version, which every result points back to.
+- **Why the text:** a note can be edited or its feedback removed. Stored as text, the pick
+  always shows what the model was actually looking at, and the fingerprint says when that
+  is no longer the current set.
+- **Decided against:** keeping every pick ever made; storing feedback IDs and looking the
+  notes up again when shown.
+
+### B55. Two helpers were added to the coaching checks and then taken out again
+
+- **What happened:** the first design of this feature had the AI model restate the facts,
+  and needed two extra functions in `coaching/grounding.py`. When that design was dropped
+  (science decisions S69 and S70), nothing used them any more.
+- **Chosen:** `grounding.py` was put back exactly as it was in Phase 6.
+- **Why it is written down:** a later reader who thinks "the summary should check its
+  figures like the coaching does" should know it was tried, and that the checks passing
+  was not the problem.
+
+### B56. `run.sh`: one script that starts, stops and reports on the three programs
+
+- **Chosen:** a Bash script at the top of the project, with no dependencies beyond what the
+  app already needs. `./run.sh` starts whatever is not running and stays attached,
+  `./run.sh stop` stops all three however they were started, `./run.sh status` says what is
+  running.
+- **Why:** three terminals and three commands were the first thing to go wrong in use: a
+  worker left running in another window, and no quick way to tell.
+
+How it is built, and what each choice avoids:
+
+| Choice | Why |
+| --- | --- |
+| A program is "ours" if the folder it was started in is inside this project (`lsof` gives the folder) | The ports 4321 and 1234 are ordinary numbers. Another project may be using them, and this script must never stop a program that is not this app. A port in use by anything else stops the start, with the program named and left alone |
+| The database is brought up to date first (`uv run alembic upgrade head`) | Otherwise the API starts and reports a broken database after every update. The command changes nothing when there is nothing to do |
+| Each program is started in a session of its own, through one line of the backend's own Python (`os.setsid()`, then `exec`) | `Ctrl+C` in a terminal goes to every program in the terminal's foreground group at once. The worker treats a second signal as "stop at once", so if the script also passed the signal on, the worker would never get to finish its step. In its own session, each program hears only from the script. macOS has no `setsid` command; the app's Python is always there |
+| The programs are run from `backend/.venv/bin/python` and `frontend/node_modules/.bin/next`, not through `uv run` and `npm run` | One process per program. A wrapper in between either passes signals on (two signals for one) or does not (the program outlives its wrapper) |
+| The process ID is written to a temporary file by the program's launcher | Bash's own record of "the last program started" names the wrong process when output is piped. The file is removed when the script ends |
+| Waiting is done with `sleep … &` and `wait` | Bash puts off a signal until the command it is waiting for ends, and can drop a `Ctrl+C` altogether if that command ended normally. `wait` is the one way of waiting that a signal interrupts |
+| On stop: one signal to all three; the API and the frontend are killed after 10 s if still there; the worker is waited for | The worker finishes the step it is on and puts its job back in the queue. A second `Ctrl+C` tells it again, which by its own rule stops it at once, and if it is still there 5 s later it is killed |
+| If one program dies, the others are stopped and the script exits with an error | Half an app is worse than none: the screen would show a worker that is not running, or a frontend with no API |
+| It installs nothing, and never starts Ollama | Installing downloads from the internet, and the app's rule is that only the two documented set-up steps do that. Whether Ollama is running is reported by the worker in its first lines |
+
+- **Decided against:** *a Node or Python program to do the same* (one more thing to keep
+  working, for what the shell does in 300 lines); *`concurrently` or another process
+  manager* (a new dependency, and none of them knows the worker's two-signal rule); *a
+  `Makefile`* (it can start three programs but not stop them in order); *running the three
+  under `launchd`* (the app would then be running when the user is not using it).
+
+What was checked on this machine is in the table at the end of section 10.
+
 ### Decisions already made for later phases
 
-None. Every phase in the plan is built.
+None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 10. Tests
 
-Run with the command in the README. Current result: **595 pass**, 1 skipped (the opt-in
-real-speech test, which also passes when run). 159 of them are new in Phase 6.
+Run with the command in the README. Current result: **646 pass**, 1 skipped (the opt-in
+real-speech test, which also passes when run). 51 of them are new in Phase 7.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
@@ -1789,13 +2049,14 @@ real-speech test, which also passes when run). 159 of them are new in Phase 6.
 | `test_comparison.py` | 26 | Pauses matched, missing, extra and unplaced; a recording against a copy of itself showing no difference even with word times pushed into the pauses; phrase pace over the same words; whole-recording rows; the biggest differences in order and in words; different passages compared only as wholes; neither recording changed |
 | `test_comparison_align.py` | 20 | Word keys, including Hindi spelling variants; dropped, added and misheard words; a repeated line matched to the right repetition; speed on a ten-minute passage |
 | `test_waveform.py` | 6 | The outline's lowest and highest values, its size for long and short recordings, padding, no normalising |
-| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects; a database from before Phase 4 upgrades with its rows intact, each result becoming calibration version 1 and the first result of its own recording |
-| `test_calibration_engine.py` | 34 | The adjustment rules with no database: one or two reports move nothing; three from one recording are not enough; disagreement and ties change nothing; only recent reports count; the minimum pause is steered by the silences reported and never moves more than 100 ms at once; **no setting ever leaves its allowed range**; a report already answered by an earlier change stops counting; moving back needs five reports; the detection threshold is not adjustable |
+| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects, `feedback_summary` among them; a database from before Phase 4 upgrades with its rows intact, each result becoming calibration version 1 and the first result of its own recording |
+| `test_calibration_engine.py` | 37 | The adjustment rules with no database: one or two reports move nothing; three from one recording are not enough; disagreement and ties change nothing; only recent reports count; the minimum pause is steered by the silences reported and never moves more than 100 ms at once; **no setting ever leaves its allowed range**; a report already answered by an earlier change stops counting; moving back needs five reports; the detection threshold is not adjustable. **Reports on references alone move nothing, however many**; one agreeing report on a take lets them count; a take report pointing the other way does not stand in for one |
 | `test_feedback.py` | 26 | What each kind of feedback is taken to mean: labels speak for no setting; a short false pause for raising the minimum pause; a long one for nothing; a missed pause for lowering it only where a silence of 250 ms or more was heard; one silence can be reported only once; **no feedback speaks for more than one setting** |
-| `test_feedback_api.py` | 28 | Through the API: storing, replacing, noting and removing feedback; a fresh install says it is still calibrating; two reports change nothing; **three agreeing reports from two recordings move only the minimum pause**, with a reason and a confidence; each adjustment needs fresh reports; **undo, reset and switching off**; new analyses use the new value and old ones stay as they were; **labelling a pause changes no measurement**, and reaches the coaching when it is written again; saying a WPM looks wrong changes no number |
+| `test_feedback_api.py` | 34 | Through the API: storing, replacing, noting and removing feedback; a fresh install says it is still calibrating; two reports change nothing; **three agreeing reports from two recordings move only the minimum pause**, with a reason and a confidence; each adjustment needs fresh reports; **undo, reset and switching off**; new analyses use the new value and old ones stay as they were; **labelling a pause changes no measurement**, and reaches the coaching when it is written again; saying a WPM looks wrong changes no number. On a reference: a mistake can be reported; labels and ratings are refused; four reports on two references move nothing and the screen says what is missing; one report on a take then moves the setting; the WPM review does not speak of what "you" said |
+| `test_feedback_summary.py` | 40 | The facts: every sentence for a known set of feedback, word for word; each label in a fact of its own; ratings and what they were about in one fact; a moved setting stated with its default; only the latest 15 notes listed but all counted. The pick: **the model is shown the notes and nothing else**; a note that says nothing is never offered; an untidy answer is used as far as it goes; fewer than two notes named is no pick; every way the model can be unavailable. Through the API and the worker: the picked notes stored word for word, **no setting, version or report count changed**; out of date when a note changes and not when only a count does; a new pick replaces the old; failure, cancellation before and during, and recovery after a crash |
 | `test_transcript_correction.py` | 20 | **Segment WPM is the corrected word count over the phrase's own length, with no correction factor**; totals recounted; untouched phrases keep every figure; everything measured from the sound identical; corrected words get times between their neighbours; hesitation sounds recounted; emphasis candidates kept only for words still there |
-| `test_revisions.py` | 16 | A corrected transcript becomes revision 2 and the corrected result stays exactly as it was; both are in the history; pause labels come along and reports do not; the kept recording is shared and each copy can be deleted alone. Analysing again: a new revision with the settings in force, for takes and references; asking twice; refused without a kept recording; a cancelled one leaves the kept recording alone |
-| `test_wpm_review.py` | 12 | The arithmetic shown; too high points at extra words and speech lost in a pause, too low at dropped words and silences counted as speaking; word timing is always part of it; reviewing changes nothing |
+| `test_revisions.py` | 17 | A reference's words can be corrected too: still a reference, still without coaching, both revisions in the library, a take comparable with either. A corrected transcript becomes revision 2 and the corrected result stays exactly as it was; both are in the history; pause labels come along and reports do not; the kept recording is shared and each copy can be deleted alone. Analysing again: a new revision with the settings in force, for takes and references; asking twice; refused without a kept recording; a cancelled one leaves the kept recording alone |
+| `test_wpm_review.py` | 13 | The review of a reference is worded for someone else speaking, and points at the same things. The arithmetic shown; too high points at extra words and speech lost in a pause, too low at dropped words and silences counted as speaking; word timing is always part of it; reviewing changes nothing |
 | `test_coaching_findings.py` | 45 | Every finding: its band, its wording, its role under each profile; what is left out when a measurement is missing; that statements contain no figure that is not a measurement or a band. Pause labels: an accidental pause is not praised as a held silence, an intentional one is never an issue, labels never change a measurement. Priorities move an issue down the list without removing it |
 | `test_coaching_rules.py` | 64 | Template coaching: order, practice phrase, profile sentence, targets; every template under every profile fills in completely and quotes only known figures |
 | `test_coaching_prompt.py` | 14 | What the model is shown and forbidden; that its answer can only name findings and phrases that exist; the size estimate staying above the model's real token counts; a long recording losing its timings before any words, then being cut to fit; the model is told which pauses the actor marked |
@@ -1900,3 +2161,53 @@ Not checked: a real human voice, a noisy room, a quiet or whispered delivery, an
 built up over many days of real use. See "Accuracy and limits" in the science document for
 what was measured about the speech detector on hard audio.
 
+
+Also checked at the end of Phase 7, the same way: the real API, worker, speech model and
+`llama3.1:8b`, in a complete copy of the project in a temporary folder with its own
+database, on other ports, so that neither the real database nor the programs the user had
+running were touched. All 41 checks in the script passed.
+
+| Check | Result |
+| --- | --- |
+| A fresh database | Version 1; the rules say one report must be about a take; no facts, no notes, and the AI model is not asked (`409 too_few_notes`) |
+| Analyse a take and two references | 36 s (first run, models loading), 6 s and 6 s. Neither reference has coaching |
+| For each silence the detector heard, report the gap after the word before it (the rule the screen uses when a word is picked) | 6 of 6 came back as being about that silence, including one of 132 ms. The gap chosen was 0.03 to 0.12 s from the start of the silence |
+| Report a gap with no silence near it | Saved; counts towards nothing; "the detector heard speech straight through" |
+| Label a reference's pause, or rate a correction on it | Refused, `409 not_for_reference`, three times out of three |
+| Four missed-pause reports on two references | Nothing moves: "4 of the 3 reports needed for lowering it. All of them are about reference recordings…". The references' stored results are byte for byte the same |
+| One more, on a take | Minimum pause 500 → 400 ms: "after 5 reports of a pause that was missed, from 3 recordings. The silences reported were around 356 ms long." |
+| Say a reference's WPM looks too high | Review: "3 words ÷ 0.83 s of speaking × 60 = 217.4 WPM", worded without "you" |
+| Correct two words of a reference | Revision 2: still a reference, same title, no coaching; 16 words over the phrase's own 4.51 s = 212.9 WPM; pauses identical; the reference it came from unchanged |
+| Compare the take with each revision | 47 of 47 words lined up with the first; 45 of 47 with the corrected one, exactly the two words changed |
+| Give ten more pieces of feedback, nine with notes | The facts count all of them: 5 missed pauses with silences "between 324 and 356 ms", each label in its own line, the moved setting with its default |
+| Ask the AI model with 3 notes worth offering | Refused, `409 too_few_notes` |
+| Ask it five times with 8 worth offering | Five picks in 2 to 6 s each. Every picked note is one of the notes, word for word; none picked twice; the note that says "ok" never picked; each pick includes a note from the largest group |
+| After the five picks | The calibration is identical: no setting, version or report count changed |
+| More feedback without a note, then with one | The facts update at once and the pick stays current; with the new note it is marked out of date and still shows what was picked |
+
+`run.sh`, checked in that same copy:
+
+| Check | Result |
+| --- | --- |
+| `./run.sh` with ports 4321 and 1234 in use by the user's own running app | Refused, naming the program on the port; nothing started; the user's programs untouched |
+| `./run.sh` on a database that did not exist yet | Five migrations applied, three programs started, "Monologue Coach is running" after about 10 s |
+| `./run.sh` again while it is running | "Everything is already running", with the three process IDs; exits |
+| `./run.sh stop` for programs the script had lost track of | All three stopped in 3.5 s |
+| `Ctrl+C` with nothing in progress | All three stopped; no process and no temporary folder left behind |
+| `Ctrl+C` while the worker was transcribing | Stopped in 3.3 s. The worker logged "returned to the queue (worker stopping)"; the job was `queued` with attempt 0 |
+| Start again | The job was picked up without being submitted again and succeeded in 19 s |
+| The interrupt signal sent to the script alone, not through a terminal | Stopped within 4 s |
+| The API killed on its own | "One of the programs has stopped"; the other two stopped within 2 s |
+| The worker frozen so that it cannot answer, then `Ctrl+C` twice | After 10 s: "The worker is finishing the step it is on. Press Ctrl+C again…". Five seconds after the second, it was stopped outright |
+
+Two faults were found and fixed while testing the script. The first version asked Bash for
+the ID of the program it had just started and was given the ID of the pipe beside it, so
+it believed all three had died and exited while they were still running. And a test that
+sent the interrupt to "the script" was sending it to one of the script's own helpers,
+which ignores it on purpose; that was the test's mistake, but it led to the change from
+`sleep` to `wait`.
+
+Not checked in Phase 7: a real human voice, a real film clip as the reference, and notes
+written over weeks of use. `run.sh` was run on macOS only, and from a background shell,
+not typed into a terminal window by hand: its `Ctrl+C` tests sent the same signal a
+terminal sends, to the same group of processes a terminal would send it to.

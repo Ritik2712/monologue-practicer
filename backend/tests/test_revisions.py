@@ -154,19 +154,44 @@ def test_correcting_a_revision_makes_revision_three(client, store_result):
     assert [s["transcript"] for s in third["segments"]][:2] == ["phrase one", "phrase two"]
 
 
+def test_the_words_of_a_reference_can_be_corrected_too(client, store_result):
+    """A misheard word in the reference throws off how the two recordings are lined up."""
+    reference_id = store_result(recording(), role="reference", title="The original")
+    take_id = store_result(recording())
+    before = client.get(f"/api/analyses/{reference_id}").json()
+
+    response = correct(client, reference_id, seg_1="phrase one has four")
+
+    assert response.status_code == 201
+    revision = response.json()
+    assert (revision["role"], revision["title"]) == ("reference", "The original")
+    assert (revision["revision"], revision["revisionReason"]) == (2, "transcript_corrected")
+    assert revision["segments"][0]["segmentWpm"] == 60.0  # 4 words in its own 4 seconds
+    # A reference has no coaching, before or after.
+    assert before["coaching"] is None and revision["coaching"] is None
+    assert revision["pauses"] == before["pauses"]
+    # Both stay in the library, and neither turns up among the takes.
+    listed = client.get("/api/analyses?role=reference").json()["items"]
+    assert sorted(item["revision"] for item in listed) == [1, 2]
+    assert [item["analysisId"] for item in client.get("/api/analyses").json()["items"]] == [take_id]
+    # The earlier one says what was done to it.
+    [flag] = client.get(f"/api/analyses/{reference_id}/feedback").json()["items"]
+    assert (flag["category"], flag["features"]["revision"]) == ("transcript_wrong", 2)
+    # A take can be compared with the corrected reference like with any other.
+    compared = client.get(f"/api/analyses/{take_id}/comparison/{revision['analysisId']}")
+    assert compared.status_code == 200
+
+
 def test_corrections_that_change_nothing_or_name_no_phrase_are_refused(client, store_result):
     analysis_id = store_result(recording())
-    reference_id = store_result(recording(), role="reference", title="The original")
 
     same = correct(client, analysis_id, seg_1=" phrase number 1  has six words ")
     unknown = correct(client, analysis_id, seg_9="anything")
-    reference = correct(client, reference_id, seg_1="anything")
     missing = correct(client, "nope", seg_1="anything")
     empty = client.post(f"/api/analyses/{analysis_id}/transcript", json={"corrections": []})
 
     assert (same.status_code, same.json()["detail"]["code"]) == (400, "nothing_changed")
     assert (unknown.status_code, unknown.json()["detail"]["code"]) == (404, "unknown_target")
-    assert (reference.status_code, reference.json()["detail"]["code"]) == (409, "not_a_take")
     assert missing.json()["detail"]["code"] == "analysis_not_found"
     assert empty.json()["detail"]["code"] == "invalid_request"
     assert len(client.get("/api/analyses").json()["items"]) == 1

@@ -8,8 +8,12 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatSetting } from "../feedback";
 import type { FeedbackState, FeedbackStore } from "../feedbackStore";
 import { formatDateTime } from "../format";
-import type { CalibratedSetting, Calibration, CalibrationChange } from "../types";
+import type { CalibratedSetting, Calibration, CalibrationChange, CoachStatus } from "../types";
+import { FeedbackSummaryPanel } from "./FeedbackSummaryPanel";
 import { FOCUS_RING, MUTED, Notice } from "./parts";
+
+/** Whether the local AI model is available, as the worker last reported. Null if unknown. */
+type Coach = { status: CoachStatus; model: string | null } | null;
 
 const CAUSE_LABELS: Record<CalibrationChange["cause"], string> = {
   defaults: "Starting point",
@@ -64,7 +68,17 @@ function SettingRow({ setting }: { setting: CalibratedSetting }) {
   );
 }
 
-function CalibrationBody({ data, state, store }: { data: Calibration; state: FeedbackState; store: FeedbackStore }) {
+function CalibrationBody({
+  data,
+  state,
+  store,
+  coach,
+}: {
+  data: Calibration;
+  state: FeedbackState;
+  store: FeedbackStore;
+  coach: Coach;
+}) {
   const adaptiveId = useId();
   const [confirming, setConfirming] = useState(false);
 
@@ -158,6 +172,8 @@ function CalibrationBody({ data, state, store }: { data: Calibration; state: Fee
         coaching, but no setting moves.
       </p>
 
+      <FeedbackSummaryPanel summary={state.summary} store={store} coach={coach} />
+
       <details className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
         <summary className={`cursor-pointer rounded font-medium ${FOCUS_RING}`}>
           What changed, and why ({data.changes.length} {data.changes.length === 1 ? "version" : "versions"})
@@ -198,6 +214,12 @@ function CalibrationBody({ data, state, store }: { data: Calibration; state: Fee
             reports about it.
           </li>
           <li>
+            Reports on a reference recording count, but never by themselves: at least{" "}
+            {data.rules.minTakeReports} of the reports that agree must be about a take of your
+            own. A reference is often a film clip, a different kind of sound from your
+            microphone, and the settings are meant to fit your recordings.
+          </li>
+          <li>
             One adjustment is small: the minimum pause moves by 50 or 100 ms towards the silences
             you reported, and never outside its allowed range.
           </li>
@@ -215,7 +237,7 @@ function CalibrationBody({ data, state, store }: { data: Calibration; state: Fee
           </li>
           <li>
             The numbers are changed by the app&rsquo;s own fixed rules. The AI model has no part in
-            it.
+            it: all it does on this panel is pick out some of your notes, above, to read.
           </li>
         </ul>
       </details>
@@ -259,7 +281,15 @@ function CalibrationBody({ data, state, store }: { data: Calibration; state: Fee
 }
 
 /** The settings in force, what feedback has changed, and the controls to take it back. */
-export function CalibrationPanel({ state, store }: { state: FeedbackState; store: FeedbackStore }) {
+export function CalibrationPanel({
+  state,
+  store,
+  coach = null,
+}: {
+  state: FeedbackState;
+  store: FeedbackStore;
+  coach?: Coach;
+}) {
   const { calibration } = state;
   return (
     <section aria-labelledby="calibration-heading" className="flex flex-col gap-3">
@@ -281,7 +311,7 @@ export function CalibrationPanel({ state, store }: { state: FeedbackState; store
         </Notice>
       )}
       {calibration.status === "ready" && (
-        <CalibrationBody data={calibration.data} state={state} store={store} />
+        <CalibrationBody data={calibration.data} state={state} store={store} coach={coach} />
       )}
     </section>
   );

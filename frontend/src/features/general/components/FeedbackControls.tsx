@@ -4,7 +4,15 @@ import { useId, useState } from "react";
 
 import { Button } from "@/components/Button";
 
-import { describeFeedback, PAUSE_CHOICES, silencesIn, wordBefore } from "../feedback";
+import {
+  describeFeedback,
+  PAUSE_CHOICES,
+  REFERENCE_PAUSE_CHOICES,
+  silenceNear,
+  silencesIn,
+  wordBefore,
+  wordGaps,
+} from "../feedback";
 import type { FeedbackState, FeedbackStore } from "../feedbackStore";
 import { formatNumber, formatTimecode } from "../format";
 import type { CorrectionState } from "../generalStore";
@@ -30,13 +38,17 @@ export function PauseFeedbackSelect({
   item,
   disabled,
   store,
+  reference = false,
 }: {
   pause: PauseEvent;
   item: FeedbackItem | undefined;
   disabled: boolean;
   store: FeedbackStore;
+  /** True for a reference recording, whose pauses can be reported but not labelled. */
+  reference?: boolean;
 }) {
   const at = formatTimecode(pause.startSeconds);
+  const choices = reference ? REFERENCE_PAUSE_CHOICES : PAUSE_CHOICES;
   return (
     <div className="max-w-xs min-w-[13rem]">
       <select
@@ -51,7 +63,7 @@ export function PauseFeedbackSelect({
         className={`block min-h-11 w-full ${FIELD}`}
       >
         <option value="">No feedback</option>
-        {PAUSE_CHOICES.map((choice) => (
+        {choices.map((choice) => (
           <option key={choice.category} value={choice.category}>
             {choice.label}
           </option>
@@ -183,7 +195,12 @@ type SegmentReportProps = {
   playButton: (label: string, start: number, end?: number) => React.ReactNode;
   onCorrectTranscript: (corrections: SegmentCorrection[]) => void;
   onClose: () => void;
+  /** True for a reference recording: someone else is speaking, and there is no history. */
+  reference?: boolean;
 };
+
+/** Where a missed pause was, when it is given as "after this word". */
+const WORD_SPOT = "word";
 
 /** The form for reporting what the analysis got wrong about one phrase. */
 export function SegmentReport({
@@ -196,12 +213,16 @@ export function SegmentReport({
   playButton,
   onCorrectTranscript,
   onClose,
+  reference = false,
 }: SegmentReportProps) {
   const groupId = useId();
   const wordsId = useId();
   const [problem, setProblem] = useState<Problem>("pause_missed");
   const silences = silencesIn(analysis, segment.id);
+  const gaps = wordGaps(analysis, segment);
   const [spot, setSpot] = useState<string>(silences.length > 0 ? "0" : "unknown");
+  // Which word the pause came after, once "after a word" is chosen and a word picked.
+  const [gapIndex, setGapIndex] = useState<number | null>(null);
   const [words, setWords] = useState(segment.transcript ?? "");
   const { state, store } = tools;
   const number = segment.index + 1;
@@ -212,6 +233,11 @@ export function SegmentReport({
     playheadSeconds <= segment.endSeconds;
   // A choice that has since become impossible falls back to "cannot say where".
   const chosenSpot = spot === "player" && !playerInside ? "unknown" : spot;
+  const chosenGap = chosenSpot === WORD_SPOT ? (gaps[gapIndex ?? -1] ?? null) : null;
+  // What the detector heard close to the chosen gap: the silence the report will be about.
+  const heardAtGap = chosenGap ? silenceNear(silences, chosenGap.atSeconds) : null;
+  // "After a word" is not an answer until a word has been picked.
+  const spotMissing = problem === "pause_missed" && chosenSpot === WORD_SPOT && !chosenGap;
   const sameWords = words.trim().split(/\s+/).join(" ") === (segment.transcript ?? "").trim();
   const savingWords = correction.status === "saving";
 
@@ -221,9 +247,11 @@ export function SegmentReport({
       const atSeconds =
         chosenSpot === "player"
           ? playheadSeconds
-          : silence
-            ? (silence.startSeconds + silence.endSeconds) / 2
-            : null;
+          : chosenGap
+            ? chosenGap.atSeconds
+            : silence
+              ? (silence.startSeconds + silence.endSeconds) / 2
+              : null;
       store.give({ category: "pause_missed", targetId: segment.id, atSeconds });
     } else {
       store.give({ category: problem, targetId: segment.id });
@@ -297,6 +325,80 @@ export function SegmentReport({
                 </div>
               );
             })}
+            {gaps.length > 0 && (
+              <div>
+                <label className="flex cursor-pointer items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name={`${groupId}-spot`}
+                    checked={chosenSpot === WORD_SPOT}
+                    onChange={() => setSpot(WORD_SPOT)}
+                    className={`h-4 w-4 shrink-0 accent-indigo-700 dark:accent-indigo-400 ${FOCUS_RING}`}
+                  />
+                  After a word I pick
+                </label>
+                {chosenSpot === WORD_SPOT && (
+                  <div className="mt-1 ml-6 flex flex-col gap-2">
+                    <div
+                      role="group"
+                      aria-label="The word the pause came after"
+                      className="flex flex-wrap items-center gap-1"
+                    >
+                      {gaps.map((gap) => {
+                        const pressed = gapIndex === gap.index;
+                        return (
+                          <span key={gap.index} className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              aria-pressed={pressed}
+                              aria-label={`The pause came after “${gap.before}”, word ${gap.index + 1} of the phrase`}
+                              onClick={() => setGapIndex(gap.index)}
+                              className={`min-h-11 rounded-md border px-2 text-sm ${FOCUS_RING} ${
+                                pressed
+                                  ? "border-indigo-700 bg-indigo-700 font-medium text-white dark:border-indigo-400 dark:bg-indigo-400 dark:text-zinc-950"
+                                  : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                              }`}
+                            >
+                              {gap.before}
+                            </button>
+                            {pressed && (
+                              <span aria-hidden="true" className="text-xs font-medium whitespace-nowrap">
+                                ‖ pause here
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })}
+                      {/* The last word ends the phrase: a pause after it is already a pause. */}
+                      <span className={`px-2 text-sm ${MUTED}`}>{gaps[gaps.length - 1].after}</span>
+                    </div>
+                    {chosenGap ? (
+                      <p className="flex flex-wrap items-center gap-x-2 text-sm">
+                        <span>
+                          Between “{chosenGap.before}” and “{chosenGap.after}”, at about{" "}
+                          {formatTimecode(chosenGap.atSeconds)}.{" "}
+                          {analysis.shortSilences == null
+                            ? "What the detector heard there was not kept for this result."
+                            : heardAtGap
+                              ? `The nearest silence the detector heard is ${formatNumber(heardAtGap.durationSeconds, 2)} s long, at ${formatTimecode(heardAtGap.startSeconds)}.`
+                              : "The detector heard no silence within half a second of there."}
+                        </span>
+                        {playButton(
+                          `Play from just before “${chosenGap.before}” to just after “${chosenGap.after}”`,
+                          chosenGap.atSeconds - 1.5,
+                          chosenGap.atSeconds + 1.5,
+                        )}
+                      </p>
+                    ) : (
+                      <p className={`text-sm ${MUTED}`}>
+                        Pick the word the pause came after. Word times come from the speech
+                        recogniser and can be a fraction of a second out.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input
                 type="radio"
@@ -337,7 +439,7 @@ export function SegmentReport({
         <div className="flex flex-col gap-2">
           <div>
             <label htmlFor={wordsId} className="block text-sm font-medium">
-              The words as you said them
+              {reference ? "The words as they are said in the recording" : "The words as you said them"}
             </label>
             <textarea
               id={wordsId}
@@ -348,9 +450,13 @@ export function SegmentReport({
               className={`mt-1 block w-full py-2 ${FIELD}`}
             />
             <p className={`mt-1 text-xs ${MUTED}`}>
-              Saving makes a new revision of this result. Its word counts and WPM are worked out
-              again from your words and this phrase&rsquo;s own {formatNumber(segment.speechActiveSeconds, 2)}{" "}
-              s. The result you are looking at stays in your history, unchanged.
+              {reference
+                ? "Saving makes a new revision of this reference and chooses it. Its word counts and WPM are worked out again from the corrected words and this phrase’s own "
+                : "Saving makes a new revision of this result. Its word counts and WPM are worked out again from your words and this phrase’s own "}
+              {formatNumber(segment.speechActiveSeconds, 2)} s.{" "}
+              {reference
+                ? "Takes are then lined up with the corrected words. The reference as it is now stays in the list, unchanged, until you delete it."
+                : "The result you are looking at stays in your history, unchanged."}
             </p>
           </div>
           {correction.status === "failed" && correction.analysisId === analysis.analysisId && (
@@ -371,10 +477,11 @@ export function SegmentReport({
           </div>
         </div>
       ) : (
-        <div>
-          <Button variant="primary" disabled={state.saving} onClick={report}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="primary" disabled={state.saving || spotMissing} onClick={report}>
             Save this report
           </Button>
+          {spotMissing && <p className={`text-sm ${MUTED}`}>Pick a word above first.</p>}
         </div>
       )}
 

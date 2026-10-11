@@ -17,6 +17,9 @@ Group = Literal["analysis", "coaching"]
 MIN_REPORTS = 3
 # ... from at least this many different recordings, so one odd recording changes nothing ...
 MIN_RECORDINGS = 2
+# ... with at least this many of them made on the user's own takes. Reports on a reference
+# recording count, but a reference alone (a film clip, often with music) moves nothing ...
+MIN_TAKE_REPORTS = 1
 # ... and they make up at least this share of the reports being looked at.
 MIN_AGREEMENT = 0.75
 # Only the most recent reports about a setting are looked at.

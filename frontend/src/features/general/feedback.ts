@@ -11,6 +11,7 @@ import type {
   FeedbackItem,
   PauseLabel,
   ShortSilence,
+  SpeechSegment,
 } from "./types";
 
 /** What can be said about one detected pause. One of these at a time. */
@@ -18,6 +19,15 @@ export const PAUSE_CHOICES: { category: FeedbackCategory; label: string }[] = [
   { category: "pause_intentional", label: "Intentional: I meant this pause" },
   { category: "pause_accidental", label: "Accidental: I lost my place" },
   { category: "pause_false", label: "Not a pause: I was still speaking" },
+  { category: "split_wrong", label: "Too short to split the phrase here" },
+];
+
+/**
+ * What can be said about a pause in a reference recording. Only the two reports: a
+ * reference has no coaching, so calling its pauses intentional or accidental means nothing.
+ */
+export const REFERENCE_PAUSE_CHOICES: { category: FeedbackCategory; label: string }[] = [
+  { category: "pause_false", label: "Not a pause: someone is still speaking" },
   { category: "split_wrong", label: "Too short to split the phrase here" },
 ];
 
@@ -66,14 +76,85 @@ export function silencesIn(analysis: AnalysisResult, segmentId: string): ShortSi
     .sort((a, b) => a.startSeconds - b.startSeconds);
 }
 
-/** The last word spoken before a moment in the recording, to say where that moment is. */
-export function wordBefore(analysis: AnalysisResult, seconds: number): string | null {
+/**
+ * A recognised word without the punctuation the recogniser attaches to it: "Skyler." is
+ * shown as "Skyler". A "word" that is nothing but punctuation is left as it is.
+ *
+ * Marks (\p{M}) count as part of the word: a Devanagari vowel sign is one, and "रुको"
+ * without its last sign is a different word.
+ */
+export function bareWord(text: string): string {
+  return text.replace(/^[^\p{L}\p{N}\p{M}]+|[^\p{L}\p{N}\p{M}]+$/gu, "") || text;
+}
+
+/**
+ * The last word spoken before a moment in the recording, to say where that moment is.
+ * With a segment named, only that phrase's own words are looked at.
+ */
+export function wordBefore(
+  analysis: AnalysisResult,
+  seconds: number,
+  segmentId?: string | null,
+): string | null {
   let found: string | null = null;
   for (const word of analysis.words) {
+    if (segmentId && word.segmentId !== segmentId) continue;
     // Half the word must be over: recognised word times overlap silences a little.
-    if ((word.startSeconds + word.endSeconds) / 2 <= seconds) found = word.text;
+    if ((word.startSeconds + word.endSeconds) / 2 <= seconds) found = bareWord(word.text);
   }
   return found;
+}
+
+/** A place inside a phrase where a pause could have gone unnoticed: between two words. */
+export type WordGap = {
+  /** Position of the word before the gap, among the words of the phrase. */
+  index: number;
+  before: string;
+  after: string;
+  /** The moment between the two words. */
+  atSeconds: number;
+};
+
+/**
+ * The gaps between the words of a phrase, in order. Picking one is a way of saying where
+ * a missed pause was without knowing its time: "after this word".
+ */
+export function wordGaps(analysis: AnalysisResult, segment: SpeechSegment): WordGap[] {
+  const words = analysis.words
+    .filter((word) => word.segmentId === segment.id)
+    .sort((a, b) => a.startSeconds - b.startSeconds);
+  const clamp = (seconds: number) =>
+    Math.min(segment.endSeconds, Math.max(segment.startSeconds, seconds));
+  return words.slice(0, -1).map((word, index) => ({
+    index,
+    before: bareWord(word.text),
+    after: bareWord(words[index + 1].text),
+    atSeconds: clamp((word.endSeconds + words[index + 1].startSeconds) / 2),
+  }));
+}
+
+/**
+ * How far from a marked moment a silence may be and still be taken as the one meant. The
+ * backend decides what a report counts for with the same half second
+ * (`NEAR_SECONDS` in `backend/app/feedback.py`); this copy only previews its answer.
+ */
+export const NEAR_SECONDS = 0.5;
+
+/** The silence the backend will take a report at this moment to be about, if any. */
+export function silenceNear(silences: ShortSilence[], atSeconds: number): ShortSilence | null {
+  const near = silences.filter(
+    (silence) =>
+      silence.startSeconds - NEAR_SECONDS <= atSeconds &&
+      atSeconds <= silence.endSeconds + NEAR_SECONDS,
+  );
+  const middle = (silence: ShortSilence) => (silence.startSeconds + silence.endSeconds) / 2;
+  return near.reduce<ShortSilence | null>(
+    (best, silence) =>
+      best === null || Math.abs(middle(silence) - atSeconds) < Math.abs(middle(best) - atSeconds)
+        ? silence
+        : best,
+    null,
+  );
 }
 
 /** The labels now on the pauses, by pause ID. */
@@ -166,7 +247,8 @@ export function describeFeedback(item: FeedbackItem, analysis: AnalysisResult): 
     const segment = analysis.segments.find((candidate) => candidate.id === item.targetId);
     const where = segment ? `Segment ${segment.index + 1}` : "A segment";
     if (item.category === "pause_missed" && item.atSeconds !== null) {
-      return `${where}: ${what} at ${formatTimecode(item.atSeconds)}`;
+      const before = wordBefore(analysis, item.atSeconds, item.targetId);
+      return `${where}: ${what} at ${formatTimecode(item.atSeconds)}${before ? `, after “${before}”` : ""}`;
     }
     return `${where}: ${what}`;
   }
@@ -182,4 +264,35 @@ export function revisionLabel(revision: number, reason: string | null | undefine
   if (reason === "transcript_corrected") return `Revision ${revision}: transcript corrected`;
   if (reason === "reanalysed") return `Revision ${revision}: analysed again`;
   return revision === 1 ? "Revision 1: first analysis" : `Revision ${revision}`;
+}
+
+/** The line beside the button that asks the AI model: what is happening, or what would. */
+export function summaryHint(situation: {
+  /** The request is waiting or being answered. */
+  working: boolean;
+  queued: boolean;
+  workerAlive: boolean;
+  cancelRequested: boolean;
+  /** How many notes the AI model could be offered, and how many it needs. */
+  pickableNotes: number;
+  minNotes: number;
+  /** Why the AI model cannot be asked, in a few words. Null when it can. */
+  unavailable: string | null;
+}): string {
+  if (situation.working) {
+    if (situation.cancelRequested) return "Stopping…";
+    if (!situation.workerAlive) {
+      return "Waiting, because the analysis worker is not running. It will be done once the worker starts.";
+    }
+    return situation.queued
+      ? "Waiting for the worker to finish what it is doing."
+      : "The AI model is choosing. This takes a few seconds.";
+  }
+  if (situation.pickableNotes < situation.minNotes) {
+    return `The AI model is asked once there are at least ${situation.minNotes} notes of a few words or more (there ${situation.pickableNotes === 1 ? "is" : "are"} ${situation.pickableNotes}). Until then they are all listed above.`;
+  }
+  if (situation.unavailable) {
+    return `The AI model is not available right now: ${situation.unavailable}. Nothing above depends on it.`;
+  }
+  return "Optional. The local AI model is given your notes as text and nothing else, and only chooses among them: the words shown are yours. Nothing leaves this computer, and no setting changes.";
 }

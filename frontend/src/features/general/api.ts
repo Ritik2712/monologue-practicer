@@ -11,6 +11,7 @@ import type {
   Calibration,
   Comparison,
   FeedbackRequest,
+  FeedbackSummary,
   FeedbackUpdate,
   Health,
   JobStatus,
@@ -84,6 +85,10 @@ export type GeneralApi = {
   ) => Promise<AnalysisResult>;
   /** Asks for the kept recording to be analysed again. Returns a job to follow. */
   requestReanalysis: (analysisId: string) => Promise<JobStatus>;
+  /** What all the stored feedback adds up to, your notes, and the AI model's pick if any. */
+  getFeedbackSummary: () => Promise<FeedbackSummary>;
+  /** Asks the AI model to pick the most telling notes. The answer carries the job to follow. */
+  requestFeedbackSummary: () => Promise<FeedbackSummary>;
 };
 
 export const UNREACHABLE_MESSAGE =
@@ -176,6 +181,8 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
       }),
     requestReanalysis: (analysisId) =>
       post(`/api/analyses/${encodeURIComponent(analysisId)}/reanalysis`),
+    getFeedbackSummary: () => request("/api/feedback-summary"),
+    requestFeedbackSummary: () => request("/api/feedback-summary", { method: "POST" }),
   };
 }
 

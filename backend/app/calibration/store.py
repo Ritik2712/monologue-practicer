@@ -24,6 +24,7 @@ from app.calibration.registry import (
     MIN_PAUSE,
     MIN_RECORDINGS,
     MIN_REPORTS,
+    MIN_TAKE_REPORTS,
     PRIORITY_PREFIX,
     REVERSAL_REPORTS,
     WINDOW,
@@ -31,7 +32,7 @@ from app.calibration.registry import (
     show,
 )
 from app.coaching.settings import DEFAULT_COACHING_SETTINGS, CoachingSettings
-from app.models import CalibrationState, CalibrationVersion, Feedback, utcnow
+from app.models import Analysis, CalibrationState, CalibrationVersion, Feedback, utcnow
 from app.pipeline.settings import DEFAULT_SETTINGS, AnalysisSettings
 
 # How many entries of the history the calibration screen is given.
@@ -131,8 +132,10 @@ def active(session: Session) -> Active:
 def pending_reports(session: Session, setting: str) -> list[engine.Report]:
     """The reports about one setting that no adjustment has counted yet."""
     rows = session.execute(
-        select(Feedback).where(Feedback.setting == setting, Feedback.used_by_version.is_(None))
-    ).scalars()
+        select(Feedback, Analysis.role)
+        .join(Analysis, Analysis.id == Feedback.analysis_id)
+        .where(Feedback.setting == setting, Feedback.used_by_version.is_(None))
+    ).all()
     return [
         engine.Report(
             feedback_id=row.id,
@@ -141,8 +144,9 @@ def pending_reports(session: Session, setting: str) -> list[engine.Report]:
             evidence=row.evidence,
             recording_id=row.recording_id,
             created_at=row.created_at,
+            own_take=role != "reference",
         )
-        for row in rows
+        for row, role in rows
     ]
 
 
@@ -365,6 +369,12 @@ def waiting_text(
     if counted.recordings < MIN_RECORDINGS:
         text += f", from {counted.recordings} of the {MIN_RECORDINGS} recordings needed"
     text += "."
+    if counted.take_reports < MIN_TAKE_REPORTS:
+        # Said whether or not the count is reached: it is what is still missing.
+        text += (
+            " All of them are about reference recordings, and a setting moves only once a "
+            "take of your own shows the same thing."
+        )
     if smaller:
         text += f" {smaller} {_reports(smaller)} the other way."
     if counted.enough:
@@ -422,6 +432,7 @@ def describe(session: Session) -> schemas.Calibration:
                     lower_count=counted.lower_count,
                     recordings=counted.recordings,
                     needed=counted.needed,
+                    take_reports=counted.take_reports,
                 ),
                 supporting_reports=supporting,
                 confidence=engine.confidence(supporting) if changed else "none",
@@ -445,7 +456,8 @@ def describe(session: Session) -> schemas.Calibration:
         summary = (
             "Still calibrating: every setting is at its default. A setting moves only after "
             f"{MIN_REPORTS} reports that agree, from at least {MIN_RECORDINGS} different "
-            f"recordings. Reports waiting: {pending}."
+            f"recordings, at least {MIN_TAKE_REPORTS} of them about a take of your own. "
+            f"Reports waiting: {pending}."
         )
     else:
         supporting = sum(setting.supporting_reports for setting in moved)
@@ -472,6 +484,7 @@ def describe(session: Session) -> schemas.Calibration:
         rules=schemas.CalibrationRules(
             min_reports=MIN_REPORTS,
             min_recordings=MIN_RECORDINGS,
+            min_take_reports=MIN_TAKE_REPORTS,
             min_agreement=MIN_AGREEMENT,
             window=WINDOW,
             reversal_reports=REVERSAL_REPORTS,

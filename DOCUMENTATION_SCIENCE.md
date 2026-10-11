@@ -12,9 +12,11 @@ adjusts a few settings.
 
 Everything described here is built.
 
-**Last updated:** end of Phase 6. The measurements, the coaching (section 13), the
+**Last updated:** end of Phase 7. The measurements, the coaching (section 13), the
 comparison of a take with a reference recording (section 14) and feedback with calibration
-(section 15) are all built.
+(section 15) are all built. Phase 7 added to section 15: pointing at a missed pause by a
+word, feedback on a reference recording, and what the feedback adds up to, including three
+ways of using the AI model for it that were measured and only one of which was kept.
 
 ## Contents
 
@@ -41,7 +43,8 @@ The measuring code is in `backend/app/pipeline/`. The coaching code is in
 `backend/app/coaching/`, and the one file that talks to the AI model is `backend/app/llm.py`.
 The code that compares two recordings is in `backend/app/comparison/`. The code that turns
 feedback into adjusted settings is in `backend/app/feedback.py` and
-`backend/app/calibration/`.
+`backend/app/calibration/`. The code that counts up what the feedback says is in
+`backend/app/feedback_summary.py`.
 
 ## 1. The pipeline at a glance
 
@@ -1203,8 +1206,9 @@ Two rules hold throughout:
 
 1. **Feedback never changes a stored measurement.** A pause that was measured stays in
    every pause figure, at its measured length, whatever is said about it.
-2. **Numbers are changed by fixed rules, never by the AI model.** The model has no part in
-   anything in this section.
+2. **Numbers are changed by fixed rules, never by the AI model.** The model decides
+   nothing in this section. It appears once, near the end, where it is allowed to choose
+   which of the user's own notes to show first, and nothing reads its choice.
 
 ### The idea in one picture
 
@@ -1280,6 +1284,54 @@ several, it takes the one whose middle is nearest.
 The length found, the minimum pause the recording was analysed with, and the calibration
 version are stored with the feedback, as its **features**.
 
+### Pointing at the moment: a silence, a word, or the player
+
+The rule above needs a time. The screen offers four ways of giving one, and all four end
+in the same rule:
+
+| The user picks | The time sent |
+| --- | --- |
+| One of the short silences listed for the phrase | The middle of that silence |
+| A word: "the pause came after this one" | Halfway between the end of that word and the start of the next, kept inside the phrase |
+| Where the player is | The player's position |
+| "I cannot say exactly where" | None: the report is saved and cannot count |
+
+**Why a word needs care.** Word times come from the speech recogniser, not from the
+detector that finds silences, and the two do not agree exactly: a word's end is often
+drawn a little into the silence after it. So "after this word" gives a moment *near* the
+silence, not inside it. That is what the half second of tolerance is for, and it is the
+same half second whether the moment came from a word or from the player.
+
+```
+ words:      … who    I    am │        │ so   say   my …
+ silence:                       ░░░░░░░░
+                               ↑
+              halfway between "am" and "so": 4.41 s
+              the silence runs from 4.29 s to 4.65 s  →  found
+```
+
+Measured on the two test recordings, for every short silence the detector heard: the word
+before the silence was looked up, the moment after that word was reported, and the answer
+was compared with the silence.
+
+| Recording | Word picked | Moment sent | The silence | Found? |
+| --- | --- | --- | --- | --- |
+| Take | "to" | 2.71 s | 324 ms from 2.62 s | Yes |
+| Take | "Skyler" | 8.09 s | 356 ms from 7.97 s | Yes |
+| Take | "shot" | 14.55 s | 356 ms from 14.46 s | Yes |
+| Take | "No" | 17.69 s | 132 ms from 17.73 s | Yes |
+| Reference | "am" | 4.41 s | 356 ms from 4.29 s | Yes |
+| Reference | "knocks" | 9.34 s | 356 ms from 9.31 s | Yes |
+
+Six of six, each within 0.12 s of where the silence starts. A word with no silence within
+half a second was also tried: the report was saved, counted towards nothing, and said "the
+detector heard speech straight through at that point".
+
+Two limits. All six are from clean synthesised speech; a real voice, with words that run
+together, may be timed less well. And half a second is wide enough that a word next to
+the right one can find the same silence, which is the forgiving direction: the screen
+shows which silence was found before the report is saved.
+
 ### From a report to a setting
 
 | Report | What was measured | Counts towards | Why |
@@ -1305,13 +1357,17 @@ are looked at together, most recent ten only, and the setting moves when all of 
 | --- | --- | --- |
 | Enough reports point the same way | 3 | One or two can be a slip or an odd moment |
 | They come from more than one recording | 2 recordings | One unusual recording must not retune the app for every later one. Revisions of one recording count as one |
+| At least one of them is about one of the user's own takes | 1 report | A reference recording is often a film clip: another voice, another room, sometimes music. See "Feedback on a reference recording" below |
 | They are most of what was said | 75% of the reports looked at | Three for and two against is a disagreement, not a signal |
 | The move is not straight back the way the setting just came | 5 reports instead of 3 | So a setting cannot flip back and forth |
 | The setting is not already at the end of its range | | |
 | Automatic adjustment is switched on | | The user can switch it off |
 
 Until then the screen says "still calibrating" and shows the count: "2 of the 3 reports
-needed for lowering it, from 1 of the 2 recordings needed".
+needed for lowering it, from 1 of the 2 recordings needed". When the only thing missing is
+a report on a take, it says that: "4 of the 3 reports needed for lowering it. All of them
+are about reference recordings, and a setting moves only once a take of your own shows the
+same thing."
 
 Two more rules keep it honest:
 
@@ -1542,6 +1598,176 @@ rules say is simple and was run on real audio: at a lower minimum pause, the pau
 are exactly the earlier pauses plus the earlier short silences that are at least as long
 as the new minimum.
 
+### Feedback on a reference recording
+
+A reference is measured exactly like a take (section 14), so it can be wrong in exactly
+the same ways: a misheard word, a pause that was missed, a silence that was not a pause.
+In one way it matters more. Takes are compared with it word by word, so one wrong word in
+the reference is a wrong word in every comparison.
+
+What can be said about a reference, and what comes of it:
+
+| Said about a reference | What happens | Why |
+| --- | --- | --- |
+| "The words are wrong", with the right words | A new revision of the reference. Its word counts and WPM are worked out again as for a take (see "Correcting the transcript"); nothing measured from the sound changes; takes are then lined up with the corrected words | The comparison rests on the words |
+| "Not a pause", "too short to split", "a pause was missed" | Saved as a report, with the measured silence, like a report on a take | The detector is the same detector |
+| "The WPM looks too high / too low" | The same review as for a take, worded for someone else speaking | |
+| "Intentional" / "Accidental" | Refused | A label changes how the coaching reads a pause, and a reference has no coaching |
+| "Useful" / "Not useful" | Not possible | There is no correction to rate |
+
+**The rule that a reference cannot move a setting by itself.** A report on a reference
+counts towards the minimum pause like any other: it carries a measured silence, and
+"that 356 ms gap is a pause" is as true of a film clip as of a take. But the settings are
+meant to fit the user's own recordings, and a film clip can mislead the detector in ways
+the user's microphone never will: speech under music is heard as silence, a cut between
+shots as a pause. So one more condition is added to the list above: among the reports
+that agree, at least one must be about a take.
+
+```
+ reports waiting on the minimum pause           does it move?
+ ─────────────────────────────────────────      ─────────────────────────────────────────────
+ reference, reference, reference, reference     no: none is about a take
+ reference, reference, take                     yes: 3 agree, 2 recordings, 1 is a take
+ take, take (one recording)                     no: 2 reports, 1 recording
+```
+
+Everything else is unchanged: three reports, two recordings, three in four agreeing. The
+evidence used to choose the new value is all the agreeing reports' silences, the
+references' included.
+
+On the real pipeline: four missed-pause reports on two references moved nothing. A fifth,
+on a take, moved the minimum pause from 500 to 400 ms, "after 5 reports of a pause that
+was missed, from 3 recordings. The silences reported were around 356 ms long." Correcting
+two words of a reference gave a revision that a take lined up with on 45 of 47 words,
+where it had lined up on 47 of 47 with the uncorrected one: exactly the two words changed.
+
+Code: `feedback.save` (what is refused), `calibration/engine.py` (`Report.own_take`,
+`Tally.enough`), `revisions.create_corrected`.
+
+### What the feedback adds up to
+
+After a few sessions there may be dozens of pieces of feedback spread over many results.
+The calibration panel gathers them in one place. There are two parts, and they are made in
+opposite ways on purpose.
+
+**The facts: counted and worded by code.** Every time the panel is opened, the stored
+feedback is read and turned into about ten sentences:
+
+```
+ f1: 12 pieces of feedback in all, on 3 recordings: 6 on your own takes and 6 on reference
+     recordings.
+ f2: What it is about, largest group first: missed pauses (5), WPM figures (3), pauses you
+     labelled (2), coaching corrections (1), wrong words (1).
+ f3: Pauses you labelled intentional: 1. It lasted 1.6 s. A label changes how the coaching
+     reads a pause, not its length.
+ f5: Missed pauses you reported: 5. At 5 of them the detector had heard a silence lasting
+     between 324 and 356 ms, which was shorter than the minimum pause at the time and so
+     was not counted as a pause.
+ f9: Minimum pause is now 400 ms; the default is 500 ms. Your reports moved it, and it
+     applies to recordings analysed from now on.
+```
+
+Three rules shape these sentences, each learned from watching a reader get them wrong
+(the reader was the AI model, in the experiments below, but the rules serve a person too):
+
+- **One fact, one thing.** "Pauses you labelled intentional" and "accidental" are two
+  facts, each with its own lengths. When they shared a sentence, the two lengths were read
+  as two measurements of one pause.
+- **No two facts count the same feedback.** Which kinds of correction were rated "not
+  useful" is said inside the fact that counts the ratings. As a fact of its own it was
+  read as a second lot of ratings.
+- **A fact that could be misread carries what it means.** "…which was shorter than the
+  minimum pause at the time and so was not counted as a pause." "Saying so changes no
+  figure." Nobody should have to work that out.
+
+**The notes: the user's own words, with a few picked out by the AI model.** A note is up
+to 280 characters the user typed beside a piece of feedback ("he stops for a beat here in
+the film"). Code cannot sum those up, so this is the one place the model is used. It is
+used as narrowly as possible:
+
+```
+ the notes, numbered                      the model's whole answer
+ ───────────────────────────────          ─────────────────────────
+ n1 (on a pause you said the app          { "notes": ["n4", "n1", "n6"] }
+    missed): "music is loud under
+    this part"
+ n2 …                                     what is shown
+ …                                        ─────────────────────────
+                                          notes 4, 1 and 6, word for word
+```
+
+- The model is given the notes and what each was written about. No counts, no settings,
+  no transcript, no audio.
+- It answers with three numbers. The answer's shape is fixed by a JSON schema that lists
+  the allowed names, so it cannot name a note that does not exist.
+- Nothing it writes is shown. What is shown is the user's own notes, copied.
+- A note of fewer than three words ("ok", "wrong") is never offered to it.
+- Code counts which subject most notes are on and says so in the request ("Most of the
+  notes are on a pause you said the app missed. Choose at least one of those."), so the
+  model does not have to count.
+- It is asked only when there are at least five notes worth offering. With fewer, they are
+  all on the screen already.
+
+So the worst the model can do here is choose badly. It cannot state anything false,
+because it states nothing.
+
+**Why so narrow: three designs, measured on the real model.** The brief allows the model
+to "summarise feedback". The obvious way to do that was built first and measured, then a
+second, then the third. All runs below are `llama3.1:8b` on the same stored feedback.
+
+*Design 1: the model restates the facts in its own words.* Its answer was checked the way
+coaching is (section 13): every number had to be a number from the facts.
+
+| What was asked | Runs | Numbers that passed the check | What it wrote |
+| --- | --- | --- | --- |
+| An overview, plus three "patterns", each resting on a named fact | 3 | All of them, in all 3 | A false or meaningless sentence in each run. "You intentionally paused for 1.6 seconds, but the app measured the same pause as 2.7 seconds" (two different pauses). "You labelled 2 pauses as intentional" (one of each). One rating reported as two |
+| An overview only, from the one-thing-per-fact wording above | 5 | All of them, in all 5 | "You provided feedback on 12 recordings" in 5 of 5. It was 12 pieces of feedback on 3 recordings |
+| The same, told to write no numbers at all | 5 | Not applicable | Numbers in 5 of 5 |
+
+Every figure was real and every check passed. What was wrong was *which thing each number
+counted*, and no check on numbers can see that. Rewording the facts cured the two mix-ups
+it was aimed at and left the model free to make the next one.
+
+*Design 2: the model says, in its own words, what the notes are about.* Its answer was
+checked for numbers and quotations that are not in a note.
+
+| What was asked | Notes | Runs | What it wrote |
+| --- | --- | --- | --- |
+| "What these notes are mostly about and what they have in common" | 11, English | 8 | True and empty in 8 of 8: that the notes are feedback on the app's measurements of pauses and speed |
+| "What reasons you give for disagreeing with the app" | 11, English | 6 | Causes nobody gave. "The app… mislabels some [pauses] as accidental": the app labels nothing |
+| "The particular things they mention, in the notes' own words" | 11, English | 8 | Faithful in 8 of 8, mostly by quoting the notes |
+| The same | 3, English | 8 | The three notes quoted correctly, with something no note says added in 7 of 8 ("their impact on the listening experience") |
+| The same | 5, Hinglish | 8 | Something false about the speaker in 3 of 8: "you paused too long" twice, "your speaking speed was too high" once. The note said the opposite: "sunne mein itna tez nahi lagta" |
+| The same, after rewording what each note was about so that it says who said what | 11, English | 8 | A new mistake in 4 of 8: that the app "mislabelled pauses as intentional or accidental" |
+
+The best wording was faithful on one set of notes and wrong three times in eight on notes
+in the language this app's user actually writes in. Each fix moved the mistake somewhere
+else. And the one thing that was reliably right in every run was the part where the model
+*quoted* a note.
+
+*Design 3: the model only picks.* That observation is the design: keep the quoting, drop
+the sentences around it.
+
+| Version | Notes | Runs | Usable answers | Time | What it picked |
+| --- | --- | --- | --- | --- | --- |
+| Pick three | 11, English | 10 | 10 | 1.7 to 4.6 s | A note from the largest group (5 of the 11) in only 3 of 10 |
+| Pick three | 7, Hinglish, two of them "ok" and "galat" | 10 | 10 | 1.6 to 3.3 s | An empty note in 9 of 10 |
+| Short notes never offered; the largest group named in the request | 11, English | 10 | 10 | 1.6 to 2.3 s | A note from the largest group in 10 of 10; three different subjects in 8 of 10 |
+| The same | 7, Hinglish | 10 | 10 | 1.6 to 2.2 s | The same two specific notes in 10 of 10 |
+| The same, through the API and the worker | 9, mixed | 5 | 5 | 2 to 6 s for the whole job | Every picked note one of the notes, word for word; "ok" never; the largest group in 5 of 5 |
+
+The two faults of the first version were both failures of judgement, and both were fixed
+by code doing the part code is good at (counting words, counting groups), not by asking
+the model more firmly.
+
+**What is not claimed.** That the three picked are the three a person would pick. Nobody
+has compared. The pick also varies from one request to the next: the 11 English notes gave
+five different sets of three in ten runs. It is a way of seeing a few notes first, and the
+whole list is one click below it.
+
+Code: `feedback_summary.py` (`build_digest` for the facts; `build_prompt`, `read_answer`
+and `pick` for the notes).
+
 ### What was seen with the real pipeline
 
 Two recordings were synthesised with silences of known length inside their phrases, and
@@ -1602,6 +1828,11 @@ What is known, stated plainly.
 | Corrected transcripts: word times | A word the user adds or changes has no measured time. It is placed evenly between its neighbours, so emphasis candidates are kept only for unchanged words, and anything that depends on exact word times is an estimate there. |
 | Corrected transcripts: what is trusted | The user's words are taken as given. The app does not check them against the audio. |
 | Pause labels | Taken as given. Nothing in the sound tells an intended pause from a slip, so the app never guesses one, and a label is never applied to other pauses or other recordings. |
+| Picking a word for a missed pause | The word's time comes from the speech recogniser and can be a tenth of a second or more from the silence. The nearest silence within half a second is taken, and shown before the report is saved. Measured on six silences in clean synthesised speech only. |
+| Feedback on a reference | Its reports count towards a setting only together with one from a take of the user's own. A user who only ever reports on references will see the count grow and nothing move, and the screen says why. |
+| What the feedback adds up to: the facts | Counts and measured figures, worded by code. Exact, and only as good as the feedback itself. |
+| What the feedback adds up to: the AI model's pick | Three of the user's notes, chosen by the model and shown word for word. It cannot say anything false, because it says nothing. Whether they are the three a person would choose has not been checked, and the choice changes from one request to the next. A note of one or two words is never picked. |
+| The AI model and summaries | It was tried at writing a summary, in two ways, and was wrong too often to show: right numbers attached to the wrong things, and things no note said. Those versions are not in the app. See section 15. |
 | AI coaching: what the speaker says | The transcript is part of what the model reads. Words in a recording that sound like instructions could in principle steer its wording. They cannot make it name a finding or segment that does not exist, or get an unmeasured figure past the checks. |
 
 **How it has been tested so far.** The arithmetic is covered by tests whose answers can be
@@ -1654,6 +1885,19 @@ voice, with feedback given by someone who actually spoke the words, or over the 
 use that calibration is meant for. Whether the 250 and 800 ms limits, "three reports from
 two recordings" and the 50 to 100 ms step suit real use is not known yet; they are
 cautious first choices.
+
+**How Phase 7 has been tested.** The rule about reference recordings, the facts and the
+handling of the model's pick are covered by automated tests; the facts for a known set of
+feedback are compared word for word. The complete path was run through the real pipeline
+and the real AI model: 41 checks, all passed (section 15 and the backend document).
+Separately, the three designs for using the AI model were each run 3 to 10 times on the
+real model, about 125 runs in all, and every answer was read; the tables in section 15
+are what was found. It has **not** been tried with notes a person wrote over days of use;
+the notes were written for the test, eleven in English and five to seven in Hinglish.
+Whether five notes is the right minimum, three the right number to pick, and three words
+the right length for a note worth offering is not known; like the limits above, they are
+first choices. Picking a word for a missed pause was measured on six silences in clean
+synthesised speech and no others.
 
 **How the coaching has been tested.** Its logic is covered by automated tests that replace
 the AI model with a scripted stand-in, including one that invents figures, misquotes, names
@@ -2449,8 +2693,109 @@ worth understanding.
   words coaching.
 - **Why:** required by the brief ("deterministic code must apply and validate numeric
   setting changes"), and consistent with S21: numbers come from code.
-- **Not built:** the brief allows the model to *summarise* feedback. With a handful of
-  structured items per result there is nothing a summary would add to the list itself.
+- **Phase 7:** the brief allows the model to *summarise* feedback. In Phase 6 that was
+  left out, on the grounds that a summary would add nothing to the list. Phase 7 built
+  it, in the narrow form described in S69 to S71. This decision still holds as written:
+  what the model does there changes no setting and is read by nothing.
+
+### S65. A word points at a moment; the moment is checked like any other
+
+- **Chosen:** "the pause came after this word" is turned into a time, halfway between that
+  word and the next, and sent as an ordinary missed-pause report. The existing rule finds
+  the silence: the nearest within half a second.
+- **Why:** a speaker remembers where in the sentence they paused, not at what second. And
+  when the recording was not kept, there is no player to point with.
+- **Why no new rule:** word times and silences come from two different models and differ
+  by up to a tenth of a second or so. A rule that demanded the silence lie exactly between
+  the two words would fail on that disagreement. The half second already in use for the
+  player's position covers it: six of six on the test recordings.
+- **Decided against:** *sending the word's number and resolving it on the backend* (a
+  second way of pointing at a moment, with a second rule to keep in step); *a tighter
+  tolerance for words* (no measurement says it would be more right, and it would be less
+  forgiving of word timing on a real voice).
+
+### S66. Reports on a reference count, but a setting needs one from a take
+
+- **Chosen:** as described under "Feedback on a reference recording": the same reports,
+  the same evidence, and one more condition before a setting moves.
+- **Why they count at all:** the alternative, refusing them (the Phase 6 choice), left the
+  user unable to say that the original performance pauses where the app saw none, which is
+  the very thing the Monologue screen is for.
+- **Why not alone:** music, sound effects and edits make a film clip mislead the detector
+  in ways a practice recording does not. A setting tuned on those would be tuned to the
+  film.
+- **Why one, not a majority:** with one monologue there is one reference and it may be the
+  only place the short pauses are. Requiring most reports to be about takes would make the
+  reference's evidence nearly worthless. One take showing the same thing is the smallest
+  proof that it is not only the film.
+- **Decided against:** a separate minimum pause for references (two recordings cut by
+  different rules cannot be compared pause by pause, and the brief rules out settings per
+  profile).
+
+### S67. A reference's pauses are not labelled
+
+- **Chosen:** "intentional" and "accidental" are refused on a reference.
+- **Why:** a label has exactly one effect, on how the coaching reads a pause (S55), and a
+  reference is never coached (S34). A control that does nothing should not be offered.
+  Besides, whether the original actor meant a pause is not something the user knows.
+
+### S68. The facts are written one thing at a time, each with what it means
+
+- **Chosen:** the three rules under "What the feedback adds up to": one fact about one
+  thing, no feedback counted in two facts, and the meaning said where it could be mistaken.
+- **Why:** measured. With two labels in one sentence, a reader (the model) took the two
+  lengths for one pause measured twice. With ratings and their subjects in two sentences,
+  it counted the ratings twice. The facts are read by a person on the screen, and a person
+  skimming makes the same mistakes.
+- **Decided against:** a table of counts (compact, and silent about what any count means).
+
+### S69. The AI model does not restate the counts
+
+- **Chosen:** every count and figure in "What your feedback adds up to" is worded by code.
+- **Why:** measured, in three versions (Design 1 above). The model kept every number
+  correct and attached it to the wrong thing: "feedback on 12 recordings" for 12 pieces of
+  feedback on 3 recordings, in 5 runs of 5. The check that guards coaching looks at
+  numbers and found nothing wrong, because nothing was wrong with the numbers.
+- **What this says about section 13:** coaching is safe from the same mistake for a
+  reason built in from the start (S21): the app prints each finding beside the model's
+  words, and the model is told not to repeat its figures. Here the model was asked to
+  repeat them, which is the one thing it should not be asked.
+- **Decided against:** *a stricter check* (it would have to understand the sentence);
+  *telling the model to write no numbers* (it wrote them anyway, 5 runs of 5).
+
+### S70. The AI model does not describe the notes in its own words
+
+- **Chosen:** no sentence written by the model about the notes is shown.
+- **Why:** measured (Design 2 above). Three wordings of the task were tried. The best was
+  faithful on English notes and said something false about the speaker in 3 of 8 runs on
+  Hinglish notes, turning a note that says the pace does not feel that fast into "your
+  speaking speed was too high". This app's user writes in Hinglish.
+- **Decided against:** shipping the best wording with a warning beside it. A sentence that
+  is wrong three times in eight is not made right by a caption.
+
+### S71. The AI model picks; code does everything a pick needs
+
+- **Chosen:** the model chooses three notes by number; code decides which notes it may
+  choose from, names the largest group for it, and shows the chosen notes word for word.
+- **Why:** it is the part of Design 2 that was right every time, with the rest removed. It
+  works the same in any language, since nothing is translated. And it cannot say anything
+  false.
+- **Why three, five and three words:** three notes fit in a glance; with fewer than five
+  there is nothing to choose from that is not already on screen; a note of one or two
+  words was picked in 9 runs of 10 when offered and says nothing. None of the three
+  numbers has been tested against anything but that.
+- **Decided against:** *letting code pick* (the longest note in each group, say: it would
+  be repeatable, and blind to what the notes say); *no AI part at all* (a fair choice,
+  and what Phase 6 did; it was built because it could be made unable to mislead).
+
+### S72. A pick is a reading aid: it is asked for by hand, replaced, and marked when stale
+
+- **Chosen:** the model is asked only when the user presses the button. One pick is kept.
+  When the notes change it is marked out of date and still shown.
+- **Why:** it costs the model's time and, on a busy worker, a wait behind an analysis, so
+  it should be the user's choice. It is not a record of anything, so there is no reason
+  to keep the old ones. And the facts beside it never go out of date, which is where the
+  eye should go first.
 
 ## 18. Glossary
 
@@ -2515,3 +2860,8 @@ worth understanding.
 | **Priority** | A number from 0.4 to 1.0 that the weight of a kind of issue is multiplied by, deciding how readily it becomes one of the corrections. |
 | **Revision** | A later result made from a recording that already has one: after a transcript correction, or a fresh analysis. |
 | **Decibel difference (as in "40 dB quieter")** | A ratio. 20 dB quieter is a tenth of the amplitude; 40 dB quieter is a hundredth. |
+| **Fact (about the feedback)** | One sentence counted and written by code from the stored feedback. Never worded by the AI model. |
+| **Note** | Up to 280 characters the user typed beside a piece of feedback. |
+| **Pick** | The few notes the AI model chose as the most telling. Shown word for word; the model's own words are never shown. |
+| **Extractive** | Summing something up by choosing pieces of it, not by writing new sentences about it. What the pick is. |
+| **Enum (in a schema)** | A list of the only values an answer may contain. Here: the names of the notes the model may pick. |

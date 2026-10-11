@@ -14,6 +14,24 @@ from app.pipeline.settings import AnalysisSettings
 # How many doubtful words are quoted.
 QUOTED_WORDS = 5
 
+# The same advice, worded for the user's own take (False) and for a reference recording
+# (True), where "you" did not do the speaking.
+NOT_SAID = {False: "A word you did not say", True: "A word that was not said"}
+READ_AGAINST = {
+    False: (
+        " Read the words against what you said. If they are wrong, correct them: the WPM is "
+        "then worked out again from your words."
+    ),
+    True: (
+        " Read the words against what is said in the recording. If they are wrong, correct "
+        "them: the WPM is then worked out again from the corrected words."
+    ),
+}
+STILL_SPEAKING = {
+    False: "If you were still speaking during one of them",
+    True: "If the speaker was still speaking during one of them",
+}
+
 
 def _unsure_words(words: list[schemas.WordTiming], settings: AnalysisSettings) -> list[str]:
     return [
@@ -28,6 +46,7 @@ def _words_check(
     settings: AnalysisSettings,
     too: Literal["high", "low"],
     where: str,
+    on_reference: bool = False,
 ) -> schemas.WpmCheck:
     counted = [word for word in words if is_countable_word(word.text)]
     unsure = _unsure_words(counted, settings)
@@ -43,14 +62,11 @@ def _words_check(
     elif counted:
         text += " The speech recogniser was reasonably sure of each of them."
     text += (
-        " A word you did not say, or one word heard as two, makes the WPM too high."
+        f" {NOT_SAID[on_reference]}, or one word heard as two, makes the WPM too high."
         if too == "high"
         else " A word that was dropped, or two words heard as one, makes the WPM too low."
     )
-    text += (
-        " Read the words against what you said. If they are wrong, correct them: the WPM is "
-        "then worked out again from your words."
-    )
+    text += READ_AGAINST[on_reference]
     return schemas.WpmCheck(label="The words", text=text, action="correct_transcript")
 
 
@@ -65,13 +81,19 @@ def _seconds(value: float) -> str:
 
 
 def review(
-    body: schemas.AnalysisBody, target_id: str | None, too: Literal["high", "low"]
+    body: schemas.AnalysisBody,
+    target_id: str | None,
+    too: Literal["high", "low"],
+    on_reference: bool = False,
 ) -> schemas.WpmReview:
-    """The review for one segment, or for the whole recording when no segment is named."""
+    """The review for one segment, or for the whole recording when no segment is named.
+
+    `on_reference` words it for a reference recording, where the user is not the speaker.
+    """
     settings = AnalysisSettings.from_dict(body.settings)
     segment = next((s for s in body.segments if s.id == target_id), None)
     if segment is None:
-        return _review_recording(body, settings, too)
+        return _review_recording(body, settings, too, on_reference)
 
     checks = [
         _words_check(
@@ -79,6 +101,7 @@ def review(
             settings,
             too,
             "in this phrase",
+            on_reference,
         )
     ]
 
@@ -111,8 +134,8 @@ def review(
         if around:
             text = (
                 f"{length} There is {' and '.join(around)}. Time inside a pause is not "
-                "speaking time. If you were still speaking during one of them, the WPM comes "
-                "out too high: mark that pause as “Not a pause”."
+                f"speaking time. {STILL_SPEAKING[on_reference]}, the WPM comes out too high: "
+                "mark that pause as “Not a pause”."
             )
             action = "report_false_pause"
         else:
@@ -199,13 +222,16 @@ def _timing_check(
 
 
 def _review_recording(
-    body: schemas.AnalysisBody, settings: AnalysisSettings, too: Literal["high", "low"]
+    body: schemas.AnalysisBody,
+    settings: AnalysisSettings,
+    too: Literal["high", "low"],
+    on_reference: bool = False,
 ) -> schemas.WpmReview:
     metrics = body.metrics
     words = metrics.total_word_count.value
     seconds = metrics.speech_active_seconds.value
     wpm = metrics.speech_active_wpm.value
-    checks = [_words_check(body.words, settings, too, "in the whole recording")]
+    checks = [_words_check(body.words, settings, too, "in the whole recording", on_reference)]
 
     pauses = (
         f"{len(body.pauses)} {'pause' if len(body.pauses) == 1 else 'pauses'}, "
@@ -232,7 +258,7 @@ def _review_recording(
     else:
         text = (
             f"{spoken[0].upper()}{spoken[1:]}; {pauses}. Time inside a pause is not speaking "
-            "time. If you were still speaking during one of them, the WPM comes out too high: "
+            f"time. {STILL_SPEAKING[on_reference]}, the WPM comes out too high: "
             "mark that pause as “Not a pause”."
         )
         action = "report_false_pause" if body.pauses else None

@@ -12,9 +12,13 @@ export type JobStage =
   | "detecting_speech"
   | "transcribing"
   | "measuring_audio"
-  | "generating_feedback";
-/** "analysis" measures a recording. "coaching" only rewrites the coaching of a stored one. */
-export type JobKind = "analysis" | "coaching";
+  | "generating_feedback"
+  | "summarising_feedback";
+/**
+ * "analysis" measures a recording. "coaching" only rewrites the coaching of a stored one.
+ * "summary" asks the AI model to pick out the most telling of your notes.
+ */
+export type JobKind = "analysis" | "coaching" | "summary";
 /**
  * What a recording is for. A "take" is your own attempt. A "reference" is a recording you
  * supply to compare takes against, such as the original performance.
@@ -523,7 +527,14 @@ export type CalibratedSetting = {
   maximum: number;
   step: number;
   changed: boolean;
-  pending: { raiseCount: number; lowerCount: number; recordings: number; needed: number };
+  pending: {
+    raiseCount: number;
+    lowerCount: number;
+    recordings: number;
+    needed: number;
+    /** How many reports on the larger side are about your own takes, not a reference. */
+    takeReports: number;
+  };
   supportingReports: number;
   confidence: Confidence | "none";
   status: string;
@@ -547,6 +558,8 @@ export type Calibration = {
   rules: {
     minReports: number;
     minRecordings: number;
+    /** Reports about your own takes that an adjustment needs among those that agree. */
+    minTakeReports: number;
     minAgreement: number;
     window: number;
     reversalReports: number;
@@ -562,3 +575,41 @@ export type FeedbackUpdate = {
 };
 
 export type SegmentCorrection = { segmentId: string; text: string };
+
+// --- What the feedback adds up to ---------------------------------------------------------
+
+/** One thing your stored feedback adds up to, counted and written by the app's own code. */
+export type SummaryFact = { id: string; text: string };
+
+/** A note you wrote with a piece of feedback, and what that feedback was about. */
+export type SummaryNote = { about: string; text: string };
+
+/** The notes the AI model picked out as the most telling, shown word for word. */
+export type NotePick = {
+  /** As they read when they were picked, the most telling first. */
+  notes: SummaryNote[];
+  model: string;
+  modelSeconds: number | null;
+  generatedAt: string;
+  /** How many notes it picked from. */
+  noteCount: number;
+  /** True when your notes have changed since. */
+  stale: boolean;
+};
+
+export type FeedbackSummary = {
+  feedbackCount: number;
+  /** Counted by the app each time this is asked for, so always current. */
+  facts: SummaryFact[];
+  /** Your most recent notes, newest last: what the AI model is given, and nothing else. */
+  notes: SummaryNote[];
+  /** Every note there is, including any too old to be listed. */
+  noteCount: number;
+  /** The listed notes long enough to say something: the ones the AI model is offered. */
+  pickableNotes: number;
+  /** The AI model is only asked once it can be offered at least this many. */
+  minNotes: number;
+  picked: NotePick | null;
+  /** The request to the AI model: while it waits or runs, or after it failed. */
+  job: JobStatus | null;
+};

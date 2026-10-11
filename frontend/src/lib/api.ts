@@ -1,4 +1,4 @@
-const DEFAULT_API_BASE_URL = "http://localhost:8000";
+const DEFAULT_API_BASE_URL = "http://localhost:4321";
 
 /** Base URL of the local FastAPI backend, without a trailing slash. */
 export function apiBaseUrl(

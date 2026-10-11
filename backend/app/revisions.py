@@ -47,13 +47,12 @@ def create_corrected(
     now: datetime,
     data_dir: Path | None = None,
 ) -> Analysis:
-    """Stores a new revision of a take whose transcript the user has corrected.
+    """Stores a new revision of a recording whose transcript the user has corrected.
 
-    Word counts and WPM are worked out again from the corrected words. The coaching is
-    written from the fixed rules straight away; the user can then ask the AI model for it.
+    Word counts and WPM are worked out again from the corrected words. For a take, the
+    coaching is written from the fixed rules straight away; the user can then ask the AI
+    model for it. A reference recording has no coaching, before or after.
     """
-    if analysis.role != job_queue.TAKE:
-        raise RevisionError(409, "not_a_take", "Only the transcript of a take can be corrected.")
     body = schemas.AnalysisBody.model_validate(analysis.result)
     by_id = {segment.id: segment for segment in body.segments}
     wanted = {correction.segment_id: correction.text for correction in corrections}
@@ -75,14 +74,15 @@ def create_corrected(
             analysis.audio_path, uploads.RETAINED_DIR, analysis_id, data_dir, link=True
         )
 
-    labels = feedback.pause_labels(session, analysis.id)
-    coaching = Coach(None).generate(
-        corrected,
-        now=now,
-        settings=calibration.active(session).coaching_settings(),
-        labels=labels,
-        use_model=False,
-    )
+    coaching = None
+    if analysis.role != job_queue.REFERENCE:
+        coaching = Coach(None).generate(
+            corrected,
+            now=now,
+            settings=calibration.active(session).coaching_settings(),
+            labels=feedback.pause_labels(session, analysis.id),
+            use_model=False,
+        )
     result = schemas.AnalysisResult(
         **corrected.model_dump(),
         analysis_id=analysis_id,
@@ -111,7 +111,7 @@ def create_corrected(
         revision=revision,
         revision_reason="transcript_corrected",
         result=result.model_dump(mode="json", by_alias=True, exclude={"coaching", "revisions"}),
-        coaching=coaching.model_dump(mode="json", by_alias=True),
+        coaching=coaching.model_dump(mode="json", by_alias=True) if coaching else None,
         waveform=analysis.waveform,
         audio_path=kept_path,
     )

@@ -8,7 +8,10 @@ import type { GeneralStore, RunState } from "../generalStore";
 import type { JobKind, JobStage, Role } from "../types";
 import { Command, MUTED, Notice } from "./parts";
 
-const ALL_STAGES = Object.keys(STAGE_LABELS) as JobStage[];
+// Summing up feedback is a job of its own, followed in the calibration panel, not here.
+const ALL_STAGES = (Object.keys(STAGE_LABELS) as JobStage[]).filter(
+  (stage) => stage !== "summarising_feedback",
+);
 
 /**
  * The steps shown for a job. Writing coaching again skips the audio steps, and a reference

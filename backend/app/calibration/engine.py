@@ -3,7 +3,8 @@
 Pure arithmetic: no database, no clock. Given the reports about one setting and its current
 value, these functions say whether it moves. The rules are deliberately cautious:
 
-- one report never moves anything; it takes several that agree, from more than one recording;
+- one report never moves anything; it takes several that agree, from more than one recording,
+  and at least one of them about one of the user's own takes;
 - one adjustment moves a setting by a small, bounded amount, and uses up the reports behind it;
 - a setting never leaves its allowed range;
 - moving a setting back the way it just came takes more reports than moving it on.
@@ -20,6 +21,7 @@ from app.calibration.registry import (
     MIN_PAUSE,
     MIN_RECORDINGS,
     MIN_REPORTS,
+    MIN_TAKE_REPORTS,
     REVERSAL_REPORTS,
     WINDOW,
     Adaptive,
@@ -40,6 +42,8 @@ class Report:
     evidence: float | None
     recording_id: str
     created_at: datetime
+    # False when the report was made on a reference recording, not on a take of the user's.
+    own_take: bool = True
 
 
 def still_applies(setting: Adaptive, current: float, report: Report) -> bool:
@@ -76,6 +80,8 @@ class Tally:
     recordings: int
     # Reports the larger side needs before the setting can move.
     needed: int
+    # How many reports on the larger side are about the user's own takes.
+    take_reports: int = 0
 
     @property
     def agreeing(self) -> tuple[Report, ...]:
@@ -88,6 +94,7 @@ class Tally:
             and len(self.agreeing) >= self.needed
             and self.agreement >= MIN_AGREEMENT
             and self.recordings >= MIN_RECORDINGS
+            and self.take_reports >= MIN_TAKE_REPORTS
         )
 
 
@@ -115,6 +122,7 @@ def tally(
         agreement=larger / len(window) if window else 0.0,
         recordings=len({r.recording_id for r in window if r.direction == direction}),
         needed=REVERSAL_REPORTS if reversing else MIN_REPORTS,
+        take_reports=sum(1 for r in window if r.direction == direction and r.own_take),
     )
 
 

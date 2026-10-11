@@ -186,7 +186,7 @@ def correct_transcript(
     data_dir: DataDirDep,
     now: NowDep,
 ) -> schemas.AnalysisResult:
-    """Stores a new revision of a take with the words of some phrases corrected.
+    """Stores a new revision of a recording with the words of some phrases corrected.
 
     Word counts and WPM are worked out again from the corrected words and each phrase's own
     measured length. Nothing measured from the sound changes, and the result that was

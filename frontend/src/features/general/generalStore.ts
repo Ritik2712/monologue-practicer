@@ -675,6 +675,23 @@ export function createGeneralStore({
         (revision) => {
           // The same audio plays for the new revision as for the result it came from.
           const url = state.localAudio[analysisId];
+          if (revision.role === "reference") {
+            // The corrected reference joins the library and becomes the chosen one, so
+            // whatever take is on view is now lined up with the corrected words.
+            set({
+              correction: { status: "idle" },
+              localAudio: url
+                ? { ...state.localAudio, [revision.analysisId]: url }
+                : state.localAudio,
+              notice: {
+                kind: "info",
+                text: `Saved as revision ${revision.revision} of this reference, and chosen. Word counts and WPM were worked out again from the corrected words. The earlier one is still in the list, unchanged, until you delete it.`,
+              },
+            });
+            refreshReferences();
+            selectReference(revision.analysisId);
+            return;
+          }
           const { viewed } = state;
           const stillShown =
             viewed.status === "ready" && viewed.analysis.analysisId === analysisId;

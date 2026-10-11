@@ -47,7 +47,8 @@ class Job(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     # "analysis" measures an uploaded recording. "coaching" only writes the coaching of an
-    # analysis that already exists, and has no audio of its own.
+    # analysis that already exists, and has no audio of its own. "summary" asks the AI
+    # model to pick the most telling of the user's notes, and belongs to no recording.
     kind: Mapped[str] = mapped_column(String(16), default="analysis", server_default="analysis")
     # Whose recording this is: the user's own "take", or a "reference" to compare takes with.
     role: Mapped[str] = mapped_column(String(16), default="take", server_default="take")
@@ -213,6 +214,26 @@ class CalibrationVersion(Base):
     recording_count: Mapped[int] = mapped_column(Integer, default=0)
     # The later version that undid this adjustment or reset it away.
     undone_by: Mapped[int | None] = mapped_column(Integer)
+
+
+class StoredSummary(Base):
+    """A single row (id 1): the notes the AI model last picked out as the most telling.
+
+    Only something to read. No setting is ever worked out from it.
+    """
+
+    __tablename__ = "feedback_summary"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    generated_at: Mapped[datetime] = mapped_column(UtcDateTime)
+    model: Mapped[str] = mapped_column(String(64))
+    model_seconds: Mapped[float | None] = mapped_column(Float)
+    # How many notes it was picked from.
+    note_count: Mapped[int] = mapped_column(Integer)
+    # Identifies the notes it was picked from. When the notes change, it is out of date.
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    # The picked notes as they read at the time: [{"about", "text"}], most telling first.
+    picked: Mapped[list] = mapped_column(JSON)
 
 
 class CalibrationState(Base):

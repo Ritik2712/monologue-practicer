@@ -53,13 +53,15 @@ export function AdjustmentNotice({
 type FeedbackSectionProps = {
   analysis: AnalysisResult;
   tools: FeedbackTools;
+  /** True when the result is a reference recording, not one of your own takes. */
+  reference?: boolean;
 };
 
 /**
  * Everything the user has said about this result, in one place, with what each piece does.
  * The controls for saying it sit next to the pauses, phrases and corrections themselves.
  */
-export function FeedbackSection({ analysis, tools }: FeedbackSectionProps) {
+export function FeedbackSection({ analysis, tools, reference = false }: FeedbackSectionProps) {
   const { state, store } = tools;
   const overall = state.items.find((item) => item.targetKind === "recording");
   const calibration = state.calibration.status === "ready" ? state.calibration.data : null;
@@ -68,8 +70,12 @@ export function FeedbackSection({ analysis, tools }: FeedbackSectionProps) {
   return (
     <Section
       id="feedback-heading"
-      title="Your feedback on this result"
-      description="Tell the app where it got this recording wrong. Use the feedback lists beside each pause, phrase and correction above; what you have said is gathered here. It is stored on this device only and never sent anywhere."
+      title={reference ? "Your feedback on this reference" : "Your feedback on this result"}
+      description={
+        reference
+          ? "Tell the app where it measured this reference wrong. Use the feedback list beside each pause and “Report a problem” on each phrase above; what you have said is gathered here. It is stored on this device only and never sent anywhere."
+          : "Tell the app where it got this recording wrong. Use the feedback lists beside each pause, phrase and correction above; what you have said is gathered here. It is stored on this device only and never sent anywhere."
+      }
     >
       <AdjustmentNotice adjustments={state.adjustments} onDismiss={() => store.dismissAdjustments()} />
 
@@ -124,9 +130,9 @@ export function FeedbackSection({ analysis, tools }: FeedbackSectionProps) {
       )}
 
       <p className={`text-xs ${MUTED}`}>
-        What feedback does: a label on a pause changes how the coaching reads that pause, and
-        never the pause itself. A report of a mistake counts towards adjusting one setting, which
-        moves only after several reports agree
+        {reference
+          ? "What feedback on a reference does: corrected words make a new revision of the reference, which your takes are then lined up with. A report of a mistake counts towards adjusting one setting. But a reference is a different kind of sound from your own microphone, so that setting moves only once a take of yours shows the same thing, and only after several reports agree"
+          : "What feedback does: a label on a pause changes how the coaching reads that pause, and never the pause itself. A report of a mistake counts towards adjusting one setting, which moves only after several reports agree"}
         {minPause
           ? ` (the minimum pause is ${formatSetting(minPause.value, minPause.digits, minPause.unit)} at the moment)`
           : ""}

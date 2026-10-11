@@ -5,14 +5,14 @@
       "name": "frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
-      "port": 3210,
+      "port": 1234,
       "autoPort": true
     },
     {
       "name": "api",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "--project", "backend", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "8000"],
-      "port": 8000
+      "runtimeArgs": ["run", "--project", "backend", "uvicorn", "app.main:app", "--app-dir", "backend", "--port", "4321"],
+      "port": 4321
     }
   ]
 }

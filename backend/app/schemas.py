@@ -20,9 +20,11 @@ JobStage = Literal[
     "transcribing",
     "measuring_audio",
     "generating_feedback",
+    "summarising_feedback",
 ]
 # "analysis" measures a recording. "coaching" only rewrites the coaching of a stored analysis.
-JobKind = Literal["analysis", "coaching"]
+# "summary" asks the AI model to pick the most telling of the notes written with feedback.
+JobKind = Literal["analysis", "coaching", "summary"]
 # What a recording is for. A "take" is the user's own attempt. A "reference" is a recording
 # they supply to compare their takes against, such as the original performance.
 Role = Literal["take", "reference"]
@@ -583,6 +585,8 @@ class PendingReports(ApiModel):
     recordings: int
     # How many reports the larger side needs before the setting can move.
     needed: int
+    # How many reports on the larger side are about the user's own takes, not a reference.
+    take_reports: int = 0
 
 
 class CalibratedSetting(ApiModel):
@@ -618,6 +622,8 @@ class FixedSetting(ApiModel):
 class CalibrationRules(ApiModel):
     min_reports: int
     min_recordings: int
+    # Reports about the user's own takes that an adjustment needs among those that agree.
+    min_take_reports: int
     min_agreement: float
     window: int
     reversal_reports: int
@@ -727,7 +733,7 @@ class JobStatus(ApiModel):
     cancel_requested: bool
     error: JobError | None
     # Fetch the result from /api/analyses/{analysisId}. An analysis job has it once it has
-    # succeeded; a coaching job has it from the start.
+    # succeeded; a coaching job has it from the start; a summary job never has one.
     analysis_id: str | None
     # Set when this job analyses the kept recording of an earlier analysis again.
     source_analysis_id: str | None = None
@@ -741,6 +747,54 @@ class JobStatus(ApiModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+
+# --- Summary of the feedback -------------------------------------------------------------
+
+
+class SummaryFact(ApiModel):
+    """One thing the stored feedback adds up to, counted and written by code."""
+
+    id: str
+    text: str
+
+
+class SummaryNote(ApiModel):
+    """A note the user wrote with a piece of feedback, and what that feedback was about."""
+
+    about: str
+    text: str
+
+
+class NotePick(ApiModel):
+    """The notes the AI model picked out as the most telling, shown word for word."""
+
+    # As they read when they were picked, the most telling first.
+    notes: list[SummaryNote]
+    model: str
+    model_seconds: float | None
+    generated_at: datetime
+    # How many notes it picked from.
+    note_count: int
+    # True when the notes have changed since.
+    stale: bool
+
+
+class FeedbackSummary(ApiModel):
+    feedback_count: int
+    # Counted by code each time this is asked for, so always current.
+    facts: list[SummaryFact]
+    # The most recent notes, newest last: what the AI model is given, and nothing else.
+    notes: list[SummaryNote]
+    # Every note there is, including any too old to be listed.
+    note_count: int
+    # The listed notes long enough to say something: the ones the AI model is offered.
+    pickable_notes: int
+    # The AI model is only asked once it can be offered at least this many.
+    min_notes: int
+    picked: NotePick | None
+    # The request to the AI model, while it is waiting or running, or after it failed.
+    job: JobStatus | None
 
 
 class ErrorDetail(ApiModel):

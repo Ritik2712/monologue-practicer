@@ -14,7 +14,7 @@ export function BackendNotice({ health, onCheckAgain }: { health: HealthState; o
     return (
       <Notice kind="warning" action={again}>
         The local backend is not running, so nothing can be analysed yet. In a terminal, run:
-        <Command>cd backend && uv run uvicorn app.main:app --port 8000</Command>
+        <Command>cd backend && uv run uvicorn app.main:app --port 4321</Command>
       </Notice>
     );
   }

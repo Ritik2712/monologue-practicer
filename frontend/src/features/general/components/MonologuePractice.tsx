@@ -17,6 +17,7 @@ import {
 } from "../useGeneralPractice";
 import { validateAudioFile } from "../validation";
 import { BackendNotice } from "./BackendNotice";
+import { CalibrationPanel } from "./CalibrationPanel";
 import { FOCUS_RING, MUTED, Notice } from "./parts";
 import { ReferenceComparison } from "./ReferenceComparison";
 import { ReferenceLibrary } from "./ReferenceLibrary";
@@ -39,10 +40,13 @@ export function MonologuePractice() {
   const { state, store } = useGeneralStore();
   const { state: recorderState, recorder } = useRecorder();
   const { health, refresh: refreshHealth } = useBackendHealth();
-  // Only the calibration is needed here: feedback itself is given in General Practice.
-  const { state: feedbackState } = useFeedback(null);
+  const referenceDetail =
+    state.referenceDetail.status === "ready" ? state.referenceDetail.analysis : null;
+  // On this screen feedback is about the reference being studied. Feedback on a take is
+  // given in General Practice, where its coaching is.
+  const feedback = useFeedback(referenceDetail?.analysisId ?? null);
   const calibration =
-    feedbackState.calibration.status === "ready" ? feedbackState.calibration.data : null;
+    feedback.state.calibration.status === "ready" ? feedback.state.calibration.data : null;
   const takeSelectId = useId();
 
   const [language, setLanguage] = useState<LanguageHint>("auto");
@@ -58,8 +62,6 @@ export function MonologuePractice() {
   const reference = state.references.items.find(
     (item) => item.analysisId === state.selectedReferenceId,
   );
-  const referenceDetail =
-    state.referenceDetail.status === "ready" ? state.referenceDetail.analysis : null;
   // Only one of your own takes is set against the reference.
   const take =
     state.viewed.status === "ready" && state.viewed.analysis.role === "take"
@@ -168,7 +170,8 @@ export function MonologuePractice() {
         {referenceDetail && (
           <details className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
             <summary className={`cursor-pointer rounded font-medium ${FOCUS_RING}`}>
-              Study this reference: its pauses, pace, loudness and pitch
+              Study this reference: its pauses, pace, loudness and pitch, and correct what the
+              app got wrong about it
             </summary>
             <div className="mt-4">
               <Results
@@ -185,6 +188,12 @@ export function MonologuePractice() {
                 onClose={() => {}}
                 onDelete={() => {}}
                 onDeleteAudio={() => store.deleteAudio(referenceDetail.analysisId)}
+                feedback={feedback}
+                correction={state.correction}
+                onCorrectTranscript={(corrections) =>
+                  store.correctTranscript(referenceDetail.analysisId, corrections)
+                }
+                onOpenRevision={(analysisId) => store.selectReference(analysisId)}
               />
             </div>
           </details>
@@ -319,6 +328,16 @@ export function MonologuePractice() {
           </>
         )}
       </section>
+
+      <CalibrationPanel
+        state={feedback.state}
+        store={feedback.store}
+        coach={
+          health.status === "reachable"
+            ? { status: health.health.coach, model: health.health.coachModel }
+            : null
+        }
+      />
     </div>
   );
 }

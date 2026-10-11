@@ -40,7 +40,7 @@ const generalStore = createGeneralStore({
   getStorage: localStorageOrNull,
   revokeUrl: (url) => URL.revokeObjectURL(url),
 });
-const feedbackStore = createFeedbackStore(generalApi);
+const feedbackStore = createFeedbackStore(generalApi, schedule);
 const healthMonitor = createHealthMonitor(generalApi, schedule);
 const recorder = createRecorder(browserRecorderEnv());
 
@@ -70,6 +70,7 @@ export function useFeedback(analysisId: string | null) {
   );
   useEffect(() => {
     feedbackStore.loadCalibration();
+    feedbackStore.loadSummary();
   }, []);
   useEffect(() => {
     feedbackStore.watch(analysisId);

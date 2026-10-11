@@ -109,16 +109,97 @@ def test_feedback_can_be_taken_back(client, store_result):
     assert client.delete("/api/feedback/nope").json()["detail"]["code"] == "feedback_not_found"
 
 
-def test_feedback_is_for_your_own_takes_not_for_a_reference(client, store_result):
+def test_a_mistake_in_how_a_reference_was_measured_can_be_reported(client, store_result):
+    reference_id = store_result(recording(), role="reference", title="The original")
+
+    saved = give(client, reference_id, "pause_false", "pause-1", note="music under the line")
+
+    [item] = saved["items"]
+    assert (item["effect"], item["setting"], item["direction"]) == ("report", "min_pause_ms", 1)
+    assert item["features"] == {"pause_ms": 600, "min_pause_ms": 500}
+    assert item["note"] == "music under the line"
+    # It counts, and the message says what is still missing before anything can move.
+    assert "1 of the 3 reports needed for raising it" in item["message"]
+    assert "a take of your own" in item["message"]
+
+
+@pytest.mark.parametrize(
+    ("category", "target"),
+    [("pause_intentional", "pause-1"), ("pause_accidental", "pause-1"), ("coaching_useful", "f1")],
+)
+def test_a_reference_has_no_coaching_so_it_takes_no_labels_and_no_ratings(
+    client, store_result, category, target
+):
     reference_id = store_result(recording(), role="reference", title="The original")
 
     refused = client.post(
         f"/api/analyses/{reference_id}/feedback",
-        json={"category": "pause_false", "targetId": "pause-1"},
+        json={"category": category, "targetId": target},
     )
 
     assert refused.status_code == 409
-    assert refused.json()["detail"]["code"] == "not_a_take"
+    assert refused.json()["detail"]["code"] == "not_for_reference"
+    assert client.get(f"/api/analyses/{reference_id}/feedback").json()["items"] == []
+
+
+def test_reports_on_references_alone_never_move_a_setting(client, store_result):
+    references = [
+        store_result(recording(silences=SILENCES), role="reference", title=f"Clip {number}")
+        for number in (1, 2)
+    ]
+    for number in range(4):
+        update = give(
+            client,
+            references[number % 2],
+            "pause_missed",
+            "seg-1",
+            atSeconds=SILENCES[number // 2][0] + 0.2,
+        )
+
+    calibration = update["calibration"]
+    assert update["adjustments"] == []
+    assert values(calibration) == DEFAULT_VALUES
+    pause = setting(calibration, "min_pause_ms")
+    assert pause["pending"] == {
+        "raiseCount": 0,
+        "lowerCount": 4,
+        "recordings": 2,
+        "needed": 3,
+        "takeReports": 0,
+    }
+    assert "4 of the 3 reports needed for lowering it" in pause["status"]
+    assert "All of them are about reference recordings" in pause["status"]
+
+
+def test_a_report_on_an_own_take_lets_the_reports_on_references_count(client, store_result):
+    reference_id = store_result(recording(silences=SILENCES), role="reference", title="Clip")
+    take_id = store_result(recording(silences=SILENCES))
+    for silence in SILENCES[:2]:
+        waiting = give(client, reference_id, "pause_missed", "seg-1", atSeconds=silence[0] + 0.2)
+    assert waiting["adjustments"] == []
+
+    update = give(client, take_id, "pause_missed", "seg-1", atSeconds=SILENCES[0][0] + 0.2)
+
+    [change] = update["adjustments"]
+    assert (change["setting"], change["oldValue"], change["newValue"]) == (
+        "min_pause_ms",
+        500,
+        400,
+    )
+    assert (change["agreeingCount"], change["recordingCount"]) == (3, 2)
+
+
+def test_the_wpm_review_of_a_reference_does_not_speak_of_what_you_said(client, store_result):
+    reference_id = store_result(recording(), role="reference", title="The original")
+
+    saved = give(client, reference_id, "wpm_too_high", "seg-2")
+
+    [item] = saved["items"]
+    texts = " ".join(check["text"] for check in item["review"]["checks"])
+    assert "A word that was not said" in texts
+    assert "what is said in the recording" in texts
+    assert "If the speaker was still speaking" in texts
+    assert "you said" not in texts and "you were" not in texts
 
 
 def test_bad_feedback_is_refused_in_the_usual_error_shape(client, store_result):
@@ -201,6 +282,7 @@ def test_a_fresh_install_says_it_is_still_calibrating_and_shows_every_value(clie
     assert calibration["rules"] == {
         "minReports": 3,
         "minRecordings": 2,
+        "minTakeReports": 1,
         "minAgreement": 0.75,
         "window": 10,
         "reversalReports": 5,
@@ -218,7 +300,13 @@ def test_two_reports_change_nothing_and_the_app_does_not_claim_to_have_learned(
     assert values(calibration) == DEFAULT_VALUES
     assert calibration["pendingReportCount"] == 2
     pause = setting(calibration, "min_pause_ms")
-    assert pause["pending"] == {"raiseCount": 0, "lowerCount": 2, "recordings": 2, "needed": 3}
+    assert pause["pending"] == {
+        "raiseCount": 0,
+        "lowerCount": 2,
+        "recordings": 2,
+        "needed": 3,
+        "takeReports": 2,
+    }
     assert "2 of the 3 reports needed for lowering it" in pause["status"]
 
 

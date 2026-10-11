@@ -7,6 +7,7 @@ device: no paid APIs, no cloud services, no accounts.
 > (compare your take with the original recording), **General Practice** (record or upload
 > your voice, see it measured, and get coaching for the next take), and **feedback with
 > calibration** (tell the app where it was wrong; it adjusts, slowly and visibly).
+> Start all of it with one command: `./run.sh`.
 
 How the project works, file by file, and why each design decision was made:
 
@@ -44,10 +45,14 @@ How the project works, file by file, and why each design decision was made:
   result.
 - **Feedback** on every result of your own, next to the thing it is about. On a pause:
   intentional, accidental, "not a pause: I was still speaking", or "too short to split the
-  phrase". On a phrase: a pause was missed (pick the silence the app heard), the WPM looks
-  too high or too low, or the words are wrong (type them as you said them). On a
-  correction: useful or not useful. Feedback is optional and never changes a measurement
-  that is already stored.
+  phrase". On a phrase: a pause was missed (pick the silence the app heard, or the word
+  the pause came after), the WPM looks too high or too low, or the words are wrong (type
+  them as you said them). On a correction: useful or not useful. Feedback is optional and
+  never changes a measurement that is already stored.
+- **Feedback on a reference**, under "Study this reference" on the Monologue screen:
+  correct its misheard words, so that your takes are lined up with the right ones, and
+  report mistakes in its pauses. A reference alone never moves a setting; a take of your
+  own has to show the same thing.
 - **Calibration**, in a panel at the bottom of General Practice. When at least three
   reports agree, from at least two recordings, one setting moves a small step inside a
   fixed range: the shortest silence that counts as a pause (500 ms by default, 250 to 800
@@ -55,6 +60,10 @@ How the project works, file by file, and why each design decision was made:
   value, what changed, why, and on how many reports, with **Undo last adjustment**, **Reset
   to defaults**, and a switch to turn automatic adjustment off. It tunes rules of thumb to
   your recordings. It does not retrain the speech recogniser or make the analysis perfect.
+- **What your feedback adds up to**, in the same panel: how much you have said and about
+  what, with the measured figures, counted by the app's own code and always current. Under
+  it, the notes you wrote. If you ask, the local AI model picks out the three most telling
+  notes; it only chooses, and the words shown are yours.
 - **Revisions.** Correcting a phrase's words makes a new result with word counts and WPM
   worked out again from your words; analysing a kept recording again uses the settings as
   they are now. Either way the earlier result stays, unchanged, and says which settings
@@ -114,6 +123,9 @@ default settings, each the first result of its own recording:
 cd backend && uv run alembic upgrade head
 ```
 
+`./run.sh` does this step by itself every time it starts the app. Also restart the worker
+after an update: it loads its code once, when it starts.
+
 ### AI coaching (optional)
 
 The app uses the Ollama model you already have. It **never downloads a model itself**. Check
@@ -135,14 +147,46 @@ shown by `ollama list`.
 
 ## Run
 
-Three programs, each in its own terminal. The checklist needs only the frontend; audio
-analysis needs all three. For AI coaching, Ollama must also be running: open the Ollama app,
-or run `ollama serve` in a fourth terminal. The worker says at start-up whether it found it.
-
-API, on http://localhost:8000:
+The app is three programs: the API, the worker and the frontend. One command starts all
+three in one terminal, with each line of output marked `[api]`, `[worker]` or `[web]`:
 
 ```bash
-cd backend && uv run uvicorn app.main:app --reload --port 8000
+./run.sh
+```
+
+It first brings the database up to date, then starts whatever is not already running, and
+says "Monologue Coach is running. Open http://localhost:1234" when the app answers. Press
+`Ctrl+C` there to stop all three. The worker finishes the step it is on and puts an
+unfinished job back in the queue; press `Ctrl+C` again to stop it at once.
+
+From any other terminal:
+
+```bash
+./run.sh status
+```
+
+```bash
+./run.sh stop
+```
+
+`stop` stops all three however they were started, including a worker left running in
+another window. The script only ever touches programs started from this folder. If port
+4321 or 1234 is in use by something else, it says what, leaves it alone, and starts
+nothing; other ports can be given as `API_PORT=5000 PORT=5001 ./run.sh`.
+
+For AI coaching, Ollama must also be running: open the Ollama app, or run `ollama serve`
+in another terminal. The script never starts it. The worker says in its first lines
+whether it found it.
+
+### The three programs by hand
+
+The same thing, each program in its own terminal. The checklist needs only the frontend;
+audio analysis needs all three.
+
+API, on http://localhost:4321:
+
+```bash
+cd backend && uv run uvicorn app.main:app --reload --port 4321
 ```
 
 Worker (runs the analysis jobs, one at a time):
@@ -151,15 +195,19 @@ Worker (runs the analysis jobs, one at a time):
 cd backend && uv run python -m app.worker
 ```
 
-Frontend, on http://localhost:3210:
+Frontend, on http://localhost:1234:
 
 ```bash
 cd frontend && npm run dev
 ```
 
-Then open http://localhost:3210 in a browser. The port is fixed on purpose: the browser
+Then open http://localhost:1234 in a browser. The port is fixed on purpose: the browser
 keeps the checklist's saved data per address, so a changing port would hide it. To use
-another port, run `PORT=4000 npm run dev`.
+another port, run `PORT=4000 npm run dev`. (The frontend's default port was 3210 before it
+became 1234: checklist history saved back then shows again under `PORT=3210 npm run dev`.)
+
+If you run the API on a port other than 4321, tell the frontend where it is: create
+`frontend/.env.local` containing `NEXT_PUBLIC_API_BASE_URL=http://localhost:<port>`.
 
 Stop any of them with `Ctrl+C`. The worker finishes its current step, puts an unfinished
 job back in the queue and exits; press `Ctrl+C` a second time to stop it immediately.
@@ -167,7 +215,7 @@ job back in the queue and exits; press `Ctrl+C` a second time to stop it immedia
 ## Health check and troubleshooting
 
 ```bash
-curl http://localhost:8000/api/health
+curl http://localhost:4321/api/health
 ```
 
 A fully working setup answers
@@ -212,75 +260,89 @@ The General Practice screen does all of this for you. The same steps by hand, wi
 and the worker running: send a recording. This prints a job with a `jobId`:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/analyses -F "audio=@/path/to/recording.m4a" -F "language=auto"
+curl -s -X POST http://localhost:4321/api/analyses -F "audio=@/path/to/recording.m4a" -F "language=auto"
 ```
 
 Ask how the job is doing (replace `JOB_ID`). Repeat until `status` is `succeeded`:
 
 ```bash
-curl -s http://localhost:8000/api/jobs/JOB_ID
+curl -s http://localhost:4321/api/jobs/JOB_ID
 ```
 
 Fetch the result, using the `analysisId` from the finished job. The coaching is under
 `coaching`:
 
 ```bash
-curl -s http://localhost:8000/api/analyses/ANALYSIS_ID
+curl -s http://localhost:4321/api/analyses/ANALYSIS_ID
 ```
 
 Have the coaching written again by the AI model. This prints a new job to follow the same
 way:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/analyses/ANALYSIS_ID/coaching
+curl -s -X POST http://localhost:4321/api/analyses/ANALYSIS_ID/coaching
 ```
 
 Add a reference recording. It is followed like any job; it gets no coaching:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/analyses -F "audio=@/path/to/original.m4a" -F "role=reference" -F "title=The original" -F "retainAudio=true"
+curl -s -X POST http://localhost:4321/api/analyses -F "audio=@/path/to/original.m4a" -F "role=reference" -F "title=The original" -F "retainAudio=true"
 ```
 
 List the reference recordings:
 
 ```bash
-curl -s "http://localhost:8000/api/analyses?role=reference"
+curl -s "http://localhost:4321/api/analyses?role=reference"
 ```
 
 Compare a take with a reference:
 
 ```bash
-curl -s http://localhost:8000/api/analyses/ANALYSIS_ID/comparison/REFERENCE_ID
+curl -s http://localhost:4321/api/analyses/ANALYSIS_ID/comparison/REFERENCE_ID
 ```
 
 Mark a pause as accidental. The answer lists the feedback on that analysis, with a
 sentence saying what each piece does, and the calibration:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/analyses/ANALYSIS_ID/feedback -H "Content-Type: application/json" -d '{"category": "pause_accidental", "targetId": "pause-1"}'
+curl -s -X POST http://localhost:4321/api/analyses/ANALYSIS_ID/feedback -H "Content-Type: application/json" -d '{"category": "pause_accidental", "targetId": "pause-1"}'
 ```
 
 See the settings in force, their allowed ranges, and the history of every change:
 
 ```bash
-curl -s http://localhost:8000/api/calibration
+curl -s http://localhost:4321/api/calibration
 ```
 
 Undo the most recent adjustment (answers `409` if there is none):
 
 ```bash
-curl -s -X POST http://localhost:8000/api/calibration/undo
+curl -s -X POST http://localhost:4321/api/calibration/undo
 ```
 
-Correct the words of a phrase. The answer is a new revision with WPM worked out again:
+Correct the words of a phrase. The answer is a new revision with WPM worked out again. It
+works on a reference too:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/analyses/ANALYSIS_ID/transcript -H "Content-Type: application/json" -d '{"corrections": [{"segmentId": "seg-1", "text": "the words as you said them"}]}'
+curl -s -X POST http://localhost:4321/api/analyses/ANALYSIS_ID/transcript -H "Content-Type: application/json" -d '{"corrections": [{"segmentId": "seg-1", "text": "the words as you said them"}]}'
+```
+
+See what all your feedback adds up to, and the notes you wrote:
+
+```bash
+curl -s http://localhost:4321/api/feedback-summary
+```
+
+Ask the AI model to pick out the most telling notes (answers `409` with fewer than five
+notes of a few words or more). Fetch the summary again a few seconds later for its pick:
+
+```bash
+curl -s -X POST http://localhost:4321/api/feedback-summary
 ```
 
 Accepted files: WAV, MP3, M4A, AAC, MP4, OGG, Opus, WebM, FLAC and AIFF, up to 50 MB and
 10 minutes. `language` can be `auto`, `en`, `hi` or `hinglish`. All endpoints are listed,
-and can be tried in the browser, at http://localhost:8000/docs.
+and can be tried in the browser, at http://localhost:4321/docs.
 
 On an Apple M2, measuring a 2-minute recording takes roughly half a minute. The first job
 after starting the worker takes a few seconds longer while the speech model loads. The AI
@@ -309,7 +371,7 @@ backend defaults, then restart the API and the worker.
 | `OLLAMA_MODEL` | `llama3.1:8b` | worker (must already be installed in Ollama) |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | worker |
 | `OLLAMA_CONTEXT_TOKENS` | `8192` | worker |
-| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` | frontend (set in `frontend/.env.local`) |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:4321` | frontend (set in `frontend/.env.local`) |
 
 The worker runs one job at a time on purpose: speech recognition uses all CPU cores and
 several hundred megabytes of memory, and the AI model several gigabytes, so two at once
@@ -332,13 +394,14 @@ slower.
 | Analysis results, their coaching, and jobs | `backend/data/monologue_coach.db` | When you delete an analysis or clear the history |
 | Your feedback on a result: labels, reports, notes, corrected words | `backend/data/monologue_coach.db` | With the analysis it is about, or one at a time with "Remove" |
 | The calibration: the adjusted settings and the history of every change | `backend/data/monologue_coach.db` | Never deleted, so that every result can be traced to the settings that made it. "Reset to defaults" puts the values back; the history stays |
+| The notes the AI model last picked out | `backend/data/monologue_coach.db`, one row | Replaced by the next pick. Not shown once the feedback they came from is deleted |
 | A later result of the same recording (a corrected transcript, or a fresh analysis) | `backend/data/monologue_coach.db`, and `backend/data/audio/` if the recording was kept | Like any other analysis. Each can be deleted on its own |
-| What the AI model is sent: the transcript and measurements, as text | Ollama's memory on this computer, while it writes the answer | This app saves it nowhere else. Whether Ollama logs anything is up to Ollama's own settings |
+| What the AI model is sent: for coaching, the transcript and measurements; for picking notes, the notes you wrote. Always as text | Ollama's memory on this computer, while it writes the answer | This app saves it nowhere else. Whether Ollama logs anything is up to Ollama's own settings |
 
 Nothing is sent off this computer. The AI model is only ever contacted at an address on this
 computer, and it is never given audio. Feedback and calibration are handled by ordinary
-code on this computer; the AI model has no part in adjusting a setting. The folder
-`backend/data/` is not tracked by git.
+code on this computer; the AI model has no part in adjusting a setting, and what it picks
+out of your notes is read by nothing. The folder `backend/data/` is not tracked by git.
 
 ## Checks
 

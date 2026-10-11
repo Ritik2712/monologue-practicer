@@ -41,6 +41,18 @@ def test_too_low_points_at_dropped_words_and_at_silences_counted_as_speaking():
     assert time.action == "report_missed_pause"
 
 
+def test_the_review_of_a_reference_is_worded_for_someone_else_speaking():
+    mine = checks(review(recording(), "seg-2", "high"))
+    theirs = checks(review(recording(), "seg-2", "high", on_reference=True))
+
+    assert "A word you did not say" in mine["The words"].text
+    assert "A word that was not said" in theirs["The words"].text
+    assert "worked out again from the corrected words" in theirs["The words"].text
+    assert "If the speaker was still speaking" in theirs["The speaking time"].text
+    # Only the wording differs: the same things are pointed at.
+    assert [c.action for c in mine.values()] == [c.action for c in theirs.values()]
+
+
 def test_a_phrase_with_nothing_to_report_offers_no_action():
     low = checks(review(recording(), "seg-2", "low"))["The speaking time"]
     high = checks(review(recording(pauses=()), "seg-1", "high"))["The speaking time"]

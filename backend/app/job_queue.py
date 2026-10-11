@@ -7,8 +7,10 @@ processed is simply a row whose status is "queued".
        │          ├──────▶ failed      (retry puts it back to queued)
        └──────────┴──────▶ cancelled
 
-There are two kinds of job. An "analysis" job measures an uploaded recording. A "coaching"
-job has no audio: it only writes the coaching of an analysis that already exists again.
+There are three kinds of job. An "analysis" job measures an uploaded recording. A "coaching"
+job has no audio: it only writes the coaching of an analysis that already exists again. A
+"summary" job has neither audio nor an analysis: it asks the AI model to pick the most
+telling of the notes written with the feedback.
 
 An analysis job can also be a fresh analysis of a recording that was kept earlier. Its
 result is stored as a new revision of that recording, next to the earlier result.
@@ -27,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import schemas, uploads
-from app.models import Analysis, Job, WorkerState
+from app.models import Analysis, Job, StoredSummary, WorkerState
 
 QUEUED = "queued"
 RUNNING = "running"
@@ -37,6 +39,7 @@ CANCELLED = "cancelled"
 
 ANALYSIS = "analysis"
 COACHING = "coaching"
+SUMMARY = "summary"
 
 TAKE = "take"
 REFERENCE = "reference"
@@ -144,6 +147,34 @@ def create_coaching_job(session: Session, analysis: Analysis, now: datetime) -> 
         language_hint="auto",
         retain_audio=False,
         analysis_id=analysis.id,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(job)
+    session.commit()
+    return job, True
+
+
+def create_summary_job(session: Session, now: datetime) -> tuple[Job, bool]:
+    """Queues a job that asks the AI model to pick the most telling of the user's notes.
+
+    Returns the job and whether it is new: if one is already waiting or running, that one
+    is returned instead.
+    """
+    active = session.execute(
+        select(Job).where(Job.kind == SUMMARY, Job.status.in_((QUEUED, RUNNING)))
+    ).scalar_one_or_none()
+    if active is not None:
+        return active, False
+    job = Job(
+        id=new_id(),
+        kind=SUMMARY,
+        status=QUEUED,
+        # A job row always says these; a summary belongs to no recording, so they mean nothing.
+        role=TAKE,
+        profile="custom",
+        language_hint="auto",
+        retain_audio=False,
         created_at=now,
         updated_at=now,
     )
@@ -354,6 +385,26 @@ def complete_coaching_job(
     return True
 
 
+def complete_summary_job(
+    session: Session, job_id: str, summary: StoredSummary, now: datetime
+) -> bool:
+    """Stores the pick in place of the one before, and marks the job succeeded.
+
+    Returns False, changing nothing, if the job was cancelled at the last moment.
+    """
+    session.merge(summary)
+    finished = session.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status == RUNNING, Job.cancel_requested.is_(False))
+        .values(status=SUCCEEDED, stage=None, finished_at=now, updated_at=now)
+    )
+    if finished.rowcount != 1:
+        session.rollback()
+        return False
+    session.commit()
+    return True
+
+
 def fail_job(
     session: Session,
     job_id: str,
@@ -534,7 +585,14 @@ def recover_orphaned_jobs(
     for job in orphans:
         has_audio = uploads.audio_exists(job.audio_path, data_dir)
         # What the job needs in order to run again: its audio, or the analysis to coach.
-        can_run = job.analysis_id is not None if job.kind == COACHING else has_audio
+        # A summary needs nothing but the stored feedback.
+        can_run = (
+            True
+            if job.kind == SUMMARY
+            else job.analysis_id is not None
+            if job.kind == COACHING
+            else has_audio
+        )
         job.stage = None
         job.heartbeat_at = None
         job.updated_at = now
@@ -554,11 +612,10 @@ def recover_orphaned_jobs(
                 job.audio_path = None
             job.status = FAILED
             job.error_code = "worker_stopped"
-            job.error_message = (
-                "The worker stopped while writing the coaching."
-                if job.kind == COACHING
-                else "The worker stopped while analysing this recording."
-            )
+            job.error_message = {
+                COACHING: "The worker stopped while writing the coaching.",
+                SUMMARY: "The worker stopped while writing the summary.",
+            }.get(job.kind, "The worker stopped while analysing this recording.")
             job.error_retryable = has_audio
             job.finished_at = now
             ended += 1

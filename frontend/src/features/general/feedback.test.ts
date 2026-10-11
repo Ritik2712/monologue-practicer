@@ -8,15 +8,28 @@ import {
   labelsChanged,
   madeWithOlderSettings,
   minPauseSeconds,
+  bareWord,
+  PAUSE_CHOICES,
   pauseFeedback,
   pauseFloorText,
+  REFERENCE_PAUSE_CHOICES,
   revisionLabel,
   segmentFeedback,
   settingsMismatch,
+  silenceNear,
   silencesIn,
+  summaryHint,
   wordBefore,
+  wordGaps,
 } from "./feedback";
-import type { AnalysisResult, Calibration, Coaching, FeedbackItem } from "./types";
+import type {
+  AnalysisResult,
+  Calibration,
+  Coaching,
+  FeedbackItem,
+  ShortSilence,
+  SpeechSegment,
+} from "./types";
 
 function item(overrides: Partial<FeedbackItem>): FeedbackItem {
   return {
@@ -202,6 +215,25 @@ describe("wording", () => {
     ).toBe("Correction “Slow your overall pace”: rated not useful");
   });
 
+  it("says which word a missed pause came after, looking only at that phrase", () => {
+    const spoken = {
+      ...analysis,
+      words: [
+        { text: "the", startSeconds: 5.0, endSeconds: 5.4, segmentId: "seg-1" },
+        { text: "market", startSeconds: 5.5, endSeconds: 6.0, segmentId: "seg-2" },
+        { text: "today", startSeconds: 6.4, endSeconds: 6.9, segmentId: "seg-2" },
+      ],
+    } as unknown as AnalysisResult;
+    const missed = (atSeconds: number) =>
+      item({ category: "pause_missed", targetKind: "segment", targetId: "seg-2", atSeconds });
+
+    expect(describeFeedback(missed(6.2), spoken)).toBe(
+      "Segment 2: a pause was missed at 0:06.2, after “market”",
+    );
+    // Before the phrase's first word is over there is no word to name: not "the".
+    expect(describeFeedback(missed(5.6), spoken)).toBe("Segment 2: a pause was missed at 0:05.6");
+  });
+
   it("still says something for a target the result no longer has", () => {
     expect(describeFeedback(item({ targetId: "pause-9" }), analysis)).toBe(
       "A pause: reported as not a pause",
@@ -212,5 +244,122 @@ describe("wording", () => {
     expect(revisionLabel(1, null)).toBe("Revision 1: first analysis");
     expect(revisionLabel(2, "transcript_corrected")).toBe("Revision 2: transcript corrected");
     expect(revisionLabel(3, "reanalysed")).toBe("Revision 3: analysed again");
+  });
+});
+
+describe("saying where a missed pause was by picking a word", () => {
+  const phrase = { id: "seg-2", startSeconds: 4.0, endSeconds: 8.0 } as SpeechSegment;
+  const spoken = {
+    words: [
+      { text: "elsewhere", startSeconds: 1.0, endSeconds: 1.5, segmentId: "seg-1" },
+      // Out of order on purpose: the gaps follow the time, not the list.
+      { text: "home", startSeconds: 7.0, endSeconds: 7.6, segmentId: "seg-2" },
+      { text: "going", startSeconds: 4.1, endSeconds: 4.6, segmentId: "seg-2" },
+      { text: "to", startSeconds: 4.6, endSeconds: 4.8, segmentId: "seg-2" },
+      { text: "market", startSeconds: 4.8, endSeconds: 5.4, segmentId: "seg-2" },
+    ],
+  } as unknown as AnalysisResult;
+
+  it("lists the gap after every word but the last, each at the moment between two words", () => {
+    expect(wordGaps(spoken, phrase)).toEqual([
+      { index: 0, before: "going", after: "to", atSeconds: 4.6 },
+      { index: 1, before: "to", after: "market", atSeconds: 4.8 },
+      { index: 2, before: "market", after: "home", atSeconds: 6.2 },
+    ]);
+  });
+
+  it("shows a word without the punctuation the recogniser attaches to it", () => {
+    expect(bareWord("Skyler.")).toBe("Skyler");
+    expect(bareWord("“No,”")).toBe("No");
+    expect(bareWord("don't")).toBe("don't");
+    expect(bareWord("रुको,")).toBe("रुको");
+    // Nothing but punctuation: better shown as it is than as nothing.
+    expect(bareWord("...")).toBe("...");
+    const punctuated = {
+      words: [
+        { text: "danger,", startSeconds: 4.1, endSeconds: 4.6, segmentId: "seg-2" },
+        { text: "Skyler.", startSeconds: 4.7, endSeconds: 5.2, segmentId: "seg-2" },
+      ],
+    } as unknown as AnalysisResult;
+    expect(wordGaps(punctuated, phrase)[0]).toMatchObject({ before: "danger", after: "Skyler" });
+    expect(wordBefore(punctuated, 5.0, "seg-2")).toBe("Skyler");
+  });
+
+  it("has no gap to offer in a phrase of one word, or of none", () => {
+    expect(wordGaps(spoken, { id: "seg-1", startSeconds: 0, endSeconds: 2 } as SpeechSegment)).toEqual([]);
+    expect(wordGaps(spoken, { id: "seg-9", startSeconds: 0, endSeconds: 2 } as SpeechSegment)).toEqual([]);
+  });
+
+  it("keeps a gap inside the phrase when the recogniser's word times stray out of it", () => {
+    const strayed = {
+      words: [
+        { text: "so", startSeconds: 3.2, endSeconds: 3.4, segmentId: "seg-2" },
+        { text: "then", startSeconds: 3.5, endSeconds: 3.9, segmentId: "seg-2" },
+      ],
+    } as unknown as AnalysisResult;
+    expect(wordGaps(strayed, phrase)[0].atSeconds).toBe(4.0);
+  });
+
+  const silence = (startSeconds: number, endSeconds: number) =>
+    ({ startSeconds, endSeconds, durationSeconds: endSeconds - startSeconds, segmentId: "seg-2" }) as ShortSilence;
+
+  it("previews the silence a report will be about: the nearest within half a second", () => {
+    const silences = [silence(5.5, 5.9), silence(6.3, 6.5)];
+    expect(silenceNear(silences, 6.2)).toBe(silences[1]);
+    expect(silenceNear(silences, 5.6)).toBe(silences[0]);
+    // Half a second either side still counts; any further does not.
+    expect(silenceNear(silences, 5.0)).toBe(silences[0]);
+    expect(silenceNear(silences, 4.9)).toBeNull();
+    expect(silenceNear([], 6.2)).toBeNull();
+  });
+});
+
+describe("feedback on a reference recording", () => {
+  it("offers the two reports about a pause, and neither label", () => {
+    expect(REFERENCE_PAUSE_CHOICES.map((choice) => choice.category)).toEqual([
+      "pause_false",
+      "split_wrong",
+    ]);
+    expect(PAUSE_CHOICES.map((choice) => choice.category)).toContain("pause_intentional");
+  });
+});
+
+describe("the line beside the button that asks the AI model to pick notes", () => {
+  const idle = {
+    working: false,
+    queued: false,
+    workerAlive: true,
+    cancelRequested: false,
+    pickableNotes: 8,
+    minNotes: 5,
+    unavailable: null,
+  };
+
+  it("says what the model would be given, and that it only chooses", () => {
+    expect(summaryHint(idle)).toContain("is given your notes as text and nothing else");
+    expect(summaryHint(idle)).toContain("the words shown are yours");
+    expect(summaryHint(idle)).toContain("no setting changes");
+  });
+
+  it("says why the model cannot be asked", () => {
+    expect(summaryHint({ ...idle, pickableNotes: 2 })).toContain(
+      "at least 5 notes of a few words or more (there are 2)",
+    );
+    expect(summaryHint({ ...idle, pickableNotes: 1 })).toContain("(there is 1)");
+    expect(summaryHint({ ...idle, unavailable: "Ollama is not running" })).toContain(
+      "not available right now: Ollama is not running",
+    );
+  });
+
+  it("follows a request that is waiting or being answered", () => {
+    const working = { ...idle, working: true };
+    expect(summaryHint({ ...working, queued: true })).toBe(
+      "Waiting for the worker to finish what it is doing.",
+    );
+    expect(summaryHint(working)).toContain("The AI model is choosing");
+    expect(summaryHint({ ...working, queued: true, workerAlive: false })).toContain(
+      "the analysis worker is not running",
+    );
+    expect(summaryHint({ ...working, cancelRequested: true })).toBe("Stopping…");
   });
 });

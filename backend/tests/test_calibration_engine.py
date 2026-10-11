@@ -18,6 +18,7 @@ def report(
     *,
     recording: str = "a",
     setting=MIN_PAUSE,
+    own_take: bool = True,
 ) -> engine.Report:
     return engine.Report(
         feedback_id=f"fb-{number}",
@@ -26,12 +27,15 @@ def report(
         evidence=evidence,
         recording_id=recording,
         created_at=START + timedelta(minutes=number),
+        own_take=own_take,
     )
 
 
-def missed(number: int, gap_ms: float, recording: str = "a") -> engine.Report:
+def missed(
+    number: int, gap_ms: float, recording: str = "a", own_take: bool = True
+) -> engine.Report:
     """ "A pause was missed": the detector heard a silence of `gap_ms`, under the minimum."""
-    return report(number, -1, gap_ms, recording=recording)
+    return report(number, -1, gap_ms, recording=recording, own_take=own_take)
 
 
 def false_pause(number: int, pause_ms: float, recording: str = "a") -> engine.Report:
@@ -68,6 +72,40 @@ def test_three_agreeing_reports_from_two_recordings_move_it():
     reports = [missed(0, 400, "a"), missed(1, 400, "a"), missed(2, 400, "b")]
 
     assert decide(reports) == 400
+
+
+def test_reports_on_reference_recordings_alone_move_nothing():
+    """A film clip is a different kind of sound from the user's own microphone. However
+    many reports it gathers, the settings wait for one of the user's own takes to agree."""
+    reports = [missed(i, 400, f"reference-{i % 2}", own_take=False) for i in range(6)]
+
+    counted = engine.tally(MIN_PAUSE, 500, reports)
+
+    assert (counted.lower_count, counted.recordings, counted.take_reports) == (6, 2, 0)
+    assert counted.enough is False
+    assert decide(reports) is None
+
+
+def test_one_report_on_an_own_take_lets_the_reports_on_references_count():
+    reports = [
+        missed(0, 400, "reference", own_take=False),
+        missed(1, 420, "reference", own_take=False),
+        missed(2, 410, "my-take"),
+    ]
+
+    counted = engine.tally(MIN_PAUSE, 500, reports)
+
+    assert (counted.take_reports, counted.enough) == (1, True)
+    assert decide(reports) == 400
+
+
+def test_a_take_report_pointing_the_other_way_does_not_stand_in_for_one_that_agrees():
+    reports = [missed(i, 400, f"reference-{i % 2}", own_take=False) for i in range(4)]
+    reports.append(false_pause(4, 600, "my-take"))
+
+    counted = engine.tally(MIN_PAUSE, 500, reports)
+
+    assert (counted.direction, counted.take_reports, counted.enough) == (-1, 0, False)
 
 
 def test_reports_that_disagree_too_much_change_nothing():

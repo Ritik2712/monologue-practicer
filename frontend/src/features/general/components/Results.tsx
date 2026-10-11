@@ -80,8 +80,9 @@ type ResultsProps = {
   onDelete: () => void;
   onDeleteAudio: () => void;
   /**
-   * The feedback on this result and the calibration it feeds. Left out for a reference
-   * recording, which takes no feedback.
+   * The feedback on this result and the calibration it feeds. A reference recording takes
+   * reports of mistakes in its measurement, but its pauses are not labelled and it has no
+   * coaching to rate.
    */
   feedback?: FeedbackTools;
   /** How saving a corrected transcript is going. */
@@ -196,7 +197,7 @@ export function Results({
               : `${formatDateTime(analysis.createdAt)} · ${profileName(analysis.profile)} profile`}{" "}
             · {language} · {formatSpan(analysis.durationSeconds)}
           </p>
-          {!isReference && (analysis.revision > 1 || otherRevisions.length > 0) && (
+          {(analysis.revision > 1 || otherRevisions.length > 0) && (
             <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm">
               <span className="font-medium">
                 {revisionLabel(analysis.revision, analysis.revisionReason)}
@@ -206,11 +207,13 @@ export function Results({
                   ? "Other results from the same recording:"
                   : "The earlier results from this recording were deleted."}
               </span>
-              {otherRevisions.map((item) => (
-                <LinkButton key={item.analysisId} onClick={() => onOpenRevision?.(item.analysisId)}>
-                  {revisionLabel(item.revision, item.reason)}
-                </LinkButton>
-              ))}
+              {/* For a reference, opening another revision means comparing with that one. */}
+              {onOpenRevision &&
+                otherRevisions.map((item) => (
+                  <LinkButton key={item.analysisId} onClick={() => onOpenRevision(item.analysisId)}>
+                    {revisionLabel(item.revision, item.reason)}
+                  </LinkButton>
+                ))}
             </p>
           )}
         </div>
@@ -429,6 +432,7 @@ export function Results({
                   correction,
                   playheadSeconds: canPlay ? currentTime : null,
                   onCorrectTranscript,
+                  reference: isReference,
                 }
               : undefined
           }
@@ -533,6 +537,7 @@ export function Results({
                             item={pauseFeedback(items, pause.id)}
                             disabled={feedback.state.saving}
                             store={feedback.store}
+                            reference={isReference}
                           />
                         </td>
                       )}
@@ -555,10 +560,12 @@ export function Results({
             )}
             {feedback && (
               <p className={`text-xs ${MUTED}`}>
-                Your feedback never changes a pause that was measured. Calling a pause
-                intentional or accidental changes only how the coaching reads it; the pause stays
-                in every figure above. To report a pause the app did not detect, use “Report a
-                problem” on its phrase in the Pace section.
+                Your feedback never changes a pause that was measured.{" "}
+                {isReference
+                  ? "A report that a pause is not one stays on record and counts towards the minimum pause setting; the pause stays in every figure above."
+                  : "Calling a pause intentional or accidental changes only how the coaching reads it; the pause stays in every figure above."}{" "}
+                To report a pause the app did not detect, use “Report a problem” on its phrase in
+                the Pace section.
               </p>
             )}
           </>
@@ -655,7 +662,7 @@ export function Results({
       </Section>
 
       {/* --- Feedback ------------------------------------------------------------------ */}
-      {!isReference && feedback && <FeedbackSection analysis={analysis} tools={feedback} />}
+      {feedback && <FeedbackSection analysis={analysis} tools={feedback} reference={isReference} />}
 
       {/* --- Compare ------------------------------------------------------------------- */}
       {!isReference && (
@@ -750,9 +757,10 @@ export function Results({
             <p className={`mt-2 text-xs ${MUTED}`}>
               Recognised by the “{analysis.pipeline.speechModel}” model on this device. It can
               mishear words, which changes word counts and WPM.
-              {!isReference &&
-                feedback &&
-                " To correct a phrase, use “Report a problem” on it in the Pace section: the counts are then worked out again from your words."}
+              {feedback &&
+                (isReference
+                  ? " To correct a phrase, use “Report a problem” on it in the Pace section: the counts are then worked out again from the corrected words."
+                  : " To correct a phrase, use “Report a problem” on it in the Pace section: the counts are then worked out again from your words.")}
             </p>
           </details>
         )}
@@ -790,12 +798,13 @@ export function Results({
 type SegmentsTableProps = {
   analysis: AnalysisResult;
   playButton: (label: string, start: number, end?: number) => React.ReactNode;
-  /** What reporting a problem with a phrase needs. Left out for a reference recording. */
+  /** What reporting a problem with a phrase needs. Left out when feedback cannot be given. */
   report?: {
     tools: FeedbackTools;
     correction: CorrectionState;
     playheadSeconds: number | null;
     onCorrectTranscript: (corrections: SegmentCorrection[]) => void;
+    reference?: boolean;
   };
 };
 
@@ -927,6 +936,7 @@ function SegmentsTable({ analysis, playButton, report }: SegmentsTableProps) {
           playButton={playButton}
           onCorrectTranscript={report.onCorrectTranscript}
           onClose={() => setOpenId(null)}
+          reference={report.reference}
         />
       </div>
     )}

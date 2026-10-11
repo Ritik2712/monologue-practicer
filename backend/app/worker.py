@@ -19,7 +19,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import feedback, job_queue, schemas, uploads
+from app import feedback, feedback_summary, job_queue, schemas, uploads
 from app.calibration import store as calibration
 from app.coaching.coach import Coach, CoachingUnavailable
 from app.config import settings
@@ -44,6 +44,7 @@ STAGE_DESCRIPTIONS = {
     "transcribing": "transcribing",
     "measuring_audio": "measuring the audio",
     "generating_feedback": "writing the coaching",
+    "summarising_feedback": "picking out notes",
 }
 
 
@@ -122,6 +123,8 @@ class Worker:
         try:
             if kind == job_queue.COACHING:
                 saved = self._write_coaching_again(job_id, analysis_id, on_stage, check)
+            elif kind == job_queue.SUMMARY:
+                saved = self._sum_up_feedback(job_id, on_stage, check)
             else:
                 saved = self._analyse(job_id, audio_path, profile, language, role, on_stage, check)
             if not saved:
@@ -264,6 +267,30 @@ class Worker:
         check()
         with self.session_factory() as session:
             return job_queue.complete_coaching_job(session, job_id, coaching, self.clock())
+
+    def _sum_up_feedback(
+        self, job_id: str, on_stage: Callable[[str], None], check: Callable[[], None]
+    ) -> bool:
+        """Asks the language model to pick the most telling notes. False if cancelled.
+
+        Anything short of a usable answer fails the job and stores nothing: the notes
+        themselves are on the screen either way. No setting is touched.
+        """
+        with self.session_factory() as session:
+            digest = feedback_summary.build_digest(session)
+        on_stage("summarising_feedback")
+        try:
+            picked = feedback_summary.pick(self.coach.llm, digest, check)
+        except feedback_summary.SummaryUnavailable as error:
+            raise PipelineError(error.code, error.message) from None
+        check()
+        with self.session_factory() as session:
+            return job_queue.complete_summary_job(
+                session,
+                job_id,
+                feedback_summary.to_row(digest, picked, self.clock()),
+                self.clock(),
+            )
 
     def _fail(self, job_id: str, code: str, message: str, retryable: bool) -> None:
         with self.session_factory() as session:

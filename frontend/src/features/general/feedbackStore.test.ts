@@ -1,8 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError, type GeneralApi } from "./api";
-import { createFeedbackStore } from "./feedbackStore";
-import type { Calibration, CalibrationChange, FeedbackItem, FeedbackUpdate } from "./types";
+import { createFeedbackStore, SUMMARY_POLL_MS } from "./feedbackStore";
+import type {
+  Calibration,
+  CalibrationChange,
+  FeedbackItem,
+  FeedbackSummary,
+  FeedbackUpdate,
+  JobStatus,
+} from "./types";
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -15,8 +22,29 @@ const adjustment = (version: number) =>
 const update = (items: FeedbackItem[], version = 1, adjustments: CalibrationChange[] = []) =>
   ({ items, adjustments, calibration: calibration(version) }) satisfies FeedbackUpdate;
 
+const summaryJob = (status: JobStatus["status"]) =>
+  ({ jobId: "job-1", kind: "summary", status, canCancel: true }) as JobStatus;
+const summary = (overrides: Partial<FeedbackSummary> = {}) =>
+  ({
+    feedbackCount: 6,
+    facts: [{ id: "f1", text: "6 pieces of feedback in all, on 2 recordings." }],
+    notes: [{ about: "a pause you said the app missed", text: "a clear breath here" }],
+    noteCount: 6,
+    pickableNotes: 6,
+    minNotes: 5,
+    picked: null,
+    job: null,
+    ...overrides,
+  }) satisfies FeedbackSummary;
+const picked = (text: string) =>
+  ({ notes: [{ about: "a pause you said the app missed", text }], stale: false }) as unknown as FeedbackSummary["picked"];
+
 function setup() {
+  const timers: { callback: () => void; ms: number }[] = [];
   const api = {
+    getFeedbackSummary: vi.fn().mockResolvedValue(summary()),
+    requestFeedbackSummary: vi.fn().mockResolvedValue(summary({ job: summaryJob("queued") })),
+    cancelJob: vi.fn().mockResolvedValue(summaryJob("cancelled")),
     getFeedback: vi.fn().mockResolvedValue(update([])),
     giveFeedback: vi.fn().mockResolvedValue(update([item("fb-1")])),
     deleteFeedback: vi.fn().mockResolvedValue(update([])),
@@ -25,8 +53,21 @@ function setup() {
     resetCalibration: vi.fn().mockResolvedValue(calibration(4)),
     setAdaptive: vi.fn().mockResolvedValue(calibration(1, false)),
   };
-  const store = createFeedbackStore(api as unknown as GeneralApi);
-  return { store, api, state: () => store.getSnapshot() };
+  const store = createFeedbackStore(api as unknown as GeneralApi, (callback, ms) => {
+    const timer = { callback, ms };
+    timers.push(timer);
+    return () => {
+      const index = timers.indexOf(timer);
+      if (index >= 0) timers.splice(index, 1);
+    };
+  });
+  /** Fires the one pending check on a summary being written and waits for its answer. */
+  async function tick() {
+    expect(timers).toHaveLength(1);
+    timers.shift()?.callback();
+    await settle();
+  }
+  return { store, api, timers, tick, state: () => store.getSnapshot() };
 }
 
 describe("showing the feedback of the result on view", () => {
@@ -246,5 +287,184 @@ describe("the calibration", () => {
     await settle();
 
     expect(state()).toMatchObject({ saving: false, error: "There is no adjustment to undo." });
+  });
+});
+
+describe("the summary of all the feedback", () => {
+  async function withSummary() {
+    const context = setup();
+    context.store.loadSummary();
+    await settle();
+    return context;
+  }
+
+  it("loads the facts the app has counted", async () => {
+    const { store, api, state, timers } = setup();
+
+    store.loadSummary();
+    expect(state().summary).toEqual({ status: "loading" });
+    await settle();
+
+    expect(api.getFeedbackSummary).toHaveBeenCalledTimes(1);
+    expect(state().summary).toMatchObject({
+      status: "ready",
+      asking: false,
+      error: null,
+      data: { feedbackCount: 6, facts: [{ id: "f1" }], notes: [{ text: "a clear breath here" }] },
+    });
+    // The AI model is not being asked anything, so there is nothing to keep checking.
+    expect(timers).toHaveLength(0);
+  });
+
+  it("says so when the facts cannot be loaded", async () => {
+    const { store, api, state } = setup();
+    api.getFeedbackSummary.mockRejectedValue(new ApiError("unreachable", "No backend.", 0));
+
+    store.loadSummary();
+    await settle();
+
+    expect(state().summary).toEqual({ status: "error", message: "No backend." });
+  });
+
+  it("asks the AI model, then checks every two seconds until it has picked", async () => {
+    const { store, api, state, timers, tick } = await withSummary();
+
+    store.askForSummary();
+    expect(state().summary).toMatchObject({ asking: true });
+    await settle();
+
+    expect(api.requestFeedbackSummary).toHaveBeenCalledTimes(1);
+    expect(state().summary).toMatchObject({ asking: false, data: { job: { status: "queued" } } });
+    expect(timers.map((timer) => timer.ms)).toEqual([SUMMARY_POLL_MS]);
+
+    api.getFeedbackSummary.mockResolvedValue(summary({ job: summaryJob("running") }));
+    await tick();
+    expect(state().summary).toMatchObject({ data: { job: { status: "running" } } });
+
+    api.getFeedbackSummary.mockResolvedValue(summary({ picked: picked("a clear breath here") }));
+    await tick();
+    expect(state().summary).toMatchObject({
+      data: { job: null, picked: { notes: [{ text: "a clear breath here" }] } },
+    });
+    expect(timers).toHaveLength(0);
+  });
+
+  it("ignores a second click while the first request is still on its way", async () => {
+    const { store, api } = await withSummary();
+    api.requestFeedbackSummary.mockReturnValue(new Promise(() => {}));
+
+    store.askForSummary();
+    store.askForSummary();
+
+    expect(api.requestFeedbackSummary).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the facts on screen and says why when the request is refused", async () => {
+    const { store, api, state } = await withSummary();
+    api.requestFeedbackSummary.mockRejectedValue(
+      new ApiError("too_few_notes", "There is nothing to pick from yet.", 409),
+    );
+
+    store.askForSummary();
+    await settle();
+
+    expect(state().summary).toMatchObject({
+      status: "ready",
+      asking: false,
+      error: "There is nothing to pick from yet.",
+      data: { feedbackCount: 6 },
+    });
+  });
+
+  it("shows why the AI model could not be asked, and stops checking", async () => {
+    const { store, api, state, timers, tick } = await withSummary();
+    store.askForSummary();
+    await settle();
+    api.getFeedbackSummary.mockResolvedValue(
+      summary({
+        job: {
+          ...summaryJob("failed"),
+          error: { code: "not_running", message: "Ollama is not running.", retryable: false },
+        },
+      }),
+    );
+
+    await tick();
+
+    expect(state().summary).toMatchObject({
+      data: { job: { status: "failed", error: { code: "not_running" } } },
+    });
+    expect(timers).toHaveLength(0);
+  });
+
+  it("keeps checking when the backend is briefly away while the AI model is being asked", async () => {
+    const { store, api, state, timers, tick } = await withSummary();
+    store.askForSummary();
+    await settle();
+    api.getFeedbackSummary.mockRejectedValueOnce(new ApiError("unreachable", "No backend.", 0));
+
+    await tick();
+
+    // The last good answer stays on screen, and another check is on its way.
+    expect(state().summary).toMatchObject({ status: "ready", data: { job: { status: "queued" } } });
+    expect(timers).toHaveLength(1);
+  });
+
+  it("stops a request to the AI model that is under way", async () => {
+    const { store, api, state, timers } = await withSummary();
+    store.askForSummary();
+    await settle();
+    api.getFeedbackSummary.mockResolvedValue(summary());
+
+    store.cancelSummary();
+    await settle();
+
+    expect(api.cancelJob).toHaveBeenCalledWith("job-1");
+    expect(state().summary).toMatchObject({ asking: false, data: { job: null } });
+    expect(timers).toHaveLength(0);
+  });
+
+  it("counts again whenever feedback is given, taken back, or the settings change", async () => {
+    const { store, api } = await withSummary();
+    store.watch("analysis-1");
+    await settle();
+    const before = api.getFeedbackSummary.mock.calls.length;
+
+    store.give({ category: "pause_false", targetId: "pause-1" });
+    await settle();
+    store.remove("fb-1");
+    await settle();
+    store.watch(null);
+    store.reset();
+    await settle();
+
+    expect(api.getFeedbackSummary.mock.calls.length - before).toBe(3);
+  });
+
+  it("does not count on its own account before the panel has asked for the facts", async () => {
+    const { store, api } = setup();
+    store.watch("analysis-1");
+    await settle();
+
+    store.give({ category: "pause_false", targetId: "pause-1" });
+    await settle();
+
+    expect(api.getFeedbackSummary).not.toHaveBeenCalled();
+  });
+
+  it("lets a newer answer win over an older one that arrives late", async () => {
+    const { store, api, state } = await withSummary();
+    let answerOld: (value: FeedbackSummary) => void = () => {};
+    api.getFeedbackSummary
+      .mockReturnValueOnce(new Promise((resolve) => (answerOld = resolve)))
+      .mockResolvedValueOnce(summary({ feedbackCount: 9 }));
+
+    store.loadSummary();
+    store.loadSummary();
+    await settle();
+    answerOld(summary({ feedbackCount: 8 }));
+    await settle();
+
+    expect(state().summary).toMatchObject({ data: { feedbackCount: 9 } });
   });
 });

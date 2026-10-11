@@ -29,6 +29,7 @@ def test_migrations_build_exactly_the_tables_the_code_expects(tmp_path):
         "feedback",
         "calibration_versions",
         "calibration_state",
+        "feedback_summary",
     } <= tables
     assert differences == []
 
