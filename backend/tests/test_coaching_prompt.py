@@ -194,3 +194,42 @@ def test_with_too_many_phrases_only_those_the_findings_point_at_are_listed():
     assert prompt.schema["properties"]["corrections"]["items"]["properties"]["segment"]["enum"] == [
         line.split()[0] for line in listed
     ]
+
+
+def test_the_model_is_told_which_pauses_the_actor_marked():
+    body = make_body("thomas_shelby")
+    labels = {"pause-2": "accidental", "pause-3": "intentional"}
+    finding_set = build_findings(body, DEFAULT_COACHING_SETTINGS, labels)
+
+    prompt = build_prompt(
+        body,
+        finding_set,
+        profile_wants(body.profile),
+        DEFAULT_COACHING_SETTINGS,
+        context_tokens=8192,
+        labels=labels,
+    )
+
+    assert "(pause-1: 0.6 seconds of silence)" in prompt.facts_text
+    assert "(pause-2: 0.7 seconds of silence, marked accidental by the actor)" in prompt.facts_text
+    assert "(pause-3: 0.8 seconds of silence, marked intentional by the actor)" in prompt.facts_text
+    assert "You marked 1 pause as accidental" in prompt.facts_text
+    assert "Never advise shortening" in SYSTEM
+    assert "never praise a pause marked accidental" in SYSTEM
+
+
+def test_a_marked_pause_is_kept_even_in_the_short_form_for_long_recordings():
+    body = long_recording(phrases=120, words_each=14)
+    labels = {"pause-5": "accidental"}
+    finding_set = build_findings(body, DEFAULT_COACHING_SETTINGS, labels)
+
+    prompt = build_prompt(
+        body,
+        finding_set,
+        profile_wants(body.profile),
+        DEFAULT_COACHING_SETTINGS,
+        context_tokens=8192,
+        labels=labels,
+    )
+
+    assert "marked accidental by the actor" in prompt.facts_text

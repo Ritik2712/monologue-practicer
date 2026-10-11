@@ -15,6 +15,11 @@ from dataclasses import asdict, dataclass
 class CoachingSettings:
     # Bumped whenever a default below changes, so results stay traceable.
     version: int = 1
+    # Which version of the user's calibration supplied the priorities below. 1 means none.
+    calibration_version: int = 1
+    # How readily each kind of correction makes the top three, as (finding kind, priority)
+    # pairs. Feedback on corrections moves these; a kind that is not listed has priority 1.
+    priorities: tuple[tuple[str, float], ...] = ()
 
     # Speech-active WPM (pauses left out). Below the first is "unhurried", above the second "fast".
     slow_wpm: float = 140.0
@@ -49,8 +54,14 @@ class CoachingSettings:
         if self.registering_pause_seconds <= 0 or self.held_silence_seconds <= 0:
             raise ValueError("pause bands must be positive")
 
+    def priority(self, kind: str) -> float:
+        return dict(self.priorities).get(kind, 1.0)
+
     def to_dict(self) -> dict[str, float | int]:
-        return asdict(self)
+        values = asdict(self)
+        del values["priorities"]
+        values.update({f"priority_{kind}": value for kind, value in self.priorities})
+        return values
 
 
 DEFAULT_COACHING_SETTINGS = CoachingSettings()

@@ -46,7 +46,9 @@ the words mean. Use a different segment for each correction when you can.
 loses the way it was delivered.
 8. A drill is done right now on the chosen segment. Quote its first few words exactly as \
 they appear on that one transcript line, say how to speak them, and how many times. Build \
-the drill on the technique given with the issue."""
+the drill on the technique given with the issue.
+9. The actor may have marked a pause as intentional or as accidental. Never advise shortening \
+or removing a pause marked intentional, and never praise a pause marked accidental."""
 
 TASK = """TASK
 Write the coaching for the next take.
@@ -101,6 +103,7 @@ def _transcript_lines(
     only: set[str] | None = None,
     *,
     compact: bool = False,
+    labels: dict[str, str] | None = None,
 ) -> list[str]:
     """One line per phrase, with the pauses between them, in order.
 
@@ -132,15 +135,20 @@ def _transcript_lines(
         pause = pause_after.get(segment.id)
         if pause is None or only is not None:
             continue
+        label = (labels or {}).get(pause.id)
+        marked = f", marked {label} by the actor" if label else ""
         if not compact:
-            lines.append(f"({pause.id}: {seconds_text(pause.duration_seconds)} of silence)")
-        elif pause.significance != "short":
-            lines.append(f"(pause, {seconds_text(pause.duration_seconds)})")
+            lines.append(f"({pause.id}: {seconds_text(pause.duration_seconds)} of silence{marked})")
+        elif pause.significance != "short" or label:
+            lines.append(f"(pause, {seconds_text(pause.duration_seconds)}{marked})")
     return lines
 
 
 def _fit_transcript(
-    body: schemas.AnalysisBody, finding_set: FindingSet, budget: int
+    body: schemas.AnalysisBody,
+    finding_set: FindingSet,
+    budget: int,
+    labels: dict[str, str] | None = None,
 ) -> tuple[list[str], list[str], bool]:
     """The transcript lines that fit, the segments they cover, and whether words were cut."""
     all_ids = [segment.id for segment in body.segments]
@@ -148,11 +156,11 @@ def _fit_transcript(
     def fits(lines: list[str]) -> bool:
         return estimate_tokens("\n".join(lines)) <= budget
 
-    full = _transcript_lines(body, None)
+    full = _transcript_lines(body, None, labels=labels)
     if fits(full):
         return full, all_ids, False
     for limit in WORD_LIMITS:
-        lines = _transcript_lines(body, limit, compact=True)
+        lines = _transcript_lines(body, limit, compact=True, labels=labels)
         if fits(lines):
             return lines, all_ids, limit is not None
     # Too many phrases even at three words each: keep only those the findings point at.
@@ -246,9 +254,11 @@ def build_prompt(
     settings: CoachingSettings,
     *,
     context_tokens: int,
+    labels: dict[str, str] | None = None,
 ) -> Prompt:
+    """`labels` are the user's own labels on pauses, shown to the model beside each pause."""
     budget = max(MIN_TRANSCRIPT_TOKENS, context_tokens - RESERVED_TOKENS)
-    lines, segment_ids, shortened = _fit_transcript(body, finding_set, budget)
+    lines, segment_ids, shortened = _fit_transcript(body, finding_set, budget, labels)
 
     issues, strengths = finding_set.issues, finding_set.strengths
     context = [f for f in finding_set.findings if f.role == "context"]

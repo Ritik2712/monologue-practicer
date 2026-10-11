@@ -3,17 +3,17 @@
 A local speaking-practice coach for Hindi and English monologues. Everything runs on this
 device: no paid APIs, no cloud services, no accounts.
 
-> Status: **Daily Speaking Practice**, **Monologue** (compare your take with the original
-> recording) and **General Practice** (record or upload your voice, see it measured, and get
-> coaching for the next take) are built. Feedback and calibration are not built yet. Features
-> are added phase by phase.
+> Status: every part of the plan is built. **Daily Speaking Practice**, **Monologue**
+> (compare your take with the original recording), **General Practice** (record or upload
+> your voice, see it measured, and get coaching for the next take), and **feedback with
+> calibration** (tell the app where it was wrong; it adjusts, slowly and visibly).
 
 How the project works, file by file, and why each design decision was made:
 
 - [DOCUMENTATION.md](DOCUMENTATION.md) — start here
 - [DOCUMENTATION_FRONTEND.md](DOCUMENTATION_FRONTEND.md) — pages, the checklist, the timer
 - [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md) — API, database, job queue and worker
-- [DOCUMENTATION_SCIENCE.md](DOCUMENTATION_SCIENCE.md) — how the audio is measured, how the coaching is produced and checked, and how two recordings are compared
+- [DOCUMENTATION_SCIENCE.md](DOCUMENTATION_SCIENCE.md) — how the audio is measured, how the coaching is produced and checked, how two recordings are compared, and how feedback adjusts settings
 
 ## What you can do today
 
@@ -42,6 +42,23 @@ How the project works, file by file, and why each design decision was made:
   rules instead; you can ask the model again later without re-recording.
 - **Comparison with a reference** is also inside General Practice, as a section of every
   result.
+- **Feedback** on every result of your own, next to the thing it is about. On a pause:
+  intentional, accidental, "not a pause: I was still speaking", or "too short to split the
+  phrase". On a phrase: a pause was missed (pick the silence the app heard), the WPM looks
+  too high or too low, or the words are wrong (type them as you said them). On a
+  correction: useful or not useful. Feedback is optional and never changes a measurement
+  that is already stored.
+- **Calibration**, in a panel at the bottom of General Practice. When at least three
+  reports agree, from at least two recordings, one setting moves a small step inside a
+  fixed range: the shortest silence that counts as a pause (500 ms by default, 250 to 800
+  ms allowed), or how readily a kind of correction is put first. The panel shows every
+  value, what changed, why, and on how many reports, with **Undo last adjustment**, **Reset
+  to defaults**, and a switch to turn automatic adjustment off. It tunes rules of thumb to
+  your recordings. It does not retrain the speech recogniser or make the analysis perfect.
+- **Revisions.** Correcting a phrase's words makes a new result with word counts and WPM
+  worked out again from your words; analysing a kept recording again uses the settings as
+  they are now. Either way the earlier result stays, unchanged, and says which settings
+  produced it.
 
 ## Stack
 
@@ -89,8 +106,9 @@ The speech model, once (about 480 MB, saved under `~/.cache/huggingface`):
 cd backend && uv run python -m app.speech_model download
 ```
 
-**Updating from an earlier phase?** Run the database step again, so the tables get their new
-columns. Existing analyses are kept (and become "takes"):
+**Updating from an earlier phase?** Run the database step again, so the database gets its
+new tables and columns. Existing analyses are kept: they become "takes", made with the
+default settings, each the first result of its own recording:
 
 ```bash
 cd backend && uv run alembic upgrade head
@@ -235,6 +253,31 @@ Compare a take with a reference:
 curl -s http://localhost:8000/api/analyses/ANALYSIS_ID/comparison/REFERENCE_ID
 ```
 
+Mark a pause as accidental. The answer lists the feedback on that analysis, with a
+sentence saying what each piece does, and the calibration:
+
+```bash
+curl -s -X POST http://localhost:8000/api/analyses/ANALYSIS_ID/feedback -H "Content-Type: application/json" -d '{"category": "pause_accidental", "targetId": "pause-1"}'
+```
+
+See the settings in force, their allowed ranges, and the history of every change:
+
+```bash
+curl -s http://localhost:8000/api/calibration
+```
+
+Undo the most recent adjustment (answers `409` if there is none):
+
+```bash
+curl -s -X POST http://localhost:8000/api/calibration/undo
+```
+
+Correct the words of a phrase. The answer is a new revision with WPM worked out again:
+
+```bash
+curl -s -X POST http://localhost:8000/api/analyses/ANALYSIS_ID/transcript -H "Content-Type: application/json" -d '{"corrections": [{"segmentId": "seg-1", "text": "the words as you said them"}]}'
+```
+
 Accepted files: WAV, MP3, M4A, AAC, MP4, OGG, Opus, WebM, FLAC and AIFF, up to 50 MB and
 10 minutes. `language` can be `auto`, `en`, `hi` or `hinglish`. All endpoints are listed,
 and can be tried in the browser, at http://localhost:8000/docs.
@@ -287,16 +330,24 @@ slower.
 | A reference recording and its measurements | `backend/data/audio/` (kept by default; untick to store measurements only) and the database | When you delete that reference. Clearing the history of takes does not touch references |
 | Which reference is chosen | This browser's `localStorage` | When you choose none, or delete it |
 | Analysis results, their coaching, and jobs | `backend/data/monologue_coach.db` | When you delete an analysis or clear the history |
+| Your feedback on a result: labels, reports, notes, corrected words | `backend/data/monologue_coach.db` | With the analysis it is about, or one at a time with "Remove" |
+| The calibration: the adjusted settings and the history of every change | `backend/data/monologue_coach.db` | Never deleted, so that every result can be traced to the settings that made it. "Reset to defaults" puts the values back; the history stays |
+| A later result of the same recording (a corrected transcript, or a fresh analysis) | `backend/data/monologue_coach.db`, and `backend/data/audio/` if the recording was kept | Like any other analysis. Each can be deleted on its own |
 | What the AI model is sent: the transcript and measurements, as text | Ollama's memory on this computer, while it writes the answer | This app saves it nowhere else. Whether Ollama logs anything is up to Ollama's own settings |
 
 Nothing is sent off this computer. The AI model is only ever contacted at an address on this
-computer, and it is never given audio. The folder `backend/data/` is not tracked by git.
+computer, and it is never given audio. Feedback and calibration are handled by ordinary
+code on this computer; the AI model has no part in adjusting a setting. The folder
+`backend/data/` is not tracked by git.
 
 ## Checks
 
 ```bash
 cd frontend && npm run lint && npm run typecheck && npm test && npm run build
 ```
+
+If `npm run dev` is running, restart it after `npm run build`: the two share a folder, and
+the development server can go on serving an out-of-date stylesheet.
 
 ```bash
 cd backend && uv run ruff check . && uv run ruff format --check . && uv run pytest

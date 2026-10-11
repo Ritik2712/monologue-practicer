@@ -1,16 +1,16 @@
 # Monologue Coach — Frontend Documentation
 
 Everything that runs in the browser: the pages, the Daily Practice checklist and its timer,
-the General Practice screen (recording, uploading, results, coaching, history), the
-Monologue screen (reference recordings, comparison, waveforms), and what is saved in the
-browser. Start with [DOCUMENTATION.md](DOCUMENTATION.md) for the big
+the General Practice screen (recording, uploading, results, coaching, history, feedback
+and calibration), the Monologue screen (reference recordings, comparison, waveforms), and
+what is saved in the browser. Start with [DOCUMENTATION.md](DOCUMENTATION.md) for the big
 picture and the glossary. The Python side is in
 [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md).
 
-Anything not built yet is marked **Planned**.
+Everything described here is built.
 
-**Last updated:** end of Phase 5 (the Monologue screen, reference recordings, the
-comparison with a reference, and the waveform picture).
+**Last updated:** end of Phase 6 (feedback on a result, the calibration panel, corrected
+transcripts and analysing a recording again).
 
 ## Contents
 
@@ -77,6 +77,8 @@ frontend/
             ├── validation.ts         Checks a chosen file before sending it
             ├── compare.ts            The change between two attempts
             ├── coaching.ts           Small decisions about showing coaching
+            ├── feedbackStore.ts      The feedback on the result on view, and the calibration
+            ├── feedback.ts           Small decisions about showing feedback and calibration
             ├── waveform.ts           The arithmetic behind the waveform picture
             ├── timeline.ts           The arithmetic behind the chart
             ├── audioDuration.ts      Makes browser-made recordings seekable
@@ -88,6 +90,9 @@ frontend/
             │   ├── RunPanel.tsx          Progress, cancel, retry, failure
             │   ├── Results.tsx           Everything shown for one analysis
             │   ├── Coaching.tsx          Corrections, drills, what works, targets, caveats
+            │   ├── FeedbackControls.tsx  The controls beside a pause, a phrase and a correction
+            │   ├── FeedbackSection.tsx   Everything said about one result, gathered in one place
+            │   ├── CalibrationPanel.tsx  The settings in force; undo, reset, on/off
             │   ├── MonologuePractice.tsx The whole Monologue page, assembled
             │   ├── ReferenceLibrary.tsx  Choose, add and delete reference recordings
             │   ├── ReferenceComparison.tsx  A take against a reference, with both to play
@@ -165,6 +170,14 @@ navigation links from `components/MainNav.tsx`.
 | `deleteAnalysisAudio` | `DELETE /api/analyses/{id}/audio` | Delete only a kept recording |
 | `clearAnalyses` | `DELETE /api/analyses` | Clear the history of takes. References are not touched |
 | `analysisAudioUrl` | `GET /api/analyses/{id}/audio` | Address of a kept recording, for the player |
+| `getFeedback` | `GET /api/analyses/{id}/feedback` | The feedback on the result on view, and the calibration |
+| `giveFeedback` | `POST /api/analyses/{id}/feedback` | Saving one piece of feedback, or changing its note |
+| `deleteFeedback` | `DELETE /api/feedback/{id}` | Taking one piece of feedback back |
+| `getCalibration` | `GET /api/calibration` | The calibration panel when no result is on view |
+| `undoCalibration`, `resetCalibration` | `POST /api/calibration/undo`, `…/reset` | The two buttons on the calibration panel |
+| `setAdaptive` | `PUT /api/calibration/adaptive` | The "adjust automatically" tick box |
+| `correctTranscript` | `POST /api/analyses/{id}/transcript` | Saving corrected words; the answer is the new revision |
+| `requestReanalysis` | `POST /api/analyses/{id}/reanalysis` | Analysing a kept recording again; the answer is a job to follow |
 
 - Every failure becomes an `ApiError` carrying the backend's own `code` and `message`, or
   `unreachable` when there was no answer at all. Screens show `message` as it is.
@@ -378,6 +391,8 @@ end time.
 You pick a delivery profile, record yourself or choose an audio file, and press **Analyse
 recording**. The page then follows the analysis job, shows the results with coaching on what
 to change for the next take, and keeps a history you can reopen, compare against, and delete.
+Beside each pause, phrase and correction you can say where the analysis got it wrong, and
+at the bottom of the page a panel shows what that feedback has changed (6.18 to 6.20).
 
 The measuring and the coaching both happen in the backend (see the science document). This
 screen's job is everything around them: getting the audio, following the job honestly,
@@ -390,12 +405,14 @@ it rests on.
  components/*.tsx          draw the page; call actions such as store.submit(...)
         │
         ▼
- useGeneralPractice.ts     connects React to the three stores below
+ useGeneralPractice.ts     connects React to the four stores below
         │
         ├──▶ generalStore.ts    the run in progress, the result on view, the history
         │         │
         │         ▼
         │      api.ts  ──▶  the backend (HTTP)
+        │         ▲
+        ├──▶ feedbackStore.ts   the feedback on the result on view, and the calibration
         │
         ├──▶ recorder.ts        microphone recording  ──▶  the browser's MediaRecorder
         │
@@ -412,6 +429,8 @@ it rests on.
 | `validation.ts` | Is this file an audio type, non-empty and under the size limit? |
 | `compare.ts` | The difference between two attempts, metric by metric. |
 | `coaching.ts` | What to play for a piece of evidence, which phrase a correction is practised on, what to do when the AI model is unavailable, and whether asking again could help. |
+| `feedbackStore.ts` | Holds the feedback on the result on view and the calibration; one request per action. No React. |
+| `feedback.ts` | Which feedback belongs to which pause or phrase, the silences inside a phrase, whether labels have changed, how the minimum pause is worded. |
 | `timeline.ts` | Scales, axis ticks and "what is happening at this moment" for the chart. |
 | `audioDuration.ts` | Works out the length of a browser-made recording so it can be seeked. |
 | `format.ts` | Text for times, numbers, changes, profile names, stage names. |
@@ -553,14 +572,16 @@ From top to bottom, in `Results.tsx`:
 
 | Section | What is in it |
 | --- | --- |
-| Header | Date, profile, language (and how it was known), length. Close and Delete |
+| Header | Date, profile, language (and how it was known), length. Which revision this is, with links to the other results from the same recording (6.20). Close and Delete |
 | Warnings | Anything that affects how far the numbers can be trusted |
+| Older settings | Only when the minimum pause has moved since this result was made: says so, and offers to analyse the recording again (6.20) |
 | Summary | **Speech-active WPM** as the one large figure; then whole-clip WPM (labelled "including pauses"), words, time speaking, pauses, median and longest pause |
 | Recording | The player, and the timeline chart |
-| Coaching | Who wrote it; a four-line delivery summary; up to three corrections; what is already working; targets for the next take; what is uncertain or not measured; a button to have it written again. See 6.9a |
-| Pace | Your typical pace, pace variation, slowest and fastest segment; phrases well away from your typical pace; the segments table |
-| Pauses | Average, total, pause share, silence before/after; the pauses table |
+| Coaching | Who wrote it; a four-line delivery summary; up to three corrections, each with **Useful / Not useful**; what is already working; targets for the next take; what is uncertain or not measured; a button to have it written again. See 6.9a |
+| Pace | Your typical pace, pace variation, slowest and fastest segment; phrases well away from your typical pace; the segments table, each row with **Report a problem** (6.18) |
+| Pauses | Average, total, pause share, silence before/after; the pauses table, each row with a **Your feedback** list (6.18) |
 | Voice | Loudness and pitch variation, pitch range, median pitch, voice above background, hesitation sounds, breaths (unavailable); emphasis candidates |
+| Your feedback on this result | Everything said about this result, with what each piece does (6.18) |
 | Compare | This attempt against an earlier one |
 | Details | The transcript, and the settings that produced the numbers |
 
@@ -572,6 +593,9 @@ How the caveats are shown:
   WPMs are always visible, not hidden in a tooltip.
 - Measurements the chosen profile depends on most carry a **Profile focus** tag. Whether
   they suit the profile is said in the Coaching section.
+- Wherever the screen says how long a silence must be to count as a pause, it reads the
+  value from the result itself (`settings.min_pause_ms`): "half a second" for a result made
+  at the default, "0.4 seconds" for one made after the minimum pause was lowered.
 
 ### 6.9a The Coaching section
 
@@ -619,6 +643,20 @@ When the new coaching arrives it replaces the old on screen. If you opened a dif
 analysis while waiting, you are left where you are; the new coaching is there when you go
 back.
 
+**Rating a correction.** Under each correction are two toggle buttons, **Useful** and **Not
+useful**. Pressing one saves it; pressing the same one again takes it back. The sentence
+the backend sends back is shown underneath ("Counts towards lowering the priority of
+corrections about overall pace. 1 of the 3 reports needed…"). A rating is matched to its
+correction by what the correction is about as well as by its ID, so it cannot end up on a
+different correction after the coaching has been written again.
+
+**When your pause labels have changed.** If you have marked a pause intentional or
+accidental since the coaching was written, a notice says the coaching does not take that
+in yet, and the button becomes "Write the coaching again with my labels". In this one case
+the button works even when the AI model is not available: coaching from the fixed rules
+that knows about the labels is already an improvement, and the line beside the button says
+that is what will happen.
+
 ### 6.10 The timeline chart
 
 `TimelineChart.tsx` draws two panels on one shared time axis, as plain SVG:
@@ -658,6 +696,8 @@ attempt defaults to the one just before, and any earlier one can be chosen.
 - The change is calculated from the rounded values that are shown, so the three columns
   always add up.
 - Loudness figures are compared too, but remember they are relative to each recording.
+- If the two attempts were analysed with a different minimum pause, a warning says so, with
+  both values: their pause counts and phrase speeds are then not like for like.
 
 ### 6.12 History
 
@@ -665,6 +705,10 @@ The list comes from the backend (`GET /api/analyses`), newest first, 20 at a tim
 has View, Delete, and — if the recording was kept — "Delete recording", which removes only
 the audio. "Clear all history" deletes every analysis and kept recording. All three ask for
 confirmation, and none of them touches the Daily Practice checklist.
+
+A later result made from the same recording is its own row, marked "Revision 2: transcript
+corrected" or "Revision 3: analysed again" (6.20). Deleting an analysis also deletes the
+feedback given on it.
 
 ### 6.13 When the backend is not ready
 
@@ -730,15 +774,20 @@ chosen one, and the take is at once compared with it.
 **The Monologue page** (`MonologuePractice.tsx`), top to bottom:
 
 1. **The reference recording.** `ReferenceLibrary`: a menu of your references, "Add a
-   reference recording" (name, file, language, keep), and delete. Under it, folded away,
+   reference recording" (name, file, language, keep), and delete. If the chosen reference
+   was measured before the minimum pause moved, a notice offers "Measure this reference
+   again" (6.20). Under it, folded away,
    "Study this reference": the ordinary results view in a lighter mode
    (`<Results mode="reference">`) with its player, timeline chart, pace, pauses and voice
    sections, and without coaching or comparisons.
 2. **Your take.** The same record-or-upload picker as General Practice. There is no profile
    to choose: this screen is about matching the reference, so the take is analysed with the
    neutral profile.
-3. **Your take against the reference.** A menu of your takes, then `ReferenceComparison`,
-   then a link to the take's full measurements and coaching in General Practice.
+3. **Your take against the reference.** A menu of your takes (a later revision of a
+   recording says which it is), then `ReferenceComparison`, then a link to the take's full
+   measurements and coaching in General Practice, which is also where feedback is given.
+   When the take and the reference were analysed with a different minimum pause, the
+   comparison opens with a warning saying so.
 
 ### 6.15 The comparison section
 
@@ -823,6 +872,133 @@ the recording is.
 - Trust is never shown by colour alone: "Estimate" and "Unavailable" are written out.
 - Tables scroll sideways inside their own box on a phone; the page itself never does.
 
+### 6.18 Feedback on a result
+
+Feedback is optional. A result is complete without it, and nothing on the page waits for
+it. It is offered only on your own takes in General Practice; a reference recording shows
+none of these controls, and the Monologue screen links to General Practice for it.
+
+There is no separate "feedback form". Each control sits next to the thing it is about, so
+that "which pause?" never has to be asked:
+
+| Where | Control | What can be said |
+| --- | --- | --- |
+| Each row of the **pauses** table | A list, "Your feedback" | Intentional · Accidental: I lost my place · Not a pause: I was still speaking · Too short to split the phrase here · No feedback |
+| Each row of the **segments** table | "Report a problem", which opens a form under the table | A pause was missed in this phrase · Its WPM looks too high · Its WPM looks too low · The words are wrong |
+| Each **correction** in the coaching | Two toggle buttons | Useful · Not useful |
+| The **"Your feedback on this result"** section | Two buttons | The overall WPM looks too high · too low |
+
+Choosing from the pause list saves at once; choosing "No feedback" takes it back. The
+sentence the backend returns is shown under the control: what the feedback does, in plain
+words. The screen never works that sentence out for itself.
+
+**Reporting a missed pause.** The form asks *where*, and offers real candidates first:
+
+```
+ Where was the pause?
+ Listed first are the silences the detector heard inside this phrase that were too short
+ to count as pauses.
+   (•) At 0:02.6: a silence of 0.32 s, after "to."        Play
+   ( ) Where the player is now: 0:03.4
+   ( ) I cannot say exactly where
+```
+
+Each candidate can be played with a second either side. "Where the player is now" is
+available when the recording is playing or paused at a point inside the phrase. These are
+the three ways of pointing at a moment: a silence the app measured, the playhead, or not
+at all, in which case the report is saved and the backend says it cannot count.
+
+**Saying the words are wrong.** The form shows the phrase's words in a box to edit. "Save
+corrected words" sends them (6.20). "Only flag it, without correcting" saves a note that
+the transcript is wrong and changes nothing.
+
+**Saying the WPM looks wrong.** Nothing changes. The saved entry shows a review: the
+arithmetic ("16 words ÷ 4.51 s of speaking × 60 = 212.9 WPM") and, under labelled headings,
+what was measured for the words, the speaking time and the word timing, each saying which
+feedback would correct it. The review is built by the backend and only displayed here.
+
+**The section "Your feedback on this result"** gathers everything said about the result:
+what each piece is about ("Pause at 0:08.6 (3.00 s): marked intentional"), what it does,
+its note, and Remove. A note (up to 280 characters) can be added to any entry there; that
+is the one place notes are typed, so the controls in the tables stay a single click.
+
+**When feedback moves a setting**, a notice appears in that section, with the reason the
+backend wrote, the count ("3 of 3 reports agreed"), the confidence ("low"), and a link to
+the calibration panel where it can be undone. It stays until dismissed.
+
+How it is built:
+
+| File | Role |
+| --- | --- |
+| `feedbackStore.ts` | A store of its own, in the same style as the others. Holds the feedback on the result on view, the calibration, and any adjustment just made. `watch(analysisId)` switches it to another result; `give`, `remove`, `undo`, `reset`, `setAdaptive` each send one request and take in the answer |
+| `feedback.ts` | Pure helpers: which entry belongs to which pause or phrase, the silences inside a phrase, whether the labels have changed since the coaching was written, how a result's minimum pause is worded |
+| `FeedbackControls.tsx` | `PauseFeedbackSelect`, `SegmentReport`, `CorrectionRating`, `FeedbackEntry`, `WpmReviewView` |
+| `FeedbackSection.tsx` | The gathered list and the adjustment notice |
+| `useFeedback(analysisId)` | Connects the store to React and tells it which result is on view |
+
+Every request that changes feedback or calibration is answered with the full, fresh list
+and the full calibration, so the store never patches its copy: it replaces it. An answer
+about a result the user has since left is dropped, except for its calibration, which
+belongs to the whole app.
+
+### 6.19 The calibration panel
+
+At the bottom of the General Practice page, under the history: **Feedback and
+calibration**. It is there whether or not a result is on view.
+
+| Part | Shows |
+| --- | --- |
+| A badge | "Still calibrating", "Adjusted from your feedback" or "Automatic adjustment off" |
+| One line | The settings version, how many pieces of feedback are stored, how many reports are waiting to count |
+| A summary sentence | Written by the backend. While nothing has moved: "Still calibrating: every setting is at its default. A setting moves only after 3 reports that agree, from at least 2 different recordings." |
+| A table | For each adjustable setting: its value now, its default, its allowed range, and where it stands ("At its default. 2 of the 3 reports needed for lowering it, from 1 of the 2 recordings needed."), with its confidence |
+| Three controls | **Undo last adjustment**, **Reset to defaults** (asks first), and a tick box, **Adjust settings automatically from my feedback** |
+| Three fold-away parts | What changed, and why (every version, newest first, with its reason and counts) · How a setting gets adjusted (the rules, in words) · Thresholds that feedback never changes |
+
+There are twelve "priority of corrections about …" settings. Listing all twelve at 1.0
+would bury the one that matters, so only those with a rating waiting, or that have moved,
+get a row; one sentence accounts for the rest.
+
+The panel's opening text says what calibration is not: it "improves rules of thumb. It
+does not retrain the speech recogniser, and it does not guarantee a perfect analysis."
+
+### 6.20 Revisions, corrected transcripts and analysing again
+
+A recording can have more than one result. Each is a complete result of its own, with its
+own row in the history; the screen only has to say how they are related.
+
+- **The header** of a result that has relatives says which it is ("Revision 2: transcript
+  corrected") and lists the others as links.
+- **Correcting the transcript** (`store.correctTranscript`): one request, answered at once
+  with the new revision, which replaces the result on view. A notice says "Saved as
+  revision 2. Word counts and WPM were worked out again from your words. The earlier
+  result is still in your history, unchanged." The recording held in the page's memory
+  plays for the new revision too; it is released only when neither result needs it.
+- **Analysing again** (`store.reanalyse`): shown when the minimum pause has moved since a
+  result was made. It starts a job that is followed in the run panel exactly like an
+  upload, under the headings "Analysing the recording again" and "New revision ready". It
+  needs the recording to have been kept; when it was not, the notice says so instead of
+  offering the button.
+- **A reference** made with older settings gets the same offer in the reference library
+  ("Measure this reference again"). The new revision joins the library and becomes the
+  chosen one; the earlier one stays listed until deleted.
+
+### 6.21 Accessibility of the feedback controls
+
+- The pause control is an ordinary list box (`<select>`) named for its pause: "Your
+  feedback on the pause at 0:08.6".
+- "Report a problem" says which segment and whether its form is open (`aria-expanded`),
+  and points at the form it controls. The form opens **below** the table, not inside it:
+  the table scrolls sideways on a narrow screen, and a form must never need sideways
+  scrolling to be read. Keyboard focus moves to the form when it opens.
+- The choices in the form are radio buttons inside labelled groups.
+- Useful and Not useful are toggle buttons that announce whether they are pressed, and
+  name the correction they rate.
+- Long notices carry their button under the text, so the text keeps the full width on a
+  phone.
+- Reset asks for confirmation in the same dialog as every other irreversible action, and
+  focus returns to the button afterwards.
+
 ## 7. What is saved in the browser
 
 Three `localStorage` keys, and nothing else:
@@ -839,7 +1015,9 @@ The checklist's value looks like this:
 { schemaVersion: 1, days: { "2026-10-10": { ...record }, "2026-10-11": { ...record } } }
 ```
 
-General Practice and Monologue save **no results and no audio in the browser**. The
+General Practice and Monologue save **no results and no audio in the browser**. Feedback
+and calibration are not saved in the browser either: both live in the backend's database,
+so they are the same whichever browser the app is opened in. The
 reference recordings themselves are in the backend's database and data folder, not here. Results live in the
 backend's database. A recording you just made or chose is held in the page's memory so it
 can be played back with its result; it is gone when the tab is closed or refreshed, unless
@@ -1267,23 +1445,156 @@ Each entry says what was chosen, what was considered, and what was decided again
   stayed zero pixels wide and blank. A callback is told when the element appears, whenever
   that is.
 
-### Decisions already made for later phases *(not built yet)*
+### F46. Feedback controls sit beside the thing they are about
 
-| Topic | Decision | Instead of |
-| --- | --- | --- |
-| Feedback on coaching | "Useful / not useful" on each correction, saved against that analysis | A free-text box only |
+- **Chosen:** a list on each pause, "Report a problem" on each phrase, two buttons on each
+  correction. No separate feedback form.
+- **Why:** the brief asks that the user can select "the exact timestamp, pause, segment…
+  or coaching suggestion", and asks for feedback to be quick. Beside the row, the target
+  is already chosen: one click says everything.
+- **Decided against:** *a feedback page with menus for "which pause"*: the user would have
+  to find in a menu what they are already looking at. *A free-text box as the main way*:
+  the brief asks for structure, and text cannot be counted towards a setting.
+
+### F47. The backend writes the sentence that says what feedback does
+
+- **Chosen:** every saved piece of feedback comes back with a `message`, and the screen
+  shows it as it is.
+- **Why:** what a report does depends on rules and counts that live in the backend ("2 of
+  the 3 reports needed, from 1 of the 2 recordings needed"). A second copy of that logic in
+  the browser would sooner or later say something different.
+
+### F48. Feedback and calibration have a store of their own
+
+- **Chosen:** `feedbackStore.ts`, beside `generalStore.ts`, in the same style.
+- **Why:** the general store's job is following jobs and deciding what is on view. Feedback
+  has no jobs: each action is one request. Mixing them would have made a 900-line store
+  that does two unrelated things.
+- **How the two meet:** only through the page, which tells the feedback store which result
+  is on view. Neither store calls the other.
+
+### F49. Every answer replaces the list; nothing is guessed in advance
+
+- **Chosen:** after any change the backend returns the whole list of feedback and the whole
+  calibration, and the store swaps them in.
+- **Why:** one piece of feedback can change the sentence on several others (a third report
+  turns two "waiting" entries into "counted in version 2"). Patching the local copy would
+  mean re-implementing the backend's rules.
+- **Decided against:** *showing the change before the backend confirms it*. A local
+  request takes a few milliseconds, and a control that shows "saved" before it is saved
+  can be wrong.
+
+### F50. A pause is labelled from a plain list box, saved on choosing
+
+- **Chosen:** a native `<select>` per pause, with no separate Save button.
+- **Why:** four choices of which only one can hold, in a table row with little room. A list
+  box is one control, works by keyboard and screen reader without extra code, and makes it
+  impossible to pick two.
+- **Decided against:** four buttons per row (crowded on a phone, and they would need their
+  own "only one at a time" logic).
+
+### F51. A missed pause is pointed at by choosing a silence the app measured
+
+- **Chosen:** the form lists the short silences the detector heard inside the phrase, with
+  the word each follows and a play button. The playhead position and "I cannot say" are
+  the other two choices.
+- **Why:** typing a time such as "2.6" is slow and usually wrong by a few tenths. Choosing
+  from what was measured is quicker and gives the backend an exact silence to check the
+  report against.
+- **Decided against:** *clicking on the timeline chart to mark the spot*: precise with a
+  mouse, hard with a keyboard, and the chart is far up the page from the phrase.
+- **Not built:** choosing a single word in the transcript as the place. The silences are
+  already described by the word they follow.
+
+### F52. The phrase form opens under the table, not inside it
+
+- **Chosen:** "Report a problem" marks its row and opens the form below the whole table.
+- **Why:** found in the browser. The first version put the form in a row of the table. The
+  table scrolls sideways on a narrow screen, so the form did too, and its text ran off the
+  edge. A form must never need sideways scrolling.
+- **Detail:** focus moves to the form when it opens. The function that does this is kept
+  the same between redraws; otherwise it would run again several times a second while the
+  recording plays, and pull the cursor out of the text box.
+
+### F53. Notes are typed in one place
+
+- **Chosen:** any saved piece of feedback can be given a note in the "Your feedback on this
+  result" list. The controls in the tables have no note box.
+- **Why:** the brief asks for an optional short note and for feedback to stay quick. A note
+  box on every row would make every row slower for the sake of the few that get a note.
+
+### F54. Only the priorities that something has happened to get a row
+
+- **Chosen:** the calibration table always shows the minimum pause. Of the twelve
+  correction priorities, it shows those with a rating waiting or a changed value, and one
+  sentence accounts for the rest.
+- **Why:** twelve identical rows saying "1.0, at its default" would hide the one that
+  differs. Nothing is concealed: the sentence gives the value and range the others share.
+
+### F55. "Still calibrating" and "low" are said in words, and an adjustment is announced
+
+- **Chosen:** a badge names the state; each setting's confidence is a word with the count
+  beside it; and when feedback moves a setting, a notice says what moved, why, on how many
+  reports, and where to undo it.
+- **Why:** the brief says not to claim the app has learned from a few noisy events, and to
+  avoid settings changing "without notice". A change that only showed in a table at the
+  bottom of the page would be exactly that.
+
+### F56. Reset asks first; undo does not
+
+- **Chosen:** Reset opens the confirmation dialog. Undo acts at once.
+- **Why:** undo reverses one step and can be made good by giving the feedback again. Reset
+  discards every adjustment and every waiting report, and cannot be undone.
+
+### F57. A new revision replaces the result on view
+
+- **Chosen:** after a transcript correction, or when a fresh analysis finishes, the new
+  revision is shown, with links to the others in its header.
+- **Why:** it is what the user just asked for. The earlier result is one click away and
+  still in the history.
+- **If the user has moved on:** a correction that returns after another result was opened
+  does not pull them back.
+
+### F58. The minimum pause is read from the result, never assumed
+
+- **Chosen:** every sentence that mentions the shortest pause ("silences of half a second
+  or more") takes the figure from the result's own settings.
+- **Why:** before Phase 6 the screen could say "half a second" as a fixed phrase. Now a
+  result may have been made at 400 ms, and a fixed phrase would be untrue for it.
+
+### F59. Feedback is given in General Practice; the Monologue screen links to it
+
+- **Chosen:** the Monologue screen shows the comparison only, as before, and its link to
+  General Practice now says feedback is given there.
+- **Why:** the brief places the feedback and calibration panel in General Practice, and the
+  controls live in the full results view, which the Monologue screen already hands over to
+  General Practice (decision F38).
+
+### F60. With new labels, "write the coaching again" works without the AI model
+
+- **Chosen:** normally the button is off when the AI model is unavailable. When pause
+  labels have changed since the coaching was written, it is on, and the line beside it
+  says the coaching will be rewritten from the fixed rules with the labels taken in.
+- **Why:** it mirrors the backend (decision B51). Otherwise a user without Ollama could
+  label pauses and never see the labels reach their coaching.
+
+### Decisions already made for later phases
+
+None. Every phase in the plan is built.
 
 ## 9. Tests
 
-Run with the command in the README. Current result: **183 tests pass**. 32 are new in
-Phase 5.
+Run with the command in the README. Current result: **228 tests pass**. 45 are new in
+Phase 6.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
 | `features/practice/practiceState.test.ts` | 23 | Start, pause/resume, reset, expiry exactly once, skip, manual tick/untick, a stale timer cannot complete a step, progress numbers, config changes |
 | `features/practice/practiceStore.test.ts` | 24 | Saving and restoring after a refresh, new-day rollover, midnight edge cases, reset today vs. clear history, damaged or unavailable storage, two tabs |
 | `features/practice/format.test.ts` | 9 | `03:00`-style text, durations, local dates vs. UTC |
-| `features/general/generalStore.test.ts` | 46 | Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one |
+| `features/general/generalStore.test.ts` | 57 | Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh |
+| `features/general/feedbackStore.test.ts` | 17 | Feedback and calibration loaded together for the result on view; an answer about a result the user has left is dropped, but its calibration kept; saving, removing, and staying busy until every save has finished; an adjustment announced until dismissed; a failed save keeps what was there and says why; undo and reset reword the list on view; the calibration's last good answer survives a failed check |
+| `features/general/feedback.test.ts` | 17 | Which entry belongs to which pause, phrase or correction (a rating never jumping to another correction); the silences inside a phrase, in order; the word before a moment; labels new, changed and removed since the coaching was written; the minimum pause read from the result and worded; when a result was made with older settings; how each piece of feedback and each revision is named |
 | `features/general/waveform.test.ts` | 16 | The shared timeline is as long as the longer recording; a shift moves a recording without changing its length; points that share a pixel keep their extremes; a quiet recording stays quiet unless stretched; nothing is drawn beyond full scale; round time-axis values, including before zero; where a moment falls in each recording |
 | `features/general/coaching.test.ts` | 12 | What is played for a phrase, a pause and a whole-recording measurement; the practice line always coming from the transcript; the help for each reason the AI model is unavailable; when writing again is and is not offered; the progress shown beside the button |
 | `features/general/recorder.test.ts` | 19 | Record, elapsed time from the clock, stop at the limit, WebM vs. MP4, discard at every stage, each kind of microphone problem, empty capture, microphone always released |
@@ -1379,3 +1690,37 @@ is not a fault in the app, but it is worth knowing: after `npm run build`, resta
 two chart colours were validated for the dark surface by the palette checker, not by eye),
 adding a reference by recording it (references are added from a file only), and, as in
 earlier phases, a real microphone.
+
+### Checked by hand in the browser at the end of Phase 6
+
+With the real API, worker, speech model and AI model, on a separate test database, and two
+synthesised recordings with silences of known length inside their phrases:
+
+| Check | Result |
+| --- | --- |
+| Open a take | "Your feedback" on each pause row; "Report a problem" on each phrase; "Was this useful?" on each correction; "Your feedback on this result"; "Feedback and calibration" with the badge "Still calibrating" |
+| "Report a problem" on segment 1 | A form under the table, focused, no sideways scrolling at 366 px. It lists "At 0:02.6: a silence of 0.32 s, after “to.”" with Play |
+| Save that report, then one on segment 2 | Each appears under the form and in the gathered list: "…2 of the 3 reports needed for lowering it, from 1 of the 2 recordings needed." The panel's row says the same |
+| Save a third on a second recording | A notice: "Your feedback has just changed a setting… Minimum pause lowered from 500 ms to 400 ms… Confidence: low (3 of 3 reports agreed)". The badge becomes "Adjusted from your feedback" |
+| The same result, now made with older settings | "This result was made when a silence counted as a pause from 500 ms…" with "Analyse this recording again" |
+| Press it | Run panel: "Analysing the recording again", then "New revision ready"; the header shows "Revision 2: analysed again" with a link back |
+| "The words are wrong" on a phrase, edit the words, "Save corrected words" | "Saved as revision 3…"; header "Revision 3: transcript corrected"; the warning about corrected words; the transcript's heading becomes "Transcript, with your corrections" |
+| Rate a correction "Not useful" | The button shows as pressed; "Counts towards lowering the priority of corrections about overall pace. 1 of the 3 reports needed…"; a row for that priority appears in the panel |
+| "It looks too high" for the overall WPM | An entry with the review: the arithmetic and the labelled checks |
+| Mark a pause accidental | "Saved as a label…"; the coaching section says the labels have changed and offers "Write the coaching again with my labels" |
+| Undo last adjustment | Minimum pause back to 500 ms; badge "Still calibrating"; the undo button switched off |
+| Untick "Adjust settings automatically" | Badge "Automatic adjustment off"; the summary says feedback is still saved |
+| Reset to defaults | Asks first; then every default, no reports waiting; focus returns to the button |
+| The history | Each revision its own row: "Revision 2: analysed again", "Revision 3: transcript corrected" |
+| `/monologue` with a take made at 350 ms and a reference made at 500 ms | The comparison opens with "These two were analysed with different settings: the minimum pause was 350 ms for your take and 500 ms for the reference…" |
+| "Measure this reference again" | "Measuring the reference again", then "Reference measured again"; the new revision is chosen; the notice is gone |
+| Dark mode at 1280 px | The calibration table, the gathered list and the review read clearly |
+
+One fault was found this way and fixed: the phrase form scrolling sideways with its table
+(decision F52). One thing was tidied: on a phone, a long notice with a button beside it left
+the text a narrow column, so those buttons now sit under the text.
+
+**Not checked:** a real microphone, as in every phase; a screen reader (the roles and
+names were read from the page's accessibility tree, not heard); and feedback given over
+many real sessions, which is what the calibration panel is for.
+

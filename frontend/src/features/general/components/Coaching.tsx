@@ -12,14 +12,17 @@ import {
   playRange,
   practiseLine,
 } from "../coaching";
+import type { FeedbackStore } from "../feedbackStore";
 import { formatDateTime, formatSpan, formatTimecode } from "../format";
 import type {
   CoachStatus,
   Coaching as CoachingData,
   DeliveryProfile,
   Evidence,
+  FeedbackItem,
   SpeechSegment,
 } from "../types";
+import { CorrectionRating } from "./FeedbackControls";
 import { Command, MUTED, Notice, Section } from "./parts";
 
 export type Regeneration =
@@ -41,6 +44,14 @@ type CoachingProps = {
   regeneration: Regeneration;
   onRegenerate: () => void;
   playButton: (label: string, start: number, end?: number) => ReactNode;
+  /** True when pauses have been labelled since this coaching was written. */
+  labelsChanged?: boolean;
+  /** Lets each correction be rated. Left out when feedback is not available. */
+  rating?: {
+    store: FeedbackStore;
+    saving: boolean;
+    find: (findingId: string, findingKind: string | undefined) => FeedbackItem | undefined;
+  };
 };
 
 /** What to change, what to keep, and what to aim for, built on the measurements above it. */
@@ -53,6 +64,8 @@ export function Coaching({
   regeneration,
   onRegenerate,
   playButton,
+  labelsChanged = false,
+  rating,
 }: CoachingProps) {
   const listen = (evidence: Evidence, label: string) => {
     const range = playRange(evidence);
@@ -169,6 +182,15 @@ export function Coaching({
                             </dd>
                           </div>
                         )}
+                        {rating && (
+                          <CorrectionRating
+                            findingId={correction.findingId}
+                            title={correction.title}
+                            item={rating.find(correction.findingId, finding?.kind)}
+                            disabled={rating.saving}
+                            store={rating.store}
+                          />
+                        )}
                       </dl>
                     </li>
                   );
@@ -221,13 +243,14 @@ export function Coaching({
         </>
       )}
 
-      {canRegenerate(coaching) && (
+      {(canRegenerate(coaching) || labelsChanged) && (
         <Regenerate
           coaching={coaching}
           coach={coach}
           busy={busy}
           regeneration={regeneration}
           onRegenerate={onRegenerate}
+          labelsChanged={labelsChanged}
         />
       )}
     </Section>
@@ -281,22 +304,38 @@ function Regenerate({
   busy,
   regeneration,
   onRegenerate,
-}: Pick<CoachingProps, "coaching" | "coach" | "busy" | "regeneration" | "onRegenerate">) {
+  labelsChanged,
+}: Pick<
+  CoachingProps,
+  "coaching" | "coach" | "busy" | "regeneration" | "onRegenerate" | "labelsChanged"
+>) {
   const unavailable =
     coach && coach.status !== "ready" && coach.status !== "unknown" ? coach.status : null;
+  // With new pause labels to take in, coaching written from the fixed rules is already an
+  // improvement, so the rewrite can go ahead without the AI model.
+  const blocked = unavailable !== null && !labelsChanged;
   // Said here as well as in the progress panel, which may be off screen above.
   const hint =
     regeneration.status === "running"
       ? "The AI model is writing new coaching. This takes about half a minute."
       : busy
         ? "Wait for the run in progress to finish."
-        : unavailable
+        : blocked && unavailable
           ? `The AI model is not available right now: ${COACH_STATUS_TEXT[unavailable]}.`
-          : regeneration.status === "done"
+          : regeneration.status === "done" && !labelsChanged
             ? "New coaching written. It replaced the earlier coaching above."
-            : "Uses the same measurements; nothing is re-recorded or re-measured. Takes about half a minute. If the model cannot answer, the coaching above stays as it is.";
+            : labelsChanged && unavailable
+              ? `The AI model is not available (${COACH_STATUS_TEXT[unavailable]}), so the coaching will be rewritten from the fixed rules, with your labels taken in.`
+              : "Uses the same measurements; nothing is re-recorded or re-measured. Takes about half a minute. If the model cannot answer, the coaching above stays as it is.";
   return (
     <div className="flex flex-col gap-2">
+      {labelsChanged && (
+        <Notice kind="info">
+          You have changed your pause labels since this coaching was written, so it does not
+          take them into account yet. Write it again to bring them in. The measurements are not
+          affected either way.
+        </Notice>
+      )}
       {regeneration.status === "failed" && (
         <Notice kind="error">
           New coaching could not be written. {regeneration.message} The coaching above was left
@@ -304,12 +343,14 @@ function Regenerate({
         </Notice>
       )}
       <div className="flex flex-wrap items-center gap-3">
-        <Button disabled={busy || unavailable !== null} onClick={onRegenerate}>
+        <Button disabled={busy || blocked} onClick={onRegenerate}>
           {regeneration.status === "failed"
             ? "Try again"
-            : coaching?.source === "ai"
-              ? "Write the coaching again"
-              : "Ask the AI model for coaching"}
+            : labelsChanged
+              ? "Write the coaching again with my labels"
+              : coaching?.source === "ai"
+                ? "Write the coaching again"
+                : "Ask the AI model for coaching"}
         </Button>
         <p role="status" className={`min-w-0 flex-1 text-sm ${MUTED}`}>
           {hint}

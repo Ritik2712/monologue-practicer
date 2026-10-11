@@ -3,7 +3,7 @@
 import pytest
 
 from app import schemas
-from app.coaching.findings import band, build_findings, profile_wants, timecode
+from app.coaching.findings import band, build_findings, known_labels, profile_wants, timecode
 from app.coaching.grounding import find_figures
 from app.coaching.settings import DEFAULT_COACHING_SETTINGS, CoachingSettings
 from tests.conftest import make_body, make_pause, make_segment, metric
@@ -379,3 +379,172 @@ def test_bands_must_be_in_order():
     with pytest.raises(ValueError):
         CoachingSettings(held_silence_seconds=0)
     assert CoachingSettings().to_dict()["version"] == 1
+
+
+# --- The user's own labels on pauses -----------------------------------------------------
+
+
+def paused_take(profile: str = "thomas_shelby", lengths=(0.6, 3.0, 0.7)) -> schemas.AnalysisBody:
+    """Four phrases with the given pauses between them."""
+    segments, pauses, start = [], [], 0.0
+    for index in range(len(lengths) + 1):
+        segments.append(make_segment(index, start, start + 4.0, f"phrase {index + 1} of the take"))
+        if index < len(lengths):
+            pauses.append(make_pause(index, start + 4.0, start + 4.0 + lengths[index]))
+            start += 4.0 + lengths[index]
+    ordered = sorted(lengths)
+    return make_body(
+        profile,
+        segments=segments,
+        pauses=pauses,
+        median_pause_seconds=ordered[len(ordered) // 2],
+        longest_pause_seconds=max(lengths),
+    )
+
+
+def labelled(body: schemas.AnalysisBody, **labels: str) -> dict[str, schemas.Finding]:
+    marks = {name.replace("_", "-"): label for name, label in labels.items()}
+    return {f.kind: f for f in build_findings(body, SETTINGS, marks).findings}
+
+
+def test_without_labels_the_longest_pause_is_read_as_a_held_silence():
+    held = labelled(paused_take())["held_silence"]
+
+    assert held.statement.startswith("The longest pause is 3 seconds, at 0:08.6")
+    assert (held.level, held.role) == ("high", "strength")
+
+
+def test_an_accidental_pause_is_not_praised_as_a_held_silence():
+    found = labelled(paused_take(), pause_2="accidental")
+
+    held = found["held_silence"]
+    assert held.statement.startswith(
+        "Leaving out the 1 pause you marked as accidental, the longest pause is 0.7 seconds"
+    )
+    # Thomas Shelby wants a held silence, and without the slip there is none.
+    assert (held.level, held.role) == ("low", "issue")
+    slip = found["accidental_pauses"]
+    assert slip.role == "issue"
+    assert slip.statement == (
+        "You marked 1 pause as accidental: 3 seconds at 0:08.6. It still counts in the pause "
+        "figures, which describe the recording as it is."
+    )
+    assert [e.id for e in slip.evidence] == ["pause-2"]
+
+
+def test_an_intentional_pause_is_said_to_be_so_and_is_never_an_issue():
+    found = labelled(paused_take(), pause_2="intentional")
+
+    assert "You marked it as intentional." in found["held_silence"].statement
+    assert found["held_silence"].role == "strength"
+    marked = found["intentional_pauses"]
+    assert (marked.role, marked.statement) == (
+        "strength",
+        "You marked 1 pause as intentional: 3 seconds at 0:08.6.",
+    )
+    assert "accidental_pauses" not in found
+
+
+def test_with_no_profile_an_intentional_pause_is_noted_without_being_called_a_strength():
+    assert labelled(paused_take("custom"), pause_2="intentional")["intentional_pauses"].role == (
+        "context"
+    )
+
+
+def test_accidental_pauses_are_left_out_of_the_judgement_of_pause_length_only():
+    """Walter White wants pauses that register. The only long one here was a slip."""
+    body = paused_take("walter_white", lengths=(0.6, 3.0, 0.7))
+    body.metrics.median_pause_seconds.value = 0.7
+
+    plain = labelled(body)["pause_length"]
+    marked = labelled(body, pause_2="accidental")["pause_length"]
+
+    # The measured figures are stated the same way in both.
+    opening = "3 pauses of 0.5 seconds or more, with a median of 0.7 seconds."
+    assert plain.statement.startswith(opening)
+    assert marked.statement.startswith(opening)
+    assert (
+        "You marked 1 as accidental. Leaving it out, the other 2 have a median of 0.7 seconds."
+        in marked.statement
+    )
+
+
+def test_a_label_can_change_what_the_median_of_the_meant_pauses_says():
+    """Two long slips hide that the pauses the speaker chose are short."""
+    body = paused_take("walter_white", lengths=(1.5, 0.6, 1.8, 0.7))
+    body.metrics.median_pause_seconds.value = 1.1
+
+    plain = labelled(body)["pause_length"]
+    marked = labelled(body, pause_1="accidental", pause_3="accidental")["pause_length"]
+
+    assert (plain.level, plain.role) == ("high", "strength")
+    assert (marked.level, marked.role) == ("low", "issue")
+    assert "the other 2 have a median of 0.7 seconds" in marked.statement
+    assert "That is short: under 1 second." in marked.statement
+
+
+def test_when_every_pause_was_a_slip_nothing_is_called_a_held_silence():
+    found = labelled(paused_take(lengths=(3.0,)), pause_1="accidental")
+
+    assert "held_silence" not in found
+    assert found["pause_length"].statement.endswith(
+        "You marked it as accidental, so no pause in this take was one you chose to make."
+        " Pauses make up 10% of the recording."
+    )
+    assert found["pause_length"].role == "issue"
+
+
+def test_labels_never_change_a_measurement_or_its_summary_figures():
+    body = paused_take()
+    before = body.model_dump()
+
+    build_findings(body, SETTINGS, {"pause-2": "accidental", "pause-1": "intentional"})
+
+    assert body.model_dump() == before
+
+
+def test_labels_for_pauses_the_recording_does_not_have_are_ignored():
+    body = paused_take()
+
+    assert known_labels(body, {"pause-9": "accidental", "pause-1": "nonsense"}) == {}
+    assert known_labels(body, None) == {}
+    assert "accidental_pauses" not in labelled(body, pause_9="accidental")
+
+
+def test_every_figure_in_a_labelled_statement_is_still_measured():
+    """The checks on the AI model's answer rest on this: no figure appears from nowhere."""
+    body = paused_take(lengths=(0.6, 3.0, 0.7, 2.2))
+    marks = {"pause-2": "accidental", "pause-4": "intentional"}
+    lengths = {p.duration_seconds for p in body.pauses}
+
+    for finding in build_findings(body, SETTINGS, marks).findings:
+        if finding.kind not in ("accidental_pauses", "intentional_pauses"):
+            continue
+        seconds = {f.value for f in find_figures(finding.statement) if f.unit == "seconds"}
+        assert seconds and seconds <= lengths, finding.statement
+
+
+# --- Priorities set by feedback on corrections -------------------------------------------
+
+
+def test_a_lowered_priority_moves_that_kind_of_issue_down_the_list():
+    body = make_body("joker", pitch_variation_semitones=1.0, energy_variation=1.0)
+    usual = build_findings(body, SETTINGS)
+    lowered = build_findings(body, CoachingSettings(priorities=(("pitch_variation", 0.4),)))
+
+    def position(finding_set, kind: str) -> int:
+        return [f.kind for f in finding_set.issues].index(kind)
+
+    assert position(usual, "pitch_variation") < position(lowered, "pitch_variation")
+    # It is moved, not removed: the finding and its figures are all still there.
+    assert [f.model_dump() for f in lowered.findings] == [f.model_dump() for f in usual.findings]
+
+
+def test_priorities_are_recorded_with_the_coaching_they_shaped():
+    settings = CoachingSettings(calibration_version=4, priorities=(("pace", 0.8),))
+
+    stored = settings.to_dict()
+
+    assert (stored["calibration_version"], stored["priority_pace"]) == (4, 0.8)
+    assert "priorities" not in stored
+    assert (settings.priority("pace"), settings.priority("pitch_variation")) == (0.8, 1.0)

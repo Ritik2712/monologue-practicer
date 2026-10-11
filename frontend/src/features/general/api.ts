@@ -8,12 +8,16 @@ import type {
   AnalysisList,
   AnalysisOptions,
   AnalysisResult,
+  Calibration,
   Comparison,
+  FeedbackRequest,
+  FeedbackUpdate,
   Health,
   JobStatus,
   LanguageHint,
   Profile,
   Role,
+  SegmentCorrection,
   Waveform,
 } from "./types";
 
@@ -65,6 +69,21 @@ export type GeneralApi = {
   clearAnalyses: () => Promise<{ deletedAnalyses: number; deletedJobs: number }>;
   /** Address of a kept recording, for an <audio> element. */
   analysisAudioUrl: (analysisId: string) => string;
+  /** The feedback given on an analysis, and the calibration as it stands. */
+  getFeedback: (analysisId: string) => Promise<FeedbackUpdate>;
+  giveFeedback: (analysisId: string, feedback: FeedbackRequest) => Promise<FeedbackUpdate>;
+  deleteFeedback: (feedbackId: string) => Promise<FeedbackUpdate>;
+  getCalibration: () => Promise<Calibration>;
+  undoCalibration: () => Promise<Calibration>;
+  resetCalibration: () => Promise<Calibration>;
+  setAdaptive: (enabled: boolean) => Promise<Calibration>;
+  /** Stores a new revision with corrected words. Returns that revision. */
+  correctTranscript: (
+    analysisId: string,
+    corrections: SegmentCorrection[],
+  ) => Promise<AnalysisResult>;
+  /** Asks for the kept recording to be analysed again. Returns a job to follow. */
+  requestReanalysis: (analysisId: string) => Promise<JobStatus>;
 };
 
 export const UNREACHABLE_MESSAGE =
@@ -87,6 +106,12 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
   }
 
   const post = (path: string) => request<JobStatus>(path, { method: "POST" });
+  const sendJson = <T>(path: string, method: string, body: unknown) =>
+    request<T>(path, {
+      method,
+      body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json" },
+    });
 
   return {
     getHealth: () => request("/api/health"),
@@ -135,6 +160,22 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
     clearAnalyses: () => request("/api/analyses", { method: "DELETE" }),
     analysisAudioUrl: (analysisId) =>
       apiUrl(`/api/analyses/${encodeURIComponent(analysisId)}/audio`),
+    getFeedback: (analysisId) =>
+      request(`/api/analyses/${encodeURIComponent(analysisId)}/feedback`),
+    giveFeedback: (analysisId, feedback) =>
+      sendJson(`/api/analyses/${encodeURIComponent(analysisId)}/feedback`, "POST", feedback),
+    deleteFeedback: (feedbackId) =>
+      request(`/api/feedback/${encodeURIComponent(feedbackId)}`, { method: "DELETE" }),
+    getCalibration: () => request("/api/calibration"),
+    undoCalibration: () => request("/api/calibration/undo", { method: "POST" }),
+    resetCalibration: () => request("/api/calibration/reset", { method: "POST" }),
+    setAdaptive: (enabled) => sendJson("/api/calibration/adaptive", "PUT", { enabled }),
+    correctTranscript: (analysisId, corrections) =>
+      sendJson(`/api/analyses/${encodeURIComponent(analysisId)}/transcript`, "POST", {
+        corrections,
+      }),
+    requestReanalysis: (analysisId) =>
+      post(`/api/analyses/${encodeURIComponent(analysisId)}/reanalysis`),
   };
 }
 

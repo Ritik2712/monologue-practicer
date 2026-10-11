@@ -16,7 +16,13 @@ from datetime import datetime
 
 from app import schemas
 from app.coaching import rules
-from app.coaching.findings import FindingSet, build_findings, profile_wants, segment_evidence
+from app.coaching.findings import (
+    FindingSet,
+    build_findings,
+    known_labels,
+    profile_wants,
+    segment_evidence,
+)
 from app.coaching.grounding import Facts, collect_facts, problems_in
 from app.coaching.prompt import MAX_ANSWER_TOKENS, Prompt, build_prompt
 from app.coaching.settings import DEFAULT_COACHING_SETTINGS, CoachingSettings
@@ -43,6 +49,7 @@ NOTHING_STANDS_OUT = (
     "a delivery profile for coaching aimed at a particular style."
 )
 AI_OFF = "AI coaching is switched off in the settings."
+NOT_ASKED = "The AI model has not been asked to word this result yet."
 BAD_ANSWER = "The AI model's answer could not be read."
 UNGROUNDED = "The AI model's answer quoted figures that were not measured, so none of it was used."
 SHORTENED_CAVEAT = (
@@ -91,13 +98,22 @@ class Coach:
         now: datetime,
         check: Callable[[], None] = lambda: None,
         require_model: bool = False,
+        settings: CoachingSettings | None = None,
+        labels: dict[str, str] | None = None,
+        use_model: bool = True,
     ) -> schemas.Coaching:
         """Coaching for a measured recording.
 
         Always returns something usable, unless `require_model` is set: then anything short
         of an answer from the language model raises CoachingUnavailable instead.
+
+        `settings` replaces this coach's own bands for one call, which is how the user's
+        calibration reaches the coaching. `labels` are the user's labels on pauses.
+        `use_model=False` writes from the templates without asking the language model.
         """
-        coaching = self._generate(body, now, check)
+        coaching = self._generate(
+            body, now, check, settings or self.settings, known_labels(body, labels), use_model
+        )
         if require_model and coaching.source != "ai":
             notice = coaching.notice
             raise CoachingUnavailable(
@@ -107,9 +123,15 @@ class Coach:
         return coaching
 
     def _generate(
-        self, body: schemas.AnalysisBody, now: datetime, check: Callable[[], None]
+        self,
+        body: schemas.AnalysisBody,
+        now: datetime,
+        check: Callable[[], None],
+        settings: CoachingSettings,
+        labels: dict[str, str],
+        use_model: bool,
     ) -> schemas.Coaching:
-        finding_set = build_findings(body, self.settings)
+        finding_set = build_findings(body, settings, labels)
         wants = profile_wants(body.profile)
 
         def result(source: str, **fields) -> schemas.Coaching:
@@ -117,7 +139,8 @@ class Coach:
                 source=source,
                 summary=finding_set.summary,
                 findings=finding_set.findings,
-                settings=self.settings.to_dict(),
+                settings=settings.to_dict(),
+                labels_used=labels,
                 generated_at=now,
                 **{"caveats": finding_set.caveats, **fields},
             )
@@ -133,7 +156,7 @@ class Coach:
                     next_take=[],
                 )
 
-        plan = rules.plan(body, finding_set, wants, self.settings)
+        plan = rules.plan(body, finding_set, wants, settings)
 
         def from_rules(code: str, message: str) -> schemas.Coaching:
             return result(
@@ -149,11 +172,18 @@ class Coach:
                 "nothing_to_correct",
                 NOTHING_STANDS_OUT if body.profile == "custom" else NOTHING_TO_CORRECT,
             )
+        if not use_model:
+            return from_rules("not_asked", NOT_ASKED)
         if self.llm is None:
             return from_rules("ai_off", AI_OFF)
 
         prompt = build_prompt(
-            body, finding_set, wants, self.settings, context_tokens=self.llm.context_tokens
+            body,
+            finding_set,
+            wants,
+            settings,
+            context_tokens=self.llm.context_tokens,
+            labels=labels,
         )
         try:
             checked, seconds = self._ask(body, finding_set, prompt, check)
@@ -184,7 +214,7 @@ class Coach:
                 body,
                 finding_set,
                 wants,
-                self.settings,
+                settings,
             ),
             caveats=finding_set.caveats + ([SHORTENED_CAVEAT] if prompt.shortened else []),
             model_seconds=round(seconds, 1),

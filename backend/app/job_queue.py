@@ -10,6 +10,9 @@ processed is simply a row whose status is "queued".
 There are two kinds of job. An "analysis" job measures an uploaded recording. A "coaching"
 job has no audio: it only writes the coaching of an analysis that already exists again.
 
+An analysis job can also be a fresh analysis of a recording that was kept earlier. Its
+result is stored as a new revision of that recording, next to the earlier result.
+
 Status changes are written as "UPDATE ... WHERE status = <expected>", so if two things
 happen at once (the user cancels just as the worker picks the job up) only one of them wins
 and the other can tell that it lost.
@@ -87,12 +90,14 @@ def create_job(
     now: datetime,
     role: str = TAKE,
     title: str | None = None,
+    source_analysis_id: str | None = None,
 ) -> Job:
     job = Job(
         id=job_id,
         status=QUEUED,
         role=role,
         title=title,
+        source_analysis_id=source_analysis_id,
         profile=profile,
         language_hint=language_hint,
         retain_audio=retain_audio,
@@ -145,6 +150,39 @@ def create_coaching_job(session: Session, analysis: Analysis, now: datetime) -> 
     session.add(job)
     session.commit()
     return job, True
+
+
+def active_reanalysis(session: Session, analysis_id: str) -> Job | None:
+    """A job that is already waiting or running to analyse this analysis's recording again."""
+    return session.execute(
+        select(Job).where(
+            Job.kind == ANALYSIS,
+            Job.source_analysis_id == analysis_id,
+            Job.status.in_((QUEUED, RUNNING)),
+        )
+    ).scalar_one_or_none()
+
+
+def recording_root(analysis: Analysis) -> str:
+    """The ID shared by every result made from the same recording."""
+    return analysis.root_id or analysis.id
+
+
+def recording_family(session: Session, root_id: str) -> list[Analysis]:
+    """Every result made from one recording, oldest revision first."""
+    return list(
+        session.execute(
+            select(Analysis)
+            .where((Analysis.root_id == root_id) | (Analysis.id == root_id))
+            .order_by(Analysis.revision, Analysis.created_at, Analysis.id)
+        ).scalars()
+    )
+
+
+def next_revision(session: Session, root_id: str) -> int:
+    family = recording_family(session, root_id)
+    # 2 at least: if the first result has since been deleted, this is still a later one.
+    return max((analysis.revision for analysis in family), default=1) + 1
 
 
 # --- Worker side -------------------------------------------------------------------------
@@ -225,6 +263,13 @@ def complete_job(
     if job.retain_audio and upload_path:
         kept_path = uploads.retain_audio(upload_path, analysis_id, data_dir)
 
+    # A fresh analysis of a kept recording joins that recording's family as a new revision.
+    root_id, revision, reason = analysis_id, 1, None
+    if job.source_analysis_id:
+        source = session.get(Analysis, job.source_analysis_id)
+        root_id = recording_root(source) if source else job.source_analysis_id
+        revision, reason = next_revision(session, root_id), "reanalysed"
+
     result = schemas.AnalysisResult(
         **body.model_dump(),
         analysis_id=analysis_id,
@@ -232,7 +277,8 @@ def complete_job(
         created_at=now,
         role=job.role,
         title=job.title,
-        revision=1,
+        revision=revision,
+        revision_reason=reason,
         audio_retained=kept_path is not None,
     )
     analysis = Analysis(
@@ -246,9 +292,13 @@ def complete_job(
         duration_seconds=result.duration_seconds,
         schema_version=result.schema_version,
         settings_version=settings_version,
-        revision=1,
-        # The coaching lives in its own column so it can be rewritten without the result.
-        result=result.model_dump(mode="json", by_alias=True, exclude={"coaching"}),
+        calibration_version=int(body.settings.get("calibration_version", 1)),
+        root_id=root_id,
+        revision=revision,
+        revision_reason=reason,
+        # The coaching lives in its own column so it can be rewritten without the result,
+        # and the family of revisions is looked up afresh whenever the result is read.
+        result=result.model_dump(mode="json", by_alias=True, exclude={"coaching", "revisions"}),
         coaching=coaching.model_dump(mode="json", by_alias=True) if coaching else None,
         # Stored on its own as well: a picture for the screen, read by no measurement.
         waveform=waveform.model_dump(mode="json", by_alias=True) if waveform else None,
@@ -609,6 +659,7 @@ def to_status(
         cancel_requested=job.cancel_requested and job.status == RUNNING,
         error=error,
         analysis_id=job.analysis_id,
+        source_analysis_id=job.source_analysis_id,
         can_retry=(
             job.status == FAILED
             and job.error_retryable

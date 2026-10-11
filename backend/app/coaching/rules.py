@@ -94,6 +94,16 @@ TEMPLATES: dict[tuple[str, str], Template] = {
         target="Hold at least one silence for {held} or more.",
         technique="a full stop before the line, with a silent count of “one thousand one, one thousand two”",
     ),
+    ("accidental_pauses", "lower"): Template(
+        title="Carry on through the place you stopped",
+        why="A stop you did not mean breaks the thought the listener was following.",
+        drill=(
+            "Say {line} and go straight on into the next phrase without stopping. Repeat 3 "
+            "times, then start one phrase earlier and run through it again."
+        ),
+        target="Get past the place you marked without an unplanned stop.",
+        technique="the line said and carried straight on into the phrase that follows it, with no stop",
+    ),
     ("loudness_variation", "lower"): Template(
         title="Keep your volume level",
         why="Your loudness rises and falls noticeably across the piece.",
@@ -195,6 +205,10 @@ STRENGTH_NOTES: dict[tuple[str, str | None], str] = {
     ("loudness_variation", "high"): ("Loud and quiet passages clearly differ. Keep that contrast."),
     ("pitch_variation", "high"): "Your pitch moves across a wide range. Keep it.",
     ("emphasis", None): "Some words clearly stand out. Keep choosing them on purpose.",
+    ("intentional_pauses", None): (
+        "The pauses you marked as intentional are doing what you meant. Keep placing them "
+        "on purpose."
+    ),
     ("fast_segment", None): "This change of pace gives contrast. Keep it if it was intended.",
     ("slow_segment", None): "This change of pace gives contrast. Keep it if it was intended.",
 }
@@ -205,7 +219,7 @@ NOTHING_TO_CORRECT = "Record the same passage again and see whether the measurem
 
 def direction(found: Found, wants: dict[str, str]) -> str:
     """Which way the measurement should move for this issue: "raise" or "lower"."""
-    if found.kind in ("fast_segment", "hesitations"):
+    if found.kind in ("fast_segment", "hesitations", "accidental_pauses"):
         return "lower"
     if found.kind in ("slow_segment", "no_emphasis", "no_pauses"):
         return "raise"

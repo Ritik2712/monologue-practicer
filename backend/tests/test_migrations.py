@@ -22,7 +22,14 @@ def test_migrations_build_exactly_the_tables_the_code_expects(tmp_path):
         differences = compare_metadata(MigrationContext.configure(connection), Base.metadata)
     engine.dispose()
 
-    assert {"jobs", "analyses", "worker_state"} <= tables
+    assert {
+        "jobs",
+        "analyses",
+        "worker_state",
+        "feedback",
+        "calibration_versions",
+        "calibration_state",
+    } <= tables
     assert differences == []
 
 
@@ -63,4 +70,10 @@ def test_jobs_stored_before_coaching_existed_become_analysis_jobs(tmp_path):
             None,
             None,
         )
+        # Results from before calibration were made with the defaults (version 1), and
+        # each is the first and only result of its own recording.
+        assert connection.execute(
+            text("SELECT calibration_version, root_id, revision, revision_reason FROM analyses")
+        ).one() == (1, "a1", 1, None)
+        assert connection.execute(text("SELECT source_analysis_id FROM jobs")).scalar_one() is None
     engine.dispose()

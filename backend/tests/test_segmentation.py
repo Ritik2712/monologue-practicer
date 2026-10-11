@@ -6,6 +6,7 @@ from app.pipeline.segmentation import (
     assign_words,
     build_segments,
     count_words,
+    find_short_silences,
     is_countable_word,
 )
 from app.pipeline.settings import DEFAULT_SETTINGS, AnalysisSettings
@@ -145,3 +146,57 @@ def test_punctuation_is_not_counted_as_a_word_but_hindi_words_are():
     assert not is_countable_word("—")
     assert not is_countable_word("।")
     assert count_words([Word("मैं", 0, 1), Word("—", 1, 2), Word("खतरा", 2, 3)]) == 2
+
+
+# --- Silences too short to be pauses ------------------------------------------------------
+
+
+def silences(found) -> list[tuple[float, float]]:
+    return [(round(s.start, 3), round(s.end, 3)) for s in found]
+
+
+def test_gaps_under_the_minimum_pause_are_kept_on_record_as_short_silences():
+    speech = regions((0.0, 1.0), (1.3, 2.0), (2.6, 3.0), (3.05, 4.0))
+
+    found = find_short_silences(speech, DEFAULT_SETTINGS)
+
+    # 0.3 s and 0.05 s are short silences. The 0.6 s gap is a pause, so it is not listed.
+    assert silences(found) == [(1.0, 1.3), (3.0, 3.05)]
+    assert found[0].duration == pytest.approx(0.3)
+
+
+def test_every_gap_is_either_a_pause_or_a_short_silence_never_both_or_neither():
+    speech = regions((0.0, 1.0), (1.3, 2.0), (2.5, 3.0), (3.499, 4.0), (9.5, 10.0))
+
+    _, pauses = build_segments(speech, DEFAULT_SETTINGS)
+    short = find_short_silences(speech, DEFAULT_SETTINGS)
+
+    assert [(p.start, p.end) for p in pauses] == [(2.0, 2.5), (4.0, 9.5)]
+    assert silences(short) == [(1.0, 1.3), (3.0, 3.499)]
+
+
+def test_what_counts_as_a_short_silence_follows_the_minimum_pause_in_force():
+    """With the minimum pause lowered to 250 ms, a 0.3 s gap is a pause, not a short silence."""
+    speech = regions((0.0, 1.0), (1.3, 2.0), (2.2, 3.0))
+    lowered = AnalysisSettings(min_pause_ms=250)
+
+    assert silences(find_short_silences(speech, DEFAULT_SETTINGS)) == [(1.0, 1.3), (2.0, 2.2)]
+    assert silences(find_short_silences(speech, lowered)) == [(2.0, 2.2)]
+    assert len(build_segments(speech, lowered)[1]) == 1
+
+
+def test_overlapping_and_unsorted_regions_leave_no_phantom_silences():
+    speech = regions((2.0, 3.0), (0.0, 1.5), (1.0, 1.8), (1.9, 2.5))
+
+    assert silences(find_short_silences(speech, DEFAULT_SETTINGS)) == [(1.8, 1.9)]
+    assert find_short_silences([], DEFAULT_SETTINGS) == []
+
+
+def test_settings_stored_with_an_older_result_can_still_be_read():
+    """An older result does not record newer settings, and may hold ones since removed."""
+    stored = {"version": 1, "min_pause_ms": 400, "some_retired_setting": 7}
+
+    settings = AnalysisSettings.from_dict(stored)
+
+    assert (settings.min_pause_ms, settings.calibration_version) == (400, 1)
+    assert settings.long_silence_ms == DEFAULT_SETTINGS.long_silence_ms

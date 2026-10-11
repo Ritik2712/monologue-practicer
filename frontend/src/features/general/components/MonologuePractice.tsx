@@ -11,6 +11,7 @@ import type { LanguageHint } from "../types";
 import {
   generalApi,
   useBackendHealth,
+  useFeedback,
   useGeneralStore,
   useRecorder,
 } from "../useGeneralPractice";
@@ -38,6 +39,10 @@ export function MonologuePractice() {
   const { state, store } = useGeneralStore();
   const { state: recorderState, recorder } = useRecorder();
   const { health, refresh: refreshHealth } = useBackendHealth();
+  // Only the calibration is needed here: feedback itself is given in General Practice.
+  const { state: feedbackState } = useFeedback(null);
+  const calibration =
+    feedbackState.calibration.status === "ready" ? feedbackState.calibration.data : null;
   const takeSelectId = useId();
 
   const [language, setLanguage] = useState<LanguageHint>("auto");
@@ -144,7 +149,13 @@ export function MonologuePractice() {
         <h2 id="reference-step" className="text-lg font-semibold">
           1. The reference recording
         </h2>
-        <ReferenceLibrary state={state} store={store} options={options} busy={busy} />
+        <ReferenceLibrary
+          state={state}
+          store={store}
+          options={options}
+          busy={busy}
+          calibration={calibration}
+        />
 
         {state.referenceDetail.status === "loading" && (
           <p className={`text-sm ${MUTED}`}>Loading the reference…</p>
@@ -232,6 +243,7 @@ export function MonologuePractice() {
         kind={state.runKind}
         role={state.runRole}
         coachingFor={state.coachingFor}
+        again={state.reanalysisFor !== null}
         store={store}
       />
 
@@ -259,6 +271,8 @@ export function MonologuePractice() {
                 <option key={item.analysisId} value={item.analysisId}>
                   {formatDateTime(item.createdAt)} · {formatSpan(item.durationSeconds)}
                   {item.originalFilename ? ` · ${item.originalFilename}` : ""}
+                  {/* Several results can come from one recording: say which this is. */}
+                  {item.revision > 1 ? ` · revision ${item.revision}` : ""}
                 </option>
               ))}
             </select>
@@ -298,7 +312,8 @@ export function MonologuePractice() {
                 href={`/general?analysis=${encodeURIComponent(take.analysisId)}`}
                 className={`rounded font-medium text-indigo-800 underline underline-offset-4 hover:no-underline dark:text-indigo-300 ${FOCUS_RING}`}
               >
-                See this take&rsquo;s full measurements and coaching in General Practice
+                See this take&rsquo;s full measurements and coaching, and give feedback on them,
+                in General Practice
               </Link>
             </p>
           </>

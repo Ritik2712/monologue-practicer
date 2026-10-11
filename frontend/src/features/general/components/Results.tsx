@@ -1,11 +1,21 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useCallback, useId, useState } from "react";
 
 import { Button } from "@/components/Button";
 
 import { PAUSE_CONTEXT_SECONDS } from "../coaching";
 import { compareAttempts, earlierAttempts } from "../compare";
+import {
+  correctionRating,
+  labelsChanged,
+  madeWithOlderSettings,
+  pauseFeedback,
+  pauseFloorText,
+  revisionLabel,
+  segmentFeedback,
+  settingsMismatch,
+} from "../feedback";
 import {
   FLAG_LABELS,
   formatDateTime,
@@ -20,16 +30,19 @@ import {
   profileName,
   UNAVAILABLE,
 } from "../format";
+import type { CorrectionState } from "../generalStore";
 import type {
   AnalysisResult,
   AnalysisSummary,
   CoachStatus,
   DeliveryProfile,
   MetricName,
-  SpeechSegment,
+  SegmentCorrection,
 } from "../types";
 import { useSegmentPlayer } from "../useGeneralPractice";
 import { Coaching, type Regeneration } from "./Coaching";
+import { type FeedbackTools, PauseFeedbackSelect, SegmentReport } from "./FeedbackControls";
+import { FeedbackSection } from "./FeedbackSection";
 import {
   FOCUS_RING,
   FocusTag,
@@ -66,12 +79,27 @@ type ResultsProps = {
   onClose: () => void;
   onDelete: () => void;
   onDeleteAudio: () => void;
+  /**
+   * The feedback on this result and the calibration it feeds. Left out for a reference
+   * recording, which takes no feedback.
+   */
+  feedback?: FeedbackTools;
+  /** How saving a corrected transcript is going. */
+  correction?: CorrectionState;
+  onCorrectTranscript?: (corrections: SegmentCorrection[]) => void;
+  /** Analyses this result's kept recording again, with the settings in force now. */
+  onReanalyse?: () => void;
+  /** Opens another result made from the same recording. */
+  onOpenRevision?: (analysisId: string) => void;
 };
+
+const NO_CORRECTION: CorrectionState = { status: "idle" };
 
 const PACE_LABELS = { typical: "Typical", faster: "Faster", slower: "Slower" } as const;
 
 const SETTING_LABELS: Record<string, [label: string, unit: string]> = {
-  version: ["Settings version", ""],
+  version: ["Version of the app's default settings", ""],
+  calibration_version: ["Version of your calibration (1 means the defaults)", ""],
   min_pause_ms: ["A silence counts as a pause from", "ms"],
   medium_pause_ms: ["A pause is “medium” from", "ms"],
   long_silence_ms: ["A pause is a “long silence”, starting a new section, from", "ms"],
@@ -101,6 +129,11 @@ export function Results({
   onClose,
   onDelete,
   onDeleteAudio,
+  feedback,
+  correction = NO_CORRECTION,
+  onCorrectTranscript,
+  onReanalyse,
+  onOpenRevision,
 }: ResultsProps) {
   const { audioProps, playRange, currentTime } = useSegmentPlayer();
   const [showShortPauses, setShowShortPauses] = useState(false);
@@ -110,6 +143,16 @@ export function Results({
   const m = analysis.metrics;
   const isReference = mode === "reference";
   const canPlay = audioSrc !== null;
+  // The minimum pause this result was made with, in words. Feedback can move it, so it is
+  // read from the result rather than assumed to be half a second.
+  const pauseFloor = pauseFloorText(analysis.settings);
+  const items = feedback?.state.items ?? [];
+  const calibration =
+    feedback?.state.calibration.status === "ready" ? feedback.state.calibration.data : null;
+  const outdated = isReference ? null : madeWithOlderSettings(analysis, calibration);
+  const otherRevisions = (analysis.revisions ?? []).filter(
+    (item) => item.analysisId !== analysis.analysisId,
+  );
   const focus = new Set<MetricName>(profile?.focus.map((item) => item.metric));
   const isFocus = (name: MetricName) => focus.has(name);
 
@@ -153,6 +196,23 @@ export function Results({
               : `${formatDateTime(analysis.createdAt)} · ${profileName(analysis.profile)} profile`}{" "}
             · {language} · {formatSpan(analysis.durationSeconds)}
           </p>
+          {!isReference && (analysis.revision > 1 || otherRevisions.length > 0) && (
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm">
+              <span className="font-medium">
+                {revisionLabel(analysis.revision, analysis.revisionReason)}
+              </span>
+              <span className={MUTED}>
+                {otherRevisions.length > 0
+                  ? "Other results from the same recording:"
+                  : "The earlier results from this recording were deleted."}
+              </span>
+              {otherRevisions.map((item) => (
+                <LinkButton key={item.analysisId} onClick={() => onOpenRevision?.(item.analysisId)}>
+                  {revisionLabel(item.revision, item.reason)}
+                </LinkButton>
+              ))}
+            </p>
+          )}
         </div>
         {!isReference && (
           <div className="flex flex-wrap gap-2">
@@ -172,6 +232,28 @@ export function Results({
               <li key={warning.code}>{warning.message}</li>
             ))}
           </ul>
+        </Notice>
+      )}
+
+      {outdated && (
+        <Notice kind="info">
+          <p>
+            This result was made when a silence counted as a pause from {outdated.then} ms. Your
+            feedback has since moved that to {outdated.now} ms, so a new analysis of the same
+            recording could find different pauses and phrases. This result is not changed.
+          </p>
+          <p className={`mt-1 ${MUTED}`}>
+            {analysis.audioRetained
+              ? "Analysing again makes a new revision next to this one, with the settings as they are now."
+              : "The recording was not kept, so it cannot be analysed again. Results from new recordings use the new setting."}
+          </p>
+          {analysis.audioRetained && onReanalyse && (
+            <div className="mt-2">
+              <Button disabled={busy} onClick={onReanalyse}>
+                Analyse this recording again
+              </Button>
+            </div>
+          )}
         </Notice>
       )}
 
@@ -210,7 +292,7 @@ export function Results({
               label="Pauses"
               value={formatMetric(m.pauseCount, 0)}
               metric={m.pauseCount}
-              hint="Silences of half a second or more between phrases."
+              hint={`Silences of ${pauseFloor} or more between phrases.`}
             />
             <Tile
               label="Median pause"
@@ -272,6 +354,14 @@ export function Results({
           regeneration={regeneration}
           onRegenerate={onRegenerateCoaching}
           playButton={playButton}
+          labelsChanged={labelsChanged(analysis.coaching, items)}
+          rating={
+            feedback && {
+              store: feedback.store,
+              saving: feedback.state.saving,
+              find: (findingId, kind) => correctionRating(items, findingId, kind),
+            }
+          }
         />
       )}
 
@@ -282,7 +372,7 @@ export function Results({
       <Section
         id="pace-heading"
         title="Pace"
-        description="Each segment is one phrase: speech with no pause of half a second or more inside it. Segment WPM is that phrase's words ÷ its own length."
+        description={`Each segment is one phrase: speech with no pause of ${pauseFloor} or more inside it. Segment WPM is that phrase's words ÷ its own length.`}
       >
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Tile
@@ -329,7 +419,20 @@ export function Results({
             </p>
           </div>
         )}
-        <SegmentsTable segments={analysis.segments} playButton={playButton} />
+        <SegmentsTable
+          analysis={analysis}
+          playButton={playButton}
+          report={
+            feedback && onCorrectTranscript
+              ? {
+                  tools: feedback,
+                  correction,
+                  playheadSeconds: canPlay ? currentTime : null,
+                  onCorrectTranscript,
+                }
+              : undefined
+          }
+        />
       </Section>
 
       {/* --- Pauses -------------------------------------------------------------------- */}
@@ -382,7 +485,7 @@ export function Results({
         </div>
 
         {analysis.pauses.length === 0 ? (
-          <p className={`text-sm ${MUTED}`}>No pauses of half a second or more were detected.</p>
+          <p className={`text-sm ${MUTED}`}>No pauses of {pauseFloor} or more were detected.</p>
         ) : (
           <>
             <div className="overflow-x-auto">
@@ -394,12 +497,13 @@ export function Results({
                     <th scope="col" className="py-2 pr-4 font-medium">Length</th>
                     <th scope="col" className="py-2 pr-4 font-medium">Kind</th>
                     <th scope="col" className="py-2 pr-4 font-medium">Between</th>
-                    <th scope="col" className="py-2 font-medium">Listen</th>
+                    <th scope="col" className="py-2 pr-4 font-medium">Listen</th>
+                    {feedback && <th scope="col" className="py-2 font-medium">Your feedback</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {shownPauses.map((pause) => (
-                    <tr key={pause.id} className="border-b border-zinc-100 dark:border-zinc-900">
+                    <tr key={pause.id} className="border-b border-zinc-100 align-top dark:border-zinc-900">
                       <td className="py-2 pr-4 tabular-nums whitespace-nowrap">
                         {formatTimecode(pause.startSeconds)}
                       </td>
@@ -415,13 +519,23 @@ export function Results({
                       <td className="py-2 pr-4 whitespace-nowrap">
                         Segments {pause.index + 1} and {pause.index + 2}
                       </td>
-                      <td className="py-2">
+                      <td className="py-2 pr-4">
                         {playButton(
                           `Play the pause at ${formatTimecode(pause.startSeconds)} with a little either side`,
                           pause.startSeconds - PAUSE_CONTEXT_SECONDS,
                           pause.endSeconds + PAUSE_CONTEXT_SECONDS,
                         )}
                       </td>
+                      {feedback && (
+                        <td className="py-2">
+                          <PauseFeedbackSelect
+                            pause={pause}
+                            item={pauseFeedback(items, pause.id)}
+                            disabled={feedback.state.saving}
+                            store={feedback.store}
+                          />
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -438,6 +552,14 @@ export function Results({
                 Also list the {shortPauseCount} short {shortPauseCount === 1 ? "pause" : "pauses"}{" "}
                 (under 1 second)
               </label>
+            )}
+            {feedback && (
+              <p className={`text-xs ${MUTED}`}>
+                Your feedback never changes a pause that was measured. Calling a pause
+                intentional or accidental changes only how the coaching reads it; the pause stays
+                in every figure above. To report a pause the app did not detect, use “Report a
+                problem” on its phrase in the Pace section.
+              </p>
             )}
           </>
         )}
@@ -532,6 +654,9 @@ export function Results({
         </div>
       </Section>
 
+      {/* --- Feedback ------------------------------------------------------------------ */}
+      {!isReference && feedback && <FeedbackSection analysis={analysis} tools={feedback} />}
+
       {/* --- Compare ------------------------------------------------------------------- */}
       {!isReference && (
       <Section
@@ -555,6 +680,7 @@ export function Results({
                   <option key={item.analysisId} value={item.analysisId}>
                     {formatDateTime(item.createdAt)} · {profileName(item.profile)} ·{" "}
                     {formatSpan(item.durationSeconds)}
+                    {item.revision > 1 ? ` · revision ${item.revision}` : ""}
                   </option>
                 ))}
               </select>
@@ -592,6 +718,9 @@ export function Results({
                 </tbody>
               </table>
             </div>
+            {settingsMismatch(analysis.settings, baseline.settings) && (
+              <Notice kind="warning">{settingsMismatch(analysis.settings, baseline.settings)}</Notice>
+            )}
             {baseline.profile !== analysis.profile && (
               <p className={`text-xs ${MUTED}`}>
                 The two attempts used different profiles. The measurements are still made the same
@@ -613,12 +742,17 @@ export function Results({
         {analysis.transcript && (
           <details className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
             <summary className={`cursor-pointer rounded font-medium ${FOCUS_RING}`}>
-              Transcript, as the speech recogniser heard it
+              {analysis.revisionReason === "transcript_corrected"
+                ? "Transcript, with your corrections"
+                : "Transcript, as the speech recogniser heard it"}
             </summary>
             <p className="mt-2 text-sm leading-relaxed">{analysis.transcript}</p>
             <p className={`mt-2 text-xs ${MUTED}`}>
               Recognised by the “{analysis.pipeline.speechModel}” model on this device. It can
               mishear words, which changes word counts and WPM.
+              {!isReference &&
+                feedback &&
+                " To correct a phrase, use “Report a problem” on it in the Pace section: the counts are then worked out again from your words."}
             </p>
           </details>
         )}
@@ -654,15 +788,35 @@ export function Results({
 }
 
 type SegmentsTableProps = {
-  segments: SpeechSegment[];
+  analysis: AnalysisResult;
   playButton: (label: string, start: number, end?: number) => React.ReactNode;
+  /** What reporting a problem with a phrase needs. Left out for a reference recording. */
+  report?: {
+    tools: FeedbackTools;
+    correction: CorrectionState;
+    playheadSeconds: number | null;
+    onCorrectTranscript: (corrections: SegmentCorrection[]) => void;
+  };
 };
 
-function SegmentsTable({ segments, playButton }: SegmentsTableProps) {
+function SegmentsTable({ analysis, playButton, report }: SegmentsTableProps) {
+  const { segments } = analysis;
+  const panelId = useId();
+  // One phrase's report form is open at a time, so the table stays readable.
+  const [openId, setOpenId] = useState<string | null>(null);
+  const openSegment = segments.find((segment) => segment.id === openId);
+  // Keyboard and screen-reader users land on the form they have just opened. The function
+  // is kept the same between renders so that it runs once, when the form appears, and not
+  // every time the page redraws while the recording plays.
+  const focusPanel = useCallback((element: HTMLDivElement | null) => {
+    element?.focus({ preventScroll: true });
+    element?.scrollIntoView({ block: "nearest" });
+  }, []);
   if (segments.length === 0) {
     return <p className={`text-sm ${MUTED}`}>No speech was detected, so there are no segments.</p>;
   }
   return (
+    <>
     <div className="overflow-x-auto">
       <table className="w-full min-w-[40rem] text-left text-sm">
         <caption className="sr-only">Speech segments</caption>
@@ -674,7 +828,7 @@ function SegmentsTable({ segments, playButton }: SegmentsTableProps) {
             <th scope="col" className="py-2 pr-3 text-right font-medium">WPM</th>
             <th scope="col" className="py-2 pr-3 font-medium">Vs. typical</th>
             <th scope="col" className="py-2 pr-3 font-medium">What was said</th>
-            <th scope="col" className="py-2 font-medium">Listen</th>
+            <th scope="col" className="py-2 font-medium">{report ? "Listen / report" : "Listen"}</th>
           </tr>
         </thead>
         <tbody>
@@ -685,54 +839,97 @@ function SegmentsTable({ segments, playButton }: SegmentsTableProps) {
               segment.pitchDeltaSemitones !== null &&
                 `Pitch ${formatDelta(segment.pitchDeltaSemitones)} semitones`,
             ].filter(Boolean);
+            const saved = report ? segmentFeedback(report.tools.state.items, segment.id) : [];
+            const open = openId === segment.id;
             return (
-              <tr key={segment.id} className="border-b border-zinc-100 align-top dark:border-zinc-900">
-                <th scope="row" className="py-2 pr-3 font-normal tabular-nums">
-                  {segment.index + 1}
-                </th>
-                <td className="py-2 pr-3 tabular-nums whitespace-nowrap">
-                  {formatTimecode(segment.startSeconds)} – {formatTimecode(segment.endSeconds)}
-                  <span className={`block text-xs ${MUTED}`}>
-                    {formatSpan(segment.speechActiveSeconds)}
-                  </span>
-                </td>
-                <td className="py-2 pr-3 text-right tabular-nums">
-                  {segment.wordCount ?? UNAVAILABLE}
-                </td>
-                <td className="py-2 pr-3 text-right">
-                  <span className="font-medium tabular-nums">{formatNumber(segment.segmentWpm)}</span>
-                  {!segment.reliable && segment.segmentWpm !== null && (
-                    <span className="mt-0.5 block">
-                      <QualityBadge quality="estimated" />
+                <tr
+                  key={segment.id}
+                  className={`border-b border-zinc-100 align-top dark:border-zinc-900 ${
+                    open ? "bg-indigo-50 dark:bg-indigo-950/40" : ""
+                  }`}
+                >
+                  <th scope="row" className="py-2 pr-3 font-normal tabular-nums">
+                    {segment.index + 1}
+                  </th>
+                  <td className="py-2 pr-3 tabular-nums whitespace-nowrap">
+                    {formatTimecode(segment.startSeconds)} – {formatTimecode(segment.endSeconds)}
+                    <span className={`block text-xs ${MUTED}`}>
+                      {formatSpan(segment.speechActiveSeconds)}
                     </span>
-                  )}
-                </td>
-                <td className="py-2 pr-3">
-                  {segment.paceVsTypical ? PACE_LABELS[segment.paceVsTypical] : UNAVAILABLE}
-                </td>
-                <td className="py-2 pr-3">
-                  {segment.transcript || <span className={MUTED}>{UNAVAILABLE}</span>}
-                  {voice.length > 0 && (
-                    <span className={`mt-0.5 block text-xs ${MUTED}`}>
-                      Against your typical phrase: {voice.join(" · ")}
-                    </span>
-                  )}
-                  {cautions.length > 0 && (
-                    <span className={`mt-0.5 block text-xs ${MUTED}`}>{cautions.join(". ")}.</span>
-                  )}
-                </td>
-                <td className="py-2">
-                  {playButton(
-                    `Play segment ${segment.index + 1}`,
-                    segment.startSeconds,
-                    segment.endSeconds,
-                  )}
-                </td>
-              </tr>
+                  </td>
+                  <td className="py-2 pr-3 text-right tabular-nums">
+                    {segment.wordCount ?? UNAVAILABLE}
+                  </td>
+                  <td className="py-2 pr-3 text-right">
+                    <span className="font-medium tabular-nums">{formatNumber(segment.segmentWpm)}</span>
+                    {!segment.reliable && segment.segmentWpm !== null && (
+                      <span className="mt-0.5 block">
+                        <QualityBadge quality="estimated" />
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {segment.paceVsTypical ? PACE_LABELS[segment.paceVsTypical] : UNAVAILABLE}
+                  </td>
+                  <td className="py-2 pr-3">
+                    {segment.transcript || <span className={MUTED}>{UNAVAILABLE}</span>}
+                    {voice.length > 0 && (
+                      <span className={`mt-0.5 block text-xs ${MUTED}`}>
+                        Against your typical phrase: {voice.join(" · ")}
+                      </span>
+                    )}
+                    {cautions.length > 0 && (
+                      <span className={`mt-0.5 block text-xs ${MUTED}`}>{cautions.join(". ")}.</span>
+                    )}
+                  </td>
+                  <td className="py-2">
+                    <div className="flex flex-wrap gap-x-3">
+                      {playButton(
+                        `Play segment ${segment.index + 1}`,
+                        segment.startSeconds,
+                        segment.endSeconds,
+                      )}
+                      {report && (
+                        <LinkButton
+                          aria-expanded={open}
+                          aria-controls={open ? panelId : undefined}
+                          aria-label={`${open ? "Close the report on" : "Report a problem with"} segment ${segment.index + 1}`}
+                          onClick={() => setOpenId(open ? null : segment.id)}
+                        >
+                          {open ? "Close" : saved.length > 0 ? `Report (${saved.length} saved)` : "Report a problem"}
+                        </LinkButton>
+                      )}
+                    </div>
+                  </td>
+                </tr>
             );
           })}
         </tbody>
       </table>
     </div>
+    {/* Below the table, not inside it: the table scrolls sideways on a narrow screen, and
+        a form should never have to be scrolled sideways to be read. */}
+    {report && openSegment && (
+      <div
+        id={panelId}
+        key={openSegment.id}
+        tabIndex={-1}
+        ref={focusPanel}
+        className={`rounded-lg ${FOCUS_RING}`}
+      >
+        <SegmentReport
+          analysis={analysis}
+          segment={openSegment}
+          saved={segmentFeedback(report.tools.state.items, openSegment.id)}
+          tools={report.tools}
+          correction={report.correction}
+          playheadSeconds={report.playheadSeconds}
+          playButton={playButton}
+          onCorrectTranscript={report.onCorrectTranscript}
+          onClose={() => setOpenId(null)}
+        />
+      </div>
+    )}
+    </>
   );
 }

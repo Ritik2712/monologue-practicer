@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/Button";
 
+import { revisionLabel } from "../feedback";
 import {
   formatDateTime,
   formatMetric,
@@ -85,6 +86,11 @@ export function HistoryPanel({
                         <span className={`block text-xs break-all ${MUTED}`}>
                           {[item.originalFilename, languageName(item.language)].filter(Boolean).join(" · ")}
                         </span>
+                        {item.revision > 1 && (
+                          <span className="block text-xs font-medium">
+                            {revisionLabel(item.revision, item.revisionReason)}
+                          </span>
+                        )}
                         {item.audioRetained && (
                           <span className={`block text-xs ${MUTED}`}>Recording kept</span>
                         )}

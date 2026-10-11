@@ -14,6 +14,7 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
 from app import schemas
+from app.calibration.registry import MIN_PAUSE, show
 from app.coaching.findings import number, seconds_text
 from app.comparison.align import Alignment, align_words, match_key
 from app.comparison.settings import ComparisonSettings
@@ -512,6 +513,27 @@ def _alignment_summary(
     )
 
 
+def settings_note(take: schemas.AnalysisBody, reference: schemas.AnalysisBody) -> str | None:
+    """Says so when the two recordings were analysed with a different minimum pause.
+
+    Feedback can move the minimum pause. Two results made either side of such a change cut
+    their pauses differently, and setting them side by side without saying so would pass a
+    change of settings off as a change of delivery.
+    """
+    mine = take.settings.get(MIN_PAUSE.name, MIN_PAUSE.default)
+    theirs = reference.settings.get(MIN_PAUSE.name, MIN_PAUSE.default)
+    if mine == theirs:
+        return None
+    return (
+        f"These two were analysed with different settings: the minimum pause was "
+        f"{show(MIN_PAUSE, mine)} for your take and {show(MIN_PAUSE, theirs)} for the "
+        "reference. A silence between those two lengths counts as a pause in one and not "
+        "in the other, so pause counts "
+        "and phrases are not like for like. Analyse the older result again, with the "
+        "settings as they are now, to bring the two into line."
+    )
+
+
 def compare(
     take: schemas.AnalysisBody,
     reference: schemas.AnalysisBody,
@@ -546,6 +568,7 @@ def compare(
         pauses=pauses,
         phrases=phrases,
         differences=find_differences(metrics, pauses, phrases, settings),
+        settings_note=settings_note(take, reference),
         caveats=caveats,
         settings=settings.to_dict(),
     )

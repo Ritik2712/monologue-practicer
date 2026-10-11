@@ -7,7 +7,7 @@ Field names are snake_case in Python and camelCase in JSON (`start_seconds` is s
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 Quality = Literal["measured", "estimated", "unavailable"]
@@ -82,6 +82,16 @@ class PauseEvent(ApiModel):
     after_segment_id: str
     before_segment_id: str
     starts_new_section: bool
+
+
+class ShortSilence(ApiModel):
+    """A silence too short to count as a pause. It stays inside a segment as speaking time."""
+
+    start_seconds: float
+    end_seconds: float
+    duration_seconds: float
+    # The segment it lies inside.
+    segment_id: str | None
 
 
 class WordTiming(ApiModel):
@@ -168,6 +178,9 @@ class AnalysisBody(ApiModel):
     transcript: str | None
     segments: list[SpeechSegment]
     pauses: list[PauseEvent]
+    # Kept so a report of a missed pause can be checked against what the detector heard.
+    # None for results stored before these were recorded.
+    short_silences: list[ShortSilence] | None = None
     words: list[WordTiming]
     metrics: Metrics
     energy_timeline: EnergyTimeline
@@ -251,9 +264,27 @@ class Coaching(ApiModel):
     caveats: list[str]
     # The bands that produced the wording, including their version number.
     settings: dict[str, float | int]
+    # The user's own labels on pauses that this coaching took into account, by pause ID:
+    # "intentional" or "accidental". They change the wording only, never a measurement.
+    labels_used: dict[str, str] = {}
     generated_at: datetime
     # How long the language model took, when it was used.
     model_seconds: float | None = None
+
+
+RevisionReason = Literal["transcript_corrected", "reanalysed"]
+
+
+class RevisionInfo(ApiModel):
+    """One result in the family of results made from the same recording."""
+
+    analysis_id: str
+    revision: int
+    # None for the original analysis.
+    reason: RevisionReason | None
+    created_at: datetime
+    # The calibration version whose settings produced it.
+    calibration_version: int
 
 
 class AnalysisResult(AnalysisBody):
@@ -264,8 +295,12 @@ class AnalysisResult(AnalysisBody):
     role: Role = "take"
     # The name the user gave a reference. None for a take.
     title: str | None = None
-    # 1 for the original analysis. Re-analysing later adds a new revision, never overwrites.
+    # 1 for the original analysis. A corrected transcript or a fresh analysis of the same
+    # recording is stored as a new revision; an earlier one is never overwritten.
     revision: int
+    revision_reason: RevisionReason | None = None
+    # Every result made from this recording, oldest first. Filled in when the result is read.
+    revisions: list[RevisionInfo] = []
     audio_retained: bool
     # Kept apart from the measurements: it can be written again without touching them.
     # None for results stored before coaching existed.
@@ -284,11 +319,14 @@ class AnalysisSummary(ApiModel):
     language: str
     duration_seconds: float
     revision: int
+    revision_reason: RevisionReason | None = None
     audio_retained: bool
     original_filename: str | None
     # Keyed by the metric's JSON name, e.g. "speechActiveWpm".
     metrics: dict[str, MetricValue]
     warning_codes: list[str]
+    # The thresholds that produced the numbers, so two attempts can be checked for a match.
+    settings: dict[str, float | int] = {}
 
 
 class AnalysisList(ApiModel):
@@ -430,9 +468,202 @@ class Comparison(ApiModel):
     phrases: list[ComparedPhrase]
     # The biggest differences, largest first.
     differences: list[Difference]
+    # Set when the two were analysed with different settings, so that their pauses and
+    # phrases are not like for like. None when the settings match.
+    settings_note: str | None = None
     caveats: list[str]
     # The thresholds that produced this comparison, including their version number.
     settings: dict[str, float | int]
+
+
+# --- Feedback and calibration ------------------------------------------------------------
+
+FeedbackCategory = Literal[
+    # About one detected pause.
+    "pause_intentional",
+    "pause_accidental",
+    "pause_false",
+    "split_wrong",
+    # About a place inside a segment where no pause was detected.
+    "pause_missed",
+    # About a segment, or the whole recording when no target is named.
+    "wpm_too_high",
+    "wpm_too_low",
+    "transcript_wrong",
+    # About one correction in the coaching.
+    "coaching_useful",
+    "coaching_not_useful",
+]
+
+
+class FeedbackRequest(ApiModel):
+    category: FeedbackCategory
+    # "pause-2", "seg-3", or the finding a correction is about such as "f4". None means the
+    # whole recording, which only the WPM categories allow.
+    target_id: str | None = Field(None, max_length=32)
+    # Where in the recording, for a missed pause.
+    at_seconds: float | None = Field(None, ge=0)
+    note: str | None = Field(None, max_length=280)
+
+
+class WpmCheck(ApiModel):
+    """One thing that feeds a WPM figure, with what was measured for it."""
+
+    label: str
+    text: str
+    # What the user can do about it, if anything.
+    action: Literal["correct_transcript", "report_missed_pause", "report_false_pause"] | None
+
+
+class WpmReview(ApiModel):
+    """How a WPM figure was arrived at, shown when the user says it looks wrong."""
+
+    # "Segment 3" or "The whole recording".
+    target: str
+    words: int | None
+    speaking_seconds: float | None
+    wpm: float | None
+    # The arithmetic in words.
+    formula: str
+    checks: list[WpmCheck]
+
+
+class FeedbackItem(ApiModel):
+    id: str
+    analysis_id: str
+    category: FeedbackCategory
+    target_kind: Literal["pause", "segment", "correction", "recording"]
+    target_id: str | None
+    at_seconds: float | None
+    note: str | None
+    created_at: datetime
+    # The calibration version that produced the result this feedback is about.
+    calibration_version: int
+    # The measurements the feedback rests on, e.g. the length of the pause in milliseconds.
+    features: dict[str, float | int | str | bool | None]
+    # "label": changes how the coaching reads a pause. "report": counts towards adjusting
+    # the setting named below. "used": already counted in an adjustment. "recorded": saved,
+    # and changes nothing by itself.
+    effect: Literal["label", "report", "used", "recorded"]
+    setting: str | None
+    # +1 speaks for raising the setting, -1 for lowering it, 0 for neither.
+    direction: int
+    # One sentence saying what this feedback does.
+    message: str
+    review: WpmReview | None = None
+
+
+class CalibrationChange(ApiModel):
+    """One entry in the history of the settings: what changed, and why."""
+
+    version: int
+    created_at: datetime
+    cause: Literal["defaults", "auto", "undo", "reset"]
+    setting: str | None
+    label: str | None
+    unit: str | None
+    old_value: float | None
+    new_value: float | None
+    reason: str
+    # Reports looked at, how many of them agreed, and from how many recordings.
+    report_count: int
+    agreeing_count: int
+    recording_count: int
+    confidence: Literal["low", "medium", "high"] | None
+    # True once this adjustment has been undone or reset away.
+    undone: bool
+
+
+class PendingReports(ApiModel):
+    """The reports that currently count towards moving one setting."""
+
+    raise_count: int
+    lower_count: int
+    # Distinct recordings behind the larger side.
+    recordings: int
+    # How many reports the larger side needs before the setting can move.
+    needed: int
+
+
+class CalibratedSetting(ApiModel):
+    name: str
+    group: Literal["analysis", "coaching"]
+    label: str
+    description: str
+    unit: str
+    digits: int
+    value: float
+    default: float
+    minimum: float
+    maximum: float
+    step: float
+    changed: bool
+    pending: PendingReports
+    # Reports behind the adjustments that are in effect now.
+    supporting_reports: int
+    confidence: Literal["none", "low", "medium", "high"]
+    # One sentence on where this setting stands.
+    status: str
+
+
+class FixedSetting(ApiModel):
+    """A threshold that feedback never adjusts, shown so nothing is hidden."""
+
+    name: str
+    label: str
+    value: float
+    unit: str
+
+
+class CalibrationRules(ApiModel):
+    min_reports: int
+    min_recordings: int
+    min_agreement: float
+    window: int
+    reversal_reports: int
+
+
+class Calibration(ApiModel):
+    # The version new analyses are made with.
+    version: int
+    # False when the user has switched automatic adjustment off.
+    adaptive: bool
+    # "calibrating" while every setting is still at its default.
+    state: Literal["calibrating", "adjusted"]
+    summary: str
+    # Every piece of feedback stored, and how many of them are waiting to count.
+    feedback_count: int
+    pending_report_count: int
+    settings: list[CalibratedSetting]
+    fixed: list[FixedSetting]
+    # Newest first.
+    changes: list[CalibrationChange]
+    can_undo: bool
+    rules: CalibrationRules
+
+
+class FeedbackUpdate(ApiModel):
+    """What the screen needs after any change to feedback or calibration."""
+
+    # Every piece of feedback on the analysis, oldest first.
+    items: list[FeedbackItem]
+    # Settings that changed because of this request. Usually empty.
+    adjustments: list[CalibrationChange]
+    calibration: Calibration
+
+
+class AdaptiveRequest(ApiModel):
+    enabled: bool
+
+
+class SegmentCorrection(ApiModel):
+    segment_id: str = Field(max_length=32)
+    # The words as they were really said. May be empty: nothing was said in this segment.
+    text: str = Field(max_length=4000)
+
+
+class TranscriptCorrectionRequest(ApiModel):
+    corrections: list[SegmentCorrection] = Field(min_length=1, max_length=500)
 
 
 # --- What the submission form offers -----------------------------------------------------
@@ -498,6 +729,8 @@ class JobStatus(ApiModel):
     # Fetch the result from /api/analyses/{analysisId}. An analysis job has it once it has
     # succeeded; a coaching job has it from the start.
     analysis_id: str | None
+    # Set when this job analyses the kept recording of an earlier analysis again.
+    source_analysis_id: str | None = None
     can_retry: bool
     can_cancel: bool
     # Jobs ahead of this one in the queue. Only set while queued.

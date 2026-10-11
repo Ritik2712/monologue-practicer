@@ -73,6 +73,15 @@ function setup(stored: Record<string, string> = {}) {
     deleteAnalysisAudio: vi.fn().mockResolvedValue(undefined),
     clearAnalyses: vi.fn().mockResolvedValue({ deletedAnalyses: 0, deletedJobs: 0 }),
     analysisAudioUrl: (id: string) => `http://api/analyses/${id}/audio`,
+    getFeedback: vi.fn(),
+    giveFeedback: vi.fn(),
+    deleteFeedback: vi.fn(),
+    getCalibration: vi.fn(),
+    undoCalibration: vi.fn(),
+    resetCalibration: vi.fn(),
+    setAdaptive: vi.fn(),
+    correctTranscript: vi.fn(),
+    requestReanalysis: vi.fn(),
   } satisfies Record<keyof GeneralApi, unknown>;
 
   const timers: { callback: () => void; ms: number }[] = [];
@@ -615,6 +624,210 @@ describe("writing the coaching again", () => {
 
     store.submit(submission);
     expect(store.getSnapshot()).toMatchObject({ runKind: "analysis", coachingFor: null });
+  });
+});
+
+describe("revisions of a recording", () => {
+  const revision = (id: string, number: number) =>
+    ({ analysisId: id, role: "take", revision: number, audioRetained: false }) as AnalysisResult;
+
+  /** A store with analysis-1 open on screen. */
+  async function withOpenAnalysis() {
+    const context = setup();
+    context.store.openAnalysis("analysis-1");
+    await settle();
+    return context;
+  }
+
+  it("shows the new revision once the corrected words are saved", async () => {
+    const { store, api } = await withOpenAnalysis();
+    api.correctTranscript.mockResolvedValue(revision("analysis-2", 2));
+    api.listAnalyses.mockResolvedValue({
+      items: [summary("analysis-2"), summary("analysis-1")],
+      total: 2,
+    });
+    const corrections = [{ segmentId: "seg-1", text: "the real words" }];
+
+    store.correctTranscript("analysis-1", corrections);
+    expect(store.getSnapshot().correction).toEqual({ status: "saving", analysisId: "analysis-1" });
+    await settle();
+
+    expect(api.correctTranscript).toHaveBeenCalledWith("analysis-1", corrections);
+    const state = store.getSnapshot();
+    expect(state.correction).toEqual({ status: "idle" });
+    expect(state.viewed).toMatchObject({ status: "ready", analysis: { analysisId: "analysis-2" } });
+    expect(state.notice?.text).toContain("Saved as revision 2");
+    // Both results are in the history: the earlier one is not replaced.
+    expect(state.history.items.map((entry) => entry.analysisId)).toEqual([
+      "analysis-2",
+      "analysis-1",
+    ]);
+  });
+
+  it("keeps the corrected result off screen if the user has opened another meanwhile", async () => {
+    const { store, api } = await withOpenAnalysis();
+    let save: (value: AnalysisResult) => void = () => {};
+    api.correctTranscript.mockReturnValue(new Promise((resolve) => (save = resolve)));
+
+    store.correctTranscript("analysis-1", [{ segmentId: "seg-1", text: "words" }]);
+    api.getAnalysis.mockResolvedValue(analysis("analysis-9"));
+    store.openAnalysis("analysis-9");
+    await settle();
+    save(revision("analysis-2", 2));
+    await settle();
+
+    expect(store.getSnapshot().viewed).toMatchObject({ analysis: { analysisId: "analysis-9" } });
+  });
+
+  it("says why when the correction is refused, and leaves the result on view", async () => {
+    const { store, api } = await withOpenAnalysis();
+    api.correctTranscript.mockRejectedValue(
+      new ApiError("nothing_changed", "The words are the same as before.", 400),
+    );
+
+    store.correctTranscript("analysis-1", [{ segmentId: "seg-1", text: "same" }]);
+    await settle();
+
+    expect(store.getSnapshot().correction).toEqual({
+      status: "failed",
+      analysisId: "analysis-1",
+      message: "The words are the same as before.",
+    });
+    expect(store.getSnapshot().viewed).toMatchObject({ analysis: { analysisId: "analysis-1" } });
+  });
+
+  it("does not send a second correction while one is being saved", async () => {
+    const { store, api } = await withOpenAnalysis();
+    api.correctTranscript.mockReturnValue(new Promise(() => {}));
+
+    store.correctTranscript("analysis-1", [{ segmentId: "seg-1", text: "one" }]);
+    store.correctTranscript("analysis-1", [{ segmentId: "seg-1", text: "two" }]);
+
+    expect(api.correctTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("plays the same recording for a revision, and frees it only when neither needs it", async () => {
+    const { store, api, tick, revoked } = setup();
+    store.submit(submission);
+    await settle();
+    api.getJob.mockResolvedValue(job({ status: "succeeded", analysisId: "analysis-1" }));
+    await tick();
+    api.correctTranscript.mockResolvedValue(revision("analysis-2", 2));
+
+    store.correctTranscript("analysis-1", [{ segmentId: "seg-1", text: "words" }]);
+    await settle();
+    expect(store.getSnapshot().localAudio).toEqual({
+      "analysis-1": "blob:take-1",
+      "analysis-2": "blob:take-1",
+    });
+
+    store.deleteAnalysis("analysis-1");
+    await settle();
+    expect(revoked).toEqual([]); // the revision still plays it
+    expect(store.getSnapshot().localAudio).toEqual({ "analysis-2": "blob:take-1" });
+
+    store.deleteAnalysis("analysis-2");
+    await settle();
+    expect(revoked).toEqual(["blob:take-1"]);
+  });
+
+  it("follows a fresh analysis of a kept recording and shows the new revision", async () => {
+    const { store, api, tick, run } = await withOpenAnalysis();
+    const again = (overrides: Partial<JobStatus> = {}) =>
+      job({ jobId: "job-r", sourceAnalysisId: "analysis-1", ...overrides });
+    api.requestReanalysis.mockResolvedValue(again());
+
+    expect(store.reanalyse("analysis-1")).toBe(true);
+    expect(store.getSnapshot()).toMatchObject({
+      runKind: "analysis",
+      reanalysisFor: "analysis-1",
+      coachingFor: null,
+    });
+    await settle();
+
+    expect(api.requestReanalysis).toHaveBeenCalledWith("analysis-1");
+    expect(api.submitAnalysis).not.toHaveBeenCalled(); // the kept recording is used
+    expect(run()).toMatchObject({ phase: "tracking", job: { jobId: "job-r" } });
+
+    api.getJob.mockResolvedValue(again({ status: "succeeded", analysisId: "analysis-2" }));
+    api.getAnalysis.mockResolvedValue(revision("analysis-2", 2));
+    await tick();
+
+    expect(run()).toMatchObject({ phase: "done", analysisId: "analysis-2" });
+    expect(store.getSnapshot().viewed).toMatchObject({ analysis: { analysisId: "analysis-2" } });
+  });
+
+  it("measures a reference again and chooses the new revision", async () => {
+    const { store, api, tick } = setup();
+    const again = (overrides: Partial<JobStatus> = {}) =>
+      job({ jobId: "job-r", role: "reference", sourceAnalysisId: "ref-1", ...overrides });
+    api.requestReanalysis.mockResolvedValue(again());
+
+    expect(store.reanalyse("ref-1", "reference")).toBe(true);
+    expect(store.getSnapshot()).toMatchObject({ runRole: "reference", reanalysisFor: "ref-1" });
+    await settle();
+
+    api.getJob.mockResolvedValue(again({ status: "succeeded", analysisId: "ref-2" }));
+    api.getAnalysis.mockResolvedValue(referenceResult("ref-2"));
+    api.listAnalyses.mockResolvedValue({ items: [reference("ref-2"), reference("ref-1")], total: 2 });
+    await tick();
+
+    // It joins the library next to the earlier one, and takes are now compared with it.
+    expect(store.getSnapshot().selectedReferenceId).toBe("ref-2");
+    expect(store.getSnapshot().references.items.map((entry) => entry.analysisId)).toEqual([
+      "ref-2",
+      "ref-1",
+    ]);
+    expect(store.getSnapshot().viewed).toEqual({ status: "none" });
+  });
+
+  it("says why when the recording cannot be analysed again", async () => {
+    const { store, api, run } = await withOpenAnalysis();
+    api.requestReanalysis.mockRejectedValue(
+      new ApiError("audio_not_kept", "The recording was not kept.", 409),
+    );
+
+    store.reanalyse("analysis-1");
+    await settle();
+
+    expect(run()).toMatchObject({
+      phase: "failed",
+      job: null,
+      error: { code: "audio_not_kept" },
+      canResubmit: false,
+    });
+  });
+
+  it("does not start a fresh analysis while another run is in progress", async () => {
+    const { store, api } = await withOpenAnalysis();
+    store.submit(submission);
+    await settle();
+
+    expect(store.reanalyse("analysis-1")).toBe(false);
+    expect(api.requestReanalysis).not.toHaveBeenCalled();
+  });
+
+  it("recognises a fresh analysis picked up again after a page refresh", async () => {
+    const { store, api } = setup({ [ACTIVE_JOB_KEY]: "job-r" });
+    api.getJob.mockResolvedValue(
+      job({ jobId: "job-r", status: "running", sourceAnalysisId: "analysis-1" }),
+    );
+
+    store.init();
+    await settle();
+
+    expect(store.getSnapshot().reanalysisFor).toBe("analysis-1");
+  });
+
+  it("forgets the earlier recording once an ordinary upload starts", async () => {
+    const { store, api } = await withOpenAnalysis();
+    api.requestReanalysis.mockRejectedValue(new ApiError("audio_not_kept", "Not kept.", 409));
+    store.reanalyse("analysis-1");
+    await settle();
+
+    store.submit(submission);
+
+    expect(store.getSnapshot().reanalysisFor).toBeNull();
   });
 });
 

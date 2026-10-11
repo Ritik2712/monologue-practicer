@@ -84,6 +84,9 @@ export function ReferenceComparison({
           <Notice kind={comparison.data.alignment.status === "matched" ? "info" : "warning"}>
             {comparison.data.alignment.note}
           </Notice>
+          {comparison.data.settingsNote && (
+            <Notice kind="warning">{comparison.data.settingsNote}</Notice>
+          )}
 
           {comparison.data.differences.length > 0 && (
             <div>

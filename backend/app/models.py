@@ -2,7 +2,17 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 
@@ -66,6 +76,9 @@ class Job(Base):
     error_retryable: Mapped[bool] = mapped_column(Boolean, default=False)
 
     analysis_id: Mapped[str | None] = mapped_column(ForeignKey("analyses.id", ondelete="SET NULL"))
+    # Set when this job analyses the kept recording of an earlier analysis again. The
+    # result is stored as a new revision of that recording.
+    source_analysis_id: Mapped[str | None] = mapped_column(String(32))
 
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, index=True)
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime)
@@ -96,7 +109,14 @@ class Analysis(Base):
     schema_version: Mapped[int] = mapped_column(Integer)
     # Version of the thresholds that produced the numbers (also stored in full inside `result`).
     settings_version: Mapped[int] = mapped_column(Integer)
+    # Version of the user's calibration that was in force. 1 means the defaults.
+    calibration_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # Results made from the same recording share a root: the ID of the first of them.
+    # Null on rows from before revisions existed, which are their own root.
+    root_id: Mapped[str | None] = mapped_column(String(32), index=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
+    # Why a later revision exists: "transcript_corrected" or "reanalysed". Null for the first.
+    revision_reason: Mapped[str | None] = mapped_column(String(32))
     # The complete AnalysisResult as JSON, without the coaching.
     result: Mapped[dict] = mapped_column(JSON)
     # The coaching for this result, as JSON. Null for results stored before coaching existed.
@@ -123,3 +143,83 @@ class WorkerState(Base):
     # ready, not_running, model_missing, not_local or off.
     coach_model: Mapped[str | None] = mapped_column(String(64))
     coach_status: Mapped[str | None] = mapped_column(String(32))
+
+
+class Feedback(Base):
+    """One correction the user made to an analysis.
+
+    A row can do three different things, and never more than one. It can label a pause
+    (which changes how the coaching reads it), report a mistake (`setting` and `direction`
+    then say which setting it speaks for moving, and which way), or simply be on record.
+    None of them changes a stored measurement.
+    """
+
+    __tablename__ = "feedback"
+    __table_args__ = (UniqueConstraint("analysis_id", "slot", name="uq_feedback_slot"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    analysis_id: Mapped[str] = mapped_column(
+        ForeignKey("analyses.id", ondelete="CASCADE"), index=True
+    )
+    # The recording the analysis belongs to (its root), so reports can be counted per
+    # recording however many revisions it has.
+    recording_id: Mapped[str] = mapped_column(String(32))
+    # What the feedback is about, e.g. "pause:pause-2". One row per slot: saying something
+    # different about the same thing replaces what was said before.
+    slot: Mapped[str] = mapped_column(String(64))
+    category: Mapped[str] = mapped_column(String(32))
+    target_kind: Mapped[str] = mapped_column(String(16))
+    target_id: Mapped[str | None] = mapped_column(String(32))
+    at_seconds: Mapped[float | None] = mapped_column(Float)
+    note: Mapped[str | None] = mapped_column(String(280))
+    # The calibration version that produced the analysis this is about.
+    calibration_version: Mapped[int] = mapped_column(Integer)
+    # The measurements the feedback rests on, copied from the analysis when it was given.
+    features: Mapped[dict] = mapped_column(JSON)
+    # The adjustable setting this report speaks for moving, if any, and which way (+1 / -1).
+    setting: Mapped[str | None] = mapped_column(String(48), index=True)
+    direction: Mapped[int] = mapped_column(Integer, default=0)
+    # The measured value behind the report, e.g. the length of the silence in milliseconds.
+    evidence: Mapped[float | None] = mapped_column(Float)
+    # The calibration version that counted this report. A report is counted once.
+    used_by_version: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime)
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime)
+
+
+class CalibrationVersion(Base):
+    """One state of the adjustable settings. Rows are only ever added.
+
+    The newest row is the calibration in force. Every analysis records the version it was
+    made with, so an old result can always be traced to the values that produced it.
+    """
+
+    __tablename__ = "calibration_versions"
+
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime)
+    # "defaults" (version 1), "auto" (feedback moved a setting), "undo" or "reset".
+    cause: Mapped[str] = mapped_column(String(16))
+    # Every adjustable setting and its value in this version.
+    values: Mapped[dict] = mapped_column(JSON)
+    # What changed in this version, for "auto" and "undo".
+    setting: Mapped[str | None] = mapped_column(String(48))
+    old_value: Mapped[float | None] = mapped_column(Float)
+    new_value: Mapped[float | None] = mapped_column(Float)
+    reason: Mapped[str | None] = mapped_column(Text)
+    # Reports looked at, how many agreed, and how many recordings they came from.
+    report_count: Mapped[int] = mapped_column(Integer, default=0)
+    agreeing_count: Mapped[int] = mapped_column(Integer, default=0)
+    recording_count: Mapped[int] = mapped_column(Integer, default=0)
+    # The later version that undid this adjustment or reset it away.
+    undone_by: Mapped[int | None] = mapped_column(Integer)
+
+
+class CalibrationState(Base):
+    """A single row (id 1): whether feedback may adjust settings automatically."""
+
+    __tablename__ = "calibration_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    adaptive_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime)

@@ -5,6 +5,8 @@ Vocabulary used throughout the pipeline:
 - speech region: one stretch the voice activity detector marked as speech.
 - segment: speech regions joined across gaps that are too short to be a pause.
 - pause: the silence between two segments. Always at least `min_pause_ms` long.
+- short silence: a gap between speech regions that is shorter than that. It stays inside a
+  segment and counts as speaking time, but it is kept on record.
 - section: a group of segments. A new section starts after every "long" silence.
 
 Silence before the first segment and after the last one is not a pause: nothing was
@@ -58,6 +60,16 @@ class Pause:
         return self.end - self.start
 
 
+@dataclass(frozen=True)
+class ShortSilence:
+    start: float
+    end: float
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
 def _gap_ms(earlier_end: float, later_start: float) -> int:
     # Whole milliseconds, so a 0.5 s gap is never 499.9999 ms because of float rounding.
     return round((later_start - earlier_end) * 1000)
@@ -100,6 +112,26 @@ def build_segments(
             pauses.append(Pause(len(pauses), previous_end, start, significance))
         segments.append(Segment(index=index, start=start, end=end, section_index=section))
     return segments, pauses
+
+
+def find_short_silences(
+    regions: list[SpeechRegion], settings: AnalysisSettings
+) -> list[ShortSilence]:
+    """The silences that were too short to be pauses, so `build_segments` joined across them.
+
+    Nothing is measured from these. They are kept so that a report of "a pause was missed
+    here" can be checked against what the detector actually heard at that spot.
+    """
+    ordered = sorted((r for r in regions if r.end > r.start), key=lambda r: r.start)
+    silences: list[ShortSilence] = []
+    if not ordered:
+        return silences
+    speech_end = ordered[0].end
+    for region in ordered[1:]:
+        if 0 < _gap_ms(speech_end, region.start) < settings.min_pause_ms:
+            silences.append(ShortSilence(speech_end, region.start))
+        speech_end = max(speech_end, region.end)
+    return silences
 
 
 def assign_words(segments: list[Segment], words: list[Word]) -> int:

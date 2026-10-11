@@ -4,7 +4,7 @@ Every analysis stores a copy of the settings that produced it, so an old result 
 explained by the values that were active at the time.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 
 SAMPLE_RATE = 16_000
 
@@ -13,6 +13,9 @@ SAMPLE_RATE = 16_000
 class AnalysisSettings:
     # Bumped whenever a default below changes, so results stay traceable.
     version: int = 1
+    # Which version of the user's calibration supplied the values that feedback can adjust
+    # (the minimum pause and the speech detection threshold). 1 means the defaults.
+    calibration_version: int = 1
 
     # A silence at least this long is a pause. It is measured, and it ends a speech segment.
     min_pause_ms: int = 500
@@ -53,6 +56,16 @@ class AnalysisSettings:
 
     def to_dict(self) -> dict[str, float | int]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, stored: dict) -> "AnalysisSettings":
+        """The settings a stored result was made with.
+
+        Values the result does not record (it is older than they are) take today's default,
+        and names this version of the code does not know are ignored.
+        """
+        known = {field.name for field in fields(cls)}
+        return cls(**{name: value for name, value in stored.items() if name in known})
 
 
 DEFAULT_SETTINGS = AnalysisSettings()

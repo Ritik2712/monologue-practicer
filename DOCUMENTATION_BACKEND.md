@@ -9,10 +9,10 @@ the slow work: measuring the audio and getting the coaching written.
   covers **how the work is organised**: requests, jobs, files and tables.
 - The browser side is in [DOCUMENTATION_FRONTEND.md](DOCUMENTATION_FRONTEND.md).
 
-Anything not built yet is marked **Planned**.
+Everything described here is built.
 
-**Last updated:** end of Phase 5 (reference recordings, the comparison of a take with a
-reference, and the waveform outline: two new endpoints, five new database columns).
+**Last updated:** end of Phase 6 (feedback, calibration and revisions: nine new endpoints,
+three new tables, four new columns).
 
 ## Contents
 
@@ -20,6 +20,7 @@ reference, and the waveform outline: two new endpoints, five new database column
 2. [Folder structure](#2-folder-structure)
 3. [The API list](#3-the-api-list)
 4. [Background jobs (and why there is no Celery)](#4-background-jobs-and-why-there-is-no-celery)
+   - [4a. Feedback, calibration and revisions](#4a-feedback-calibration-and-revisions)
 5. [The database](#5-the-database)
 6. [Audio files on disk](#6-audio-files-on-disk)
 7. [Settings](#7-settings)
@@ -60,6 +61,10 @@ of this project: you install and start it yourself, and only the worker talks to
 The API never calls Ollama. It learns whether the AI model is available the same way it
 learns whether the worker is alive: the worker writes it into the database.
 
+Since Phase 6 the database also holds the user's **feedback** and the **calibration** (the
+few settings feedback may adjust). The API writes both. The worker only reads the
+calibration, once, at the start of each job. Section 4a explains how.
+
 ## 2. Folder structure
 
 The generated `.venv/` folder (the private Python environment) is left out.
@@ -79,6 +84,10 @@ backend/
 │   ├── schemas.py        The shapes of all JSON sent and received
 │   ├── job_queue.py      Every change to a job's status
 │   ├── history.py        Listing and deleting stored analyses
+│   ├── feedback.py       Saving feedback, and working out what each piece of it does
+│   ├── revisions.py      Later results of one recording: corrected transcripts, fresh analyses
+│   ├── transcript_correction.py   Works word counts and WPM out again from corrected words
+│   ├── wpm_review.py     Lays out what went into a WPM figure the user says looks wrong
 │   ├── profiles.py       The delivery profiles and language choices, as text
 │   ├── uploads.py        Creating, moving and deleting audio files
 │   ├── worker.py         The worker program
@@ -88,7 +97,12 @@ backend/
 │   │   ├── health.py     GET /api/health
 │   │   ├── analyses.py   Submit, read, list and delete analyses; kept audio; form options;
 │   │   │                 ask for coaching to be written again
-│   │   └── jobs.py       GET /api/jobs/{id}, POST …/cancel, POST …/retry
+│   │   ├── jobs.py       GET /api/jobs/{id}, POST …/cancel, POST …/retry
+│   │   └── feedback.py   Feedback on an analysis; the calibration: read, undo, reset, on/off
+│   ├── calibration/      The settings feedback may adjust (explained in the science document)
+│   │   ├── registry.py       Which settings are adjustable, and how far
+│   │   ├── engine.py         The rules that decide when a setting moves. No database
+│   │   └── store.py          Reads the calibration in force, and writes new versions of it
 │   ├── comparison/       Setting a take against a reference (explained in the science document)
 │   │   ├── compare.py        Pause by pause, phrase by phrase, the biggest differences
 │   │   ├── align.py          Lines up the words of the two recordings
@@ -117,7 +131,8 @@ backend/
 │   └── versions/
 │       ├── 0001_jobs_analyses_and_worker_state.py   Creates the three tables
 │       ├── 0002_coaching.py                         Adds the four coaching columns
-│       └── 0003_references_and_waveforms.py         Adds role, title and the waveform outline
+│       ├── 0003_references_and_waveforms.py         Adds role, title and the waveform outline
+│       └── 0004_feedback_and_calibration.py         Adds feedback, calibration and revisions
 ├── tests/                See section 10
 └── data/                 Created on first run; not in git
     ├── monologue_coach.db    The database
@@ -141,6 +156,12 @@ Which file to open for which question:
 | How is a take compared with a reference? | `app/comparison/compare.py`, `app/comparison/align.py` |
 | What is drawn in the waveform picture? | `app/pipeline/waveform.py` |
 | When is an audio file deleted? | `app/uploads.py`, `app/job_queue.py`, `app/history.py` |
+| Which setting does a piece of feedback count towards? | `app/feedback.py` (`classify`) |
+| When does feedback move a setting, and by how much? | `app/calibration/engine.py` |
+| Which settings can move at all, and within what range? | `app/calibration/registry.py` |
+| What do undo and reset do? | `app/calibration/store.py` |
+| How is WPM worked out again after a transcript correction? | `app/transcript_correction.py` |
+| How does a recording get a second result? | `app/revisions.py` |
 | What do the delivery profiles say? | `app/profiles.py` |
 | What columns does a table have? | `app/models.py` |
 
@@ -169,9 +190,20 @@ interactive version of this list is at `http://localhost:8000/docs`.
 | `DELETE` | `/api/analyses` | Clears the history of takes; or the references with `?role=reference` | `routes/analyses.py` |
 | `GET` | `/api/analyses/{analysisId}/audio` | The recording itself, if it was kept | `routes/analyses.py` |
 | `DELETE` | `/api/analyses/{analysisId}/audio` | Deletes only the kept recording | `routes/analyses.py` |
+| `GET` | `/api/analyses/{analysisId}/feedback` | The feedback given on one analysis, with what each piece does, and the calibration | `routes/feedback.py` |
+| `POST` | `/api/analyses/{analysisId}/feedback` | Saves one piece of feedback. Adjusts a setting if this completes a run of reports that agree | `routes/feedback.py` |
+| `DELETE` | `/api/feedback/{feedbackId}` | Takes one piece of feedback back | `routes/feedback.py` |
+| `GET` | `/api/calibration` | The settings in force: every value, its range, what changed it and why | `routes/feedback.py` |
+| `POST` | `/api/calibration/undo` | Puts back the value the most recent adjustment replaced | `routes/feedback.py` |
+| `POST` | `/api/calibration/reset` | Returns every setting to its default | `routes/feedback.py` |
+| `PUT` | `/api/calibration/adaptive` | Switches automatic adjustment on or off | `routes/feedback.py` |
+| `POST` | `/api/analyses/{analysisId}/transcript` | Stores a new revision of a take with corrected words, with WPM worked out again | `routes/analyses.py` |
+| `POST` | `/api/analyses/{analysisId}/reanalysis` | Queues a fresh analysis of the kept recording, with the settings in force now | `routes/analyses.py` |
 
 Submitting, jobs, results and coaching are tested in `tests/test_api.py`; lists, deleting,
-kept audio, references, waveforms and the comparison in `tests/test_history_api.py`.
+kept audio, references, waveforms and the comparison in `tests/test_history_api.py`;
+feedback and calibration in `tests/test_feedback_api.py`; corrected transcripts and fresh
+analyses in `tests/test_revisions.py`.
 
 ### `GET /api/health`
 
@@ -360,6 +392,16 @@ The result also carries `coaching`, which is stored separately and can be writte
 `coaching` is `null` only for a result stored before Phase 4, or if the coaching step broke
 in a way nobody planned for (the measurements are saved regardless; see decision B26).
 
+Since Phase 6 a result also carries:
+
+| Field | Meaning |
+| --- | --- |
+| `settings.calibration_version` | Which version of the user's calibration the result was made with. 1 means the defaults. `settings.min_pause_ms` beside it is the value that version gave |
+| `shortSilences` | The silences the detector heard that were too short to count as pauses: `startSeconds`, `endSeconds`, `durationSeconds` and the `segmentId` each lies inside. `null` for a result stored before Phase 6 |
+| `revision`, `revisionReason` | 1 and `null` for the first analysis of a recording. A later result is 2, 3, … with `transcript_corrected` or `reanalysed` |
+| `revisions` | Every result made from the same recording, oldest first: `analysisId`, `revision`, `reason`, `createdAt`, `calibrationVersion`. Looked up when the result is read, so an older result also lists the ones made after it |
+| `coaching.labelsUsed` | The pause labels the coaching took into account, e.g. `{ "pause-2": "accidental" }` |
+
 ### `GET /api/analyses/{analysisId}/comparison/{referenceId}`
 
 Sets one analysis (normally a take) against a reference recording. Worked out on the spot
@@ -415,6 +457,10 @@ measured here, which is why it is an ordinary request and not a job.
 Errors: `404` `analysis_not_found`; `404` `reference_not_found` if the second ID is not a
 reference (one of your own takes cannot stand in for one); `400` `same_recording`.
 
+Since Phase 6 the comparison also has `settingsNote`. It is `null` when the two recordings
+were analysed with the same minimum pause. Otherwise it is a sentence saying so, with both
+values, because their pauses and phrases are then not cut the same way.
+
 ### `GET /api/analyses/{analysisId}/waveform`
 
 ```json
@@ -448,6 +494,146 @@ submitting a recording, it answers at once (`202`) with a job to poll:
   **fails** with the reason (`not_running`, `model_missing`, `timeout`, `ungrounded`,
   `nothing_to_correct`, …) and the coaching that was already there is left as it was.
 - `404` `analysis_not_found` for an unknown ID.
+
+### `POST /api/analyses/{analysisId}/feedback`
+
+Saves one piece of feedback on an analysis of one of your own takes. The body is JSON:
+
+```json
+{ "category": "pause_missed", "targetId": "seg-1", "atSeconds": 2.78, "note": "a breath there" }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `category` | One of the ten in the table below |
+| `targetId` | What it is about: a pause (`pause-2`), a segment (`seg-3`), or the finding a correction is about (`f4`). Left out for the whole recording |
+| `atSeconds` | Where in the recording, for a missed pause |
+| `note` | Optional, up to 280 characters. Leaving it out keeps a note that is already there; an empty string clears it |
+
+| Category | About | What it does |
+| --- | --- | --- |
+| `pause_intentional`, `pause_accidental` | A pause | A **label**: changes how the coaching reads the pause. Counts towards no setting |
+| `pause_false` | A pause | "Not a pause: I was still speaking." A **report** towards raising the minimum pause, if the pause is shorter than 800 ms. Otherwise only recorded |
+| `split_wrong` | A pause | "Too short to split the phrase here." The same |
+| `pause_missed` | A segment and a time | A report towards lowering the minimum pause, if the detector heard a silence of 250 ms or more near that time. Otherwise only recorded |
+| `wpm_too_high`, `wpm_too_low` | A segment, or the whole recording | Recorded. Changes no figure. The answer includes a **review** of what went into the WPM |
+| `transcript_wrong` | A segment | Recorded. To have the words corrected and WPM worked out again, use the transcript endpoint below |
+| `coaching_useful`, `coaching_not_useful` | A correction | A report towards raising or lowering the priority of that kind of correction |
+
+The rules behind this table, and the reasons, are in the science document (section 15).
+
+One row is kept per thing: feedback on the same pause replaces what was said about it
+before, and sending the same category again only changes the note. The answer is everything
+the screen needs to redraw:
+
+```json
+{
+  "items": [
+    { "id": "…", "category": "pause_missed", "targetKind": "segment", "targetId": "seg-1",
+      "atSeconds": 2.78, "note": null, "calibrationVersion": 1,
+      "features": { "min_pause_ms": 500, "silence_ms": 324, "silence_start_seconds": 2.618 },
+      "effect": "report", "setting": "min_pause_ms", "direction": -1,
+      "message": "Counts towards lowering the minimum pause. 1 of the 3 reports needed for lowering it, from 1 of the 2 recordings needed.",
+      "review": null }
+  ],
+  "adjustments": [],
+  "calibration": { "version": 1, "state": "calibrating", "…": "see GET /api/calibration" }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `items` | Every piece of feedback on this analysis, oldest first |
+| `features` | What was measured at the spot the feedback is about, copied from the analysis when the feedback was given |
+| `effect` | `label`, `report` (waiting to count), `used` (already counted in an adjustment) or `recorded` (changes nothing by itself) |
+| `setting`, `direction` | For a report: the setting it speaks for moving, and which way (+1 raise, −1 lower) |
+| `message` | One sentence saying what this feedback does, worded against the calibration as it is now |
+| `review` | For the WPM categories: the arithmetic, and one entry each for the words, the speaking time and the word timing |
+| `adjustments` | The settings this request changed, each with its reason. Empty nearly every time |
+
+Refusals: `404 analysis_not_found`; `404 unknown_target` (no such pause, phrase or
+correction); `409 not_a_take` (feedback is not taken on a reference); `422 outside_target`
+(the time is not inside the phrase); `422 invalid_request`.
+
+`GET /api/analyses/{analysisId}/feedback` returns the same shape without saving anything.
+`DELETE /api/feedback/{feedbackId}` takes one piece back and returns the same shape. An
+adjustment it had already counted towards is not reversed by deleting it; that is what undo
+is for.
+
+### `GET /api/calibration`
+
+The settings in force, and how they got there.
+
+```json
+{
+  "version": 2, "adaptive": true, "state": "adjusted",
+  "summary": "1 setting has moved from the defaults, on the strength of 3 reports. …",
+  "feedbackCount": 5, "pendingReportCount": 0,
+  "settings": [
+    { "name": "min_pause_ms", "group": "analysis", "label": "Minimum pause", "unit": "ms",
+      "value": 400, "default": 500, "minimum": 250, "maximum": 800, "step": 50,
+      "changed": true,
+      "pending": { "raiseCount": 0, "lowerCount": 0, "recordings": 0, "needed": 3 },
+      "supportingReports": 3, "confidence": "low",
+      "status": "Changed from its default of 500 ms. No reports are waiting." }
+  ],
+  "fixed": [ { "name": "long_silence_ms", "label": "A pause is a “long silence”, …", "value": 5000, "unit": "ms" } ],
+  "changes": [
+    { "version": 2, "cause": "auto", "setting": "min_pause_ms", "oldValue": 500, "newValue": 400,
+      "reason": "Minimum pause lowered from 500 ms to 400 ms after 3 reports of a pause that was missed, from 2 recordings. The silences reported were around 356 ms long.",
+      "reportCount": 3, "agreeingCount": 3, "recordingCount": 2, "confidence": "low", "undone": false },
+    { "version": 1, "cause": "defaults", "reason": "The defaults the app starts with." }
+  ],
+  "canUndo": true,
+  "rules": { "minReports": 3, "minRecordings": 2, "minAgreement": 0.75, "window": 10, "reversalReports": 5 }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `version` | The version new analyses are made with |
+| `adaptive` | `false` when the user has switched automatic adjustment off |
+| `state` | `calibrating` while every setting is still at its default; `adjusted` otherwise |
+| `settings` | The 13 adjustable settings: the minimum pause, and a priority for each of the 12 kinds of correction. Each has explicit bounds |
+| `fixed` | The thresholds feedback never changes, shown so that nothing is hidden |
+| `changes` | The history, newest first. `cause` is `defaults`, `auto`, `undo` or `reset` |
+
+| Request | What it does | Refused with |
+| --- | --- | --- |
+| `POST /api/calibration/undo` | Adds a version that puts back the value the most recent adjustment replaced | `409 nothing_to_undo` |
+| `POST /api/calibration/reset` | Adds a version with every default, and sets aside the reports that were waiting | `409 already_default` |
+| `PUT /api/calibration/adaptive` with `{ "enabled": false }` | Switches automatic adjustment off. Feedback is still saved; no setting moves. Switching it on again acts on what built up | |
+
+All three answer with the calibration in the shape above.
+
+### `POST /api/analyses/{analysisId}/transcript`
+
+Corrects the words of one or more phrases of a take and stores the outcome as a **new
+revision**. It answers `201` with the new result, at once: there is no job, because no
+audio is read.
+
+```json
+{ "corrections": [ { "segmentId": "seg-1", "text": "You clearly do not know who you are talking to" } ] }
+```
+
+Word counts and the three WPM figures are worked out again from the corrected words and
+each phrase's own measured length (science document, section 15). Everything measured from
+the sound is copied unchanged. The result that was corrected is not modified. The new
+revision gets coaching from the fixed rules straight away, with a notice saying the AI
+model has not been asked yet.
+
+Refusals: `400 nothing_changed` (the words are the same as before); `404 unknown_target`;
+`409 not_a_take`; `404 analysis_not_found`.
+
+### `POST /api/analyses/{analysisId}/reanalysis`
+
+Queues a fresh analysis of this result's **kept** recording, with the settings in force
+now, and answers `202` with a job to poll, exactly as an upload does. The job's
+`sourceAnalysisId` says which result it started from. The outcome is stored as a further
+revision; the earlier result is not changed. Asking again while one is queued or running
+returns that job (`200`).
+
+Refused with `409 audio_not_kept` when the recording was not kept.
 
 ### `GET /api/analysis-options`
 
@@ -497,7 +683,7 @@ them. The full result is one more request away.
 
 | Request | Removes | Keeps |
 | --- | --- | --- |
-| `DELETE /api/analyses/{id}` | The result, its kept recording, and the job that produced it | Everything else |
+| `DELETE /api/analyses/{id}` | The result, its kept recording, the job that produced it, and the feedback given on it | Everything else, including other revisions of the same recording and any setting the feedback has already moved |
 | `DELETE /api/analyses/{id}/audio` | Only the kept recording | The measurements |
 | `DELETE /api/analyses` | Every take's result, kept recording and finished job, and any audio a failed take was holding for a retry | Every reference; jobs still queued or running, and their uploads |
 | `DELETE /api/analyses?role=reference` | The same, for the references | Every take |
@@ -522,12 +708,9 @@ Every error from every endpoint has the same shape, so the frontend needs one wa
 
 `code` is for programs and never changes; `message` is written for a person.
 
-### Planned (not built — names and details may change)
+### Planned
 
-| Method | Path | Purpose | Phase |
-| --- | --- | --- | --- |
-| `POST` | `/api/analyses/{id}/feedback` | Save a correction from the user | 6 |
-| `GET` / `PATCH` | `/api/calibration` | Read or change calibration settings | 6 |
+Nothing. Every endpoint in the plan is built.
 
 ## 4. Background jobs (and why there is no Celery)
 
@@ -749,6 +932,115 @@ At start-up and once a minute the worker also:
 | `expire_failed_audio` | worker | Delete audio kept too long |
 | `report_worker`, `worker_alive` | worker / API | The worker's own heartbeat |
 
+## 4a. Feedback, calibration and revisions
+
+Phase 6 added three things that are not jobs but lean on the job machinery in places. This
+section explains how the work is organised. *Why* a report counts towards a setting, and
+the arithmetic of an adjustment, are in the science document (section 15).
+
+### Three words
+
+| Word | Meaning |
+| --- | --- |
+| **Feedback** | One thing the user said about one analysis: "this pause was accidental", "a pause was missed here", "this correction was not useful". One row in the `feedback` table |
+| **Calibration** | The current values of the settings feedback may adjust. One row in `calibration_versions` per state it has ever been in; the newest row is the one in force |
+| **Revision** | A later result made from a recording that already has one: after a transcript correction, or a fresh analysis with new settings. A new row in `analyses`, next to the earlier one |
+
+### Saving feedback is one ordinary request
+
+Feedback never waits in the queue. Saving it is a few thousandths of a second of work, so
+the API does all of it before it answers:
+
+```
+POST /api/analyses/{id}/feedback
+        │
+        ▼
+ 1. feedback.classify()       What is this about, what was measured there, and which
+        │                     setting (if any) does it speak for moving, and which way?
+        ▼                     Decided by ordinary code from the stored analysis.
+ 2. feedback.save()           One row. Feedback on the same thing replaces the old row.
+        │
+        ▼
+ 3. calibration.evaluate()    For every adjustable setting: are there now enough reports
+        │                     that agree? If so, write a new calibration version and mark
+        ▼                     those reports as used. Nearly always: nothing to do.
+ 4. answer                    The feedback on this analysis, any adjustment just made,
+                              and the calibration as it now stands.
+```
+
+Step 1 never changes the analysis. Step 3 never changes an analysis either: an adjustment
+only affects recordings analysed *afterwards*.
+
+### Calibration versions are only ever added
+
+```
+version 1   defaults                 min pause 500 ms
+version 2   auto                     min pause 400 ms     "lowered after 3 reports …"
+version 3   undo  (of version 2)     min pause 500 ms
+version 4   reset                    every default
+```
+
+Nothing in this table is ever edited or deleted, apart from one mark: an adjustment that
+has been undone or reset away has `undone_by` set to the version that did it. Because a
+version number never means two different things, an analysis that says "made with version
+2" can always be explained, however much has changed since.
+
+Whether automatic adjustment is switched on is not a version. It is a single yes/no row in
+`calibration_state`: switching it off changes no value, so no result could differ by it.
+
+### How the worker picks the calibration up
+
+The worker never writes calibration. When it claims an analysis job it reads the newest
+version once, and uses it for the whole job:
+
+```python
+active = calibration.active(session)                 # version 2, min pause 400 ms
+analysis_settings = active.analysis_settings(base)   # the pipeline's thresholds
+coaching_settings = active.coaching_settings(base)   # the bands and the priorities
+```
+
+`analysis_settings` is the usual `AnalysisSettings` with the minimum pause replaced and
+`calibration_version` set. The pipeline copies its settings into the result it produces, as
+it always has, so the version and the value it gave travel inside the result. A change made
+while a job is running affects the next job, not that one.
+
+### Which reports are waiting
+
+A report is waiting to count while its `used_by_version` is empty. When a setting is
+adjusted, **every** report waiting on that setting is marked with the new version's
+number, whichever way it pointed. Those reports are spent. This is what makes a setting
+move one small step at a time: the next step has to be earned by new reports. Undoing the
+adjustment does not un-spend them, so the same reports can never bring it straight back.
+
+### A revision is a new row; nothing is overwritten
+
+Every result has a `root_id`: the ID of the first result made from its recording. Results
+that share a root are one family, numbered by `revision`.
+
+| How it is made | What happens | Job? |
+| --- | --- | --- |
+| **Transcript corrected** (`POST …/transcript`) | The API copies the stored result, works the word-based figures out again (`transcript_correction.py`), writes coaching from the fixed rules, and stores it all as a new row. Pause labels are copied to the new row; reports are not, so none is counted twice | No. No audio is read, so it takes a few thousandths of a second |
+| **Analysed again** (`POST …/reanalysis`) | The API copies the kept recording into `uploads/` and queues an ordinary analysis job whose `source_analysis_id` points at the result it came from. The worker runs it like any other job. When it finishes, the new row joins the family | Yes: the same queue, polling, cancellation and crash recovery as an upload |
+
+A revision appears in the history as its own row, marked with its number and reason. The
+earlier results stay readable, and stay exactly as they were.
+
+### Which function does what
+
+| Function | File | Does |
+| --- | --- | --- |
+| `classify` | `feedback.py` | Decides what a piece of feedback is about and what it counts towards |
+| `save`, `delete`, `list_items` | `feedback.py` | Stores feedback; lists it with what each piece does |
+| `pause_labels`, `copy_pause_labels` | `feedback.py` | The labels on an analysis's pauses, for the coaching and for a revision |
+| `tally`, `propose`, `next_value` | `calibration/engine.py` | Counts the reports about a setting and works out its new value. No database |
+| `active` | `calibration/store.py` | The calibration in force |
+| `evaluate` | `calibration/store.py` | Moves every setting whose reports are enough |
+| `undo_last`, `reset`, `set_adaptive` | `calibration/store.py` | The three controls on the calibration screen |
+| `describe` | `calibration/store.py` | Everything `GET /api/calibration` returns |
+| `correct_transcript` | `transcript_correction.py` | A stored result with corrected words → a new result. Pure: no database, no audio |
+| `create_corrected`, `create_reanalysis_job` | `revisions.py` | Store a corrected revision; queue a fresh analysis |
+| `review` | `wpm_review.py` | The arithmetic and the checks shown when a WPM figure is questioned |
+
 ## 5. The database
 
 One SQLite file: `backend/data/monologue_coach.db`, created the first time the migration
@@ -773,6 +1065,7 @@ command runs. It is listed in `.gitignore`, so it is never committed.
 | `audio_path` | Where the upload is, relative to the data folder. Empty once deleted, and always empty for a coaching job |
 | `error_code`, `error_message`, `error_retryable` | Why it failed |
 | `analysis_id` | The result, once succeeded. For a coaching job: the analysis it is for, from the start |
+| `source_analysis_id` | For a fresh analysis of a kept recording: the result it started from. Empty otherwise. Added in Phase 6 |
 | `created_at`, `updated_at`, `started_at`, `finished_at`, `heartbeat_at` | Times, stored in UTC |
 
 **`analyses`** — one row per successful job.
@@ -783,8 +1076,10 @@ command runs. It is listed in `.gitignore`, so it is never committed.
 | `role`, `title` | `take` or `reference`, and a reference's name. Indexed, because every list asks for one role |
 | `profile`, `language`, `duration_seconds` | Copied out of the result for quick listing later |
 | `schema_version` | Version of the result's JSON shape |
-| `settings_version` | Version of the thresholds that produced it |
-| `revision` | 1 today. A later re-analysis will be added as a new row, never written over this one |
+| `settings_version` | Version of the app's default thresholds |
+| `calibration_version` | Version of the user's calibration that was in force. Added in Phase 6; every earlier row became 1, the defaults |
+| `root_id` | The ID of the first result made from the same recording. A first result's root is itself. Indexed |
+| `revision`, `revision_reason` | 1 and empty for a first result. 2, 3, … with `transcript_corrected` or `reanalysed` for a later one, which is always a new row and never written over an earlier one |
 | `result` | The whole measured result, as JSON. Written once |
 | `coaching` | The coaching for this result, as JSON. Can be replaced by a coaching job. Empty for results from before Phase 4 |
 | `waveform` | The outline of the sound wave, as JSON, for drawing only. Read by no measurement. Empty for results from before Phase 5 |
@@ -798,6 +1093,36 @@ command runs. It is listed in `.gitignore`, so it is never committed.
 | `started_at`, `heartbeat_at` | When it started and when it last reported |
 | `speech_model`, `speech_model_ready` | Which model, and whether it is on disk |
 | `coach_model`, `coach_status` | Which AI model, and what the worker last found: `ready`, `not_running`, `model_missing`, `not_local` or `off` |
+
+**`feedback`** — one row per thing the user said about an analysis. Added in Phase 6.
+
+| Column | Meaning |
+| --- | --- |
+| `id`, `created_at`, `updated_at` | Identity and times |
+| `analysis_id` | The analysis it is about. Deleting the analysis deletes the row |
+| `recording_id` | The root of that analysis, so reports can be counted per recording however many revisions it has |
+| `slot` | What it is about, e.g. `pause:pause-2`. Unique per analysis: one row per thing |
+| `category`, `target_kind`, `target_id`, `at_seconds` | What was said, and about what |
+| `note` | The optional note, up to 280 characters |
+| `calibration_version` | The calibration version that produced the analysis it is about |
+| `features` | What was measured at that spot, as JSON, copied when the feedback was given |
+| `setting`, `direction`, `evidence` | For a report: the setting it speaks for moving, which way, and the measurement behind it (a length in milliseconds). Empty for a label or a record |
+| `used_by_version` | The calibration version that counted this report. Empty while it is waiting |
+
+**`calibration_versions`** — one row per state the adjustable settings have been in. Rows
+are only ever added.
+
+| Column | Meaning |
+| --- | --- |
+| `version` | 1, 2, 3 … The highest is the calibration in force |
+| `created_at`, `cause` | When, and why it exists: `defaults`, `auto`, `undo` or `reset` |
+| `values` | Every adjustable setting and its value in this version, as JSON |
+| `setting`, `old_value`, `new_value` | What changed, for `auto` and `undo` |
+| `reason` | The sentence shown to the user, written when the version was made |
+| `report_count`, `agreeing_count`, `recording_count` | How many reports were looked at, how many agreed, from how many recordings |
+| `undone_by` | The later version that undid this adjustment or reset it away. Empty while it is in effect |
+
+**`calibration_state`** — a single row: `adaptive_enabled`, and when it last changed.
 
 ### Migrations
 
@@ -815,6 +1140,7 @@ and the migrations ever disagree.
 | `0001_jobs_analyses_and_worker_state` | Creates the three tables |
 | `0002_coaching` | Adds `jobs.kind`, `analyses.coaching`, `worker_state.coach_model` and `worker_state.coach_status`. Existing rows are kept: old jobs become kind `analysis`, old results simply have no coaching |
 | `0003_references_and_waveforms` | Adds `role` and `title` to `jobs` and `analyses`, and `analyses.waveform`. Existing rows are kept: everything stored so far becomes a `take`, with no waveform |
+| `0004_feedback_and_calibration` | Creates `feedback`, `calibration_versions` and `calibration_state`. Adds `jobs.source_analysis_id` and, to `analyses`, `calibration_version`, `root_id` and `revision_reason`. Existing rows are kept: every stored result becomes calibration version 1 and the first result of its own recording |
 
 **After updating the code to a new phase, run `uv run alembic upgrade head` once.** Until then
 the API reports `"database": "error"`, because the code expects columns the file does not
@@ -844,6 +1170,8 @@ All file handling is in `app/uploads.py`. Nothing else creates or deletes audio.
 | Job failed, but a retry could work | Kept, until the retry succeeds, the job is discarded, or 24 hours pass |
 | A file no job refers to, over an hour old | Deleted by the worker's housekeeping |
 | The user deletes an analysis, or only its recording | The kept file is deleted |
+| A transcript is corrected and the recording was kept | The new revision gets `data/audio/<newAnalysisId>.<ext>`: a second name for the same file on disk (a hard link), which takes no extra space. Deleting either leaves the other playable. Where the disk cannot do that, the file is copied |
+| A kept recording is analysed again | It is copied to `data/uploads/<jobId>.<ext>`, so that nothing the job does to its upload can touch the kept recording. When the job succeeds the copy becomes the new revision's kept recording; if it is cancelled or fails for good, the copy is deleted |
 | The user clears all history | Every kept file is deleted, and any upload a failed job was holding |
 
 Paths in the database are relative to the data folder, and `uploads.absolute()` refuses any
@@ -877,6 +1205,11 @@ The audio thresholds (what counts as a pause, and so on) are not environment var
 They live in `app/pipeline/settings.py`, and the coaching bands (what counts as "fast" or
 "even") in `app/coaching/settings.py`. Both are described in the science document.
 
+Those two files hold the **defaults**. The few values feedback may adjust (the minimum
+pause, and a priority per kind of correction) have their current value in the database, in
+`calibration_versions`, and their allowed range in `app/calibration/registry.py`. They are
+not in `.env` on purpose: see decision B50.
+
 ## 8. What is and is not written to logs
 
 The worker prints lines like these, and nothing more:
@@ -895,7 +1228,9 @@ not_running`. When its answer fails a check, a line says how many problems there
 what they were.
 
 - **Never logged:** audio, transcripts, file names, file paths, the prompt sent to the AI
-  model, or the model's answer.
+  model, the model's answer, or anything from feedback: not its notes, not its corrected
+  words. Saving feedback and adjusting a setting write no log line at all; the record of
+  an adjustment is its row in the database, which the calibration screen shows.
 - **Shown to the user on failure:** a fixed message for known problems; for unknown ones
   only the step and the kind of error, for example
   `Something went wrong while transcribing (RuntimeError).` The original error text is not
@@ -1285,20 +1620,165 @@ Each entry says what was chosen, what was considered, and what was decided again
   attempt" table, which is a different comparison: figures only, no lining up of words. Mixing
   the two would blur which recording is the target.
 
-### Decisions already made for later phases *(not built yet)*
+### B38. Feedback is saved, and acted on, inside one ordinary request
 
-| Topic | Decision | Instead of |
-| --- | --- | --- |
-| Calibration | Changes the thresholds and bands, with every result keeping the version that produced it | Rewriting old results |
+- **Chosen:** `POST …/feedback` classifies the feedback, saves it, checks whether any
+  setting should now move, and answers with the outcome. No job, no queue.
+- **Why:** all of it is a few database reads and a little arithmetic: milliseconds. The
+  queue exists for work that takes seconds or minutes. Doing it at once also means the
+  screen can say "1 of the 3 reports needed" in the same breath as "saved".
+- **Decided against:** *a calibration job run by the worker*, which would add a delay and a
+  second writer of calibration for nothing; and *adjusting on a timer*, which would make
+  it impossible to say which piece of feedback caused a change.
+
+### B39. Calibration versions are only ever added
+
+- **Chosen:** every change writes a new row: an adjustment, an undo, a reset. Undo does not
+  delete the adjustment it reverses; it adds a version that puts the old value back.
+- **Why:** each analysis stores the version it was made with. If versions could be edited
+  or removed, "made with version 2" would stop meaning anything the moment version 2
+  changed. The brief requires results to stay traceable to their settings.
+- **Decided against:** *one row of current values, updated in place*: simpler, and no way
+  to explain an old result or to show a history. *Deleting the row on undo*: version
+  numbers would be reused for different values.
+
+### B40. One row per thing: saying something else replaces what was said
+
+- **Chosen:** each piece of feedback has a `slot` naming what it is about
+  (`pause:pause-2`, `wpm:seg-3`, `missed:seg-1@2.62`), unique per analysis. New feedback in
+  the same slot replaces the old row; the same category again only updates the note.
+- **Why:** a pause cannot be both intentional and "not a pause". And clicking twice, or
+  changing one's mind back and forth, must not manufacture several reports out of one
+  observation.
+- **Detail:** a missed pause is slotted by the *silence* it turned out to be about, not by
+  the time the user marked. So the same silence marked at three slightly different times
+  is one report.
+
+### B41. A report counts once, and undo does not give it back
+
+- **Chosen:** an adjustment marks every report waiting on its setting as used
+  (`used_by_version`). Undoing or resetting leaves them used. Rewording a used report in
+  the same direction keeps it used.
+- **Why:** otherwise an undone adjustment would be re-applied by the very next piece of
+  feedback, from the same reports the user has just overruled.
+- **Decided against:** *un-spending reports on undo*, for that reason; and *spending only
+  the reports that agreed*, which would leave the dissenting ones to tip a later count
+  they were already weighed in.
+
+### B42. The worker reads the calibration when a job starts, and the result carries it
+
+- **Chosen:** the newest version is read once per job. Its number and the minimum pause it
+  gave are part of the settings the pipeline copies into every result.
+- **Why:** a result should be explainable from the result alone. The version is in its own
+  JSON, and also in a column so it can be listed without opening the JSON.
+- **Decided against:** *reading the calibration at each stage*: a change halfway through a
+  job would give a result made with two different settings.
+
+### B43. What a piece of feedback "does" is worked out when it is read
+
+- **Chosen:** the sentence shown beside each piece of feedback ("counts towards…", "counted
+  in version 2…", "no longer counts") is built from the current state each time the list
+  is requested. It is not stored.
+- **Why:** it changes without the feedback changing: when another report arrives, when a
+  setting moves, on undo, on reset. A stored sentence would go stale.
+- **Stored instead:** the facts it is built from: the category, what was measured, the
+  setting and direction, and which version used it.
+
+### B44. Deleting an analysis deletes its feedback, but not what the feedback did
+
+- **Chosen:** feedback rows go with their analysis (a database rule: `ON DELETE CASCADE`).
+  A setting they had already moved stays moved, and its history entry stays.
+- **Why:** the rows hold the user's notes and corrected words, and deleting a recording's
+  result should take those with it. But a calibration version records only numbers and a
+  sentence about counts, and removing it would break the trail for every other result made
+  with it. To take an adjustment back there is undo.
+
+### B45. A corrected transcript is stored by the API at once, as a new row
+
+- **Chosen:** no job. The API works the figures out again and stores a new analysis row
+  with the same job ID as the result it came from.
+- **Why:** nothing here touches audio or a model. It is arithmetic on a few hundred words.
+- **Decided against:**
+  - *Overwriting the stored result*: against B16, and it would destroy the record of what
+    the recogniser actually heard.
+  - *Storing only the corrections and applying them every time the result is read*: every
+    reader of a result (the comparison, the coaching, the history) would need to know
+    about corrections.
+  - *Running the AI model as part of the request*: half a minute inside an HTTP request.
+    The revision gets rule-based coaching, and "write the coaching again" asks the model.
+
+### B46. Analysing again is an ordinary job on its own copy of the recording
+
+- **Chosen:** the kept file is copied into `uploads/` and a normal analysis job is queued
+  with `source_analysis_id` set. Everything else is the code path an upload takes.
+- **Why:** the worker deletes or moves a job's audio when the job ends, on success, failure
+  and cancellation alike. Pointing a job at the kept file itself would put the user's kept
+  recording in the path of all three.
+- **Decided against:** *working pauses out again from stored data without the audio*. The
+  phrases would change, and loudness and pitch per phrase need the sound.
+- **Cost accepted:** needs the recording to have been kept. Without it the endpoint says so.
+
+### B47. A corrected revision shares its recording through a hard link
+
+- **Chosen:** the new revision's audio file is a second name for the same bytes on disk.
+- **Why:** the audio is identical, so a copy would double the space for nothing. With two
+  names, each result still owns "its" file: deleting one result's recording cannot break
+  the other, and no code has to count who else is using a file.
+- **Decided against:** *both rows pointing at one path*: deleting the recording from one
+  result would silently remove it from the other, or need reference counting everywhere a
+  file is deleted.
+- **Not used for analysing again**, where the file lands in `uploads/` first: the
+  housekeeping that removes stray uploads goes by a file's age, and a hard link has the
+  age of the original.
+
+### B48. Results of one recording are tied together by a root, and listed separately
+
+- **Chosen:** `root_id` on every result. The history lists each revision as its own row,
+  marked "Revision 2: transcript corrected". Reading any one of them returns the list of
+  all of them.
+- **Why:** each revision is a complete result that can be opened, compared and deleted
+  like any other, so nothing else in the app needed to learn about revisions.
+- **Decided against:** *a separate `recordings` table with results under it*: the right
+  shape for a larger app, and a rewrite of every list and delete here.
+
+### B49. Feedback is taken on takes only
+
+- **Chosen:** feedback on a reference recording is refused (`409 not_a_take`).
+- **Why:** calibration is meant to fit the app to *the user's own* recordings: their
+  microphone, their room, their way of speaking. A film clip is a different kind of sound,
+  often with music, and reports about it would pull the settings the wrong way.
+- **Still possible:** a reference can be analysed again with the current settings, so that
+  it and the takes are cut the same way.
+
+### B50. Adjustable settings live in the database, not in `.env`
+
+- **Chosen:** defaults in code, allowed ranges in `calibration/registry.py`, current
+  values in `calibration_versions`.
+- **Why:** an environment variable is read once at start-up, has no history, and is not
+  recorded with a result. A value that changes while the app runs, must be undoable, and
+  must be traceable from every result needs all three.
+
+### B51. A coaching job may fall back to the rules when pause labels have changed
+
+- **Refines B28.** A coaching job still fails rather than replace coaching with the same
+  templates. The exception: if the user has labelled pauses since the stored coaching was
+  written, coaching from the rules that takes the labels in *is* an improvement, so the job
+  succeeds with it when the AI model cannot answer.
+- **How it is told:** the stored coaching records the labels it used (`labelsUsed`); the
+  worker compares them with the labels now on the analysis.
+
+### Decisions already made for later phases
+
+None. Every phase in the plan is built.
 
 ## 10. Tests
 
-Run with the command in the README. Current result: **436 pass**, 1 skipped (the opt-in
-real-speech test, which also passes when run). 68 of them are new in Phase 5.
+Run with the command in the README. Current result: **595 pass**, 1 skipped (the opt-in
+real-speech test, which also passes when run). 159 of them are new in Phase 6.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
-| `test_segmentation.py` | 20 | Segments and pauses from speech regions; threshold edges; long silences; word assignment |
+| `test_segmentation.py` | 25 | Segments and pauses from speech regions; threshold edges; long silences; word assignment. Short silences: every gap is either a pause or a short silence, never both; what counts follows the minimum pause in force; settings stored with an older result can still be read |
 | `test_metrics.py` | 23 | WPM with pauses excluded and included; reliability flags; typical pace and faster/slower; pause statistics; no division by zero |
 | `test_audio_and_acoustics.py` | 20 | Decoding, length limit, clipping, loudness in dB, pitch, emphasis candidates, hesitation sounds |
 | `test_pipeline.py` | 24 | The whole pipeline with scripted speech: numbers, warnings, no-speech, garbled transcripts, cancellation |
@@ -1309,10 +1789,16 @@ real-speech test, which also passes when run). 68 of them are new in Phase 5.
 | `test_comparison.py` | 26 | Pauses matched, missing, extra and unplaced; a recording against a copy of itself showing no difference even with word times pushed into the pauses; phrase pace over the same words; whole-recording rows; the biggest differences in order and in words; different passages compared only as wholes; neither recording changed |
 | `test_comparison_align.py` | 20 | Word keys, including Hindi spelling variants; dropped, added and misheard words; a repeated line matched to the right repetition; speed on a ten-minute passage |
 | `test_waveform.py` | 6 | The outline's lowest and highest values, its size for long and short recordings, padding, no normalising |
-| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects; a database from before Phase 4 upgrades with its rows intact |
-| `test_coaching_findings.py` | 33 | Every finding: its band, its wording, its role under each profile; what is left out when a measurement is missing; that statements contain no figure that is not a measurement or a band |
-| `test_coaching_rules.py` | 60 | Template coaching: order, practice phrase, profile sentence, targets; every template under every profile fills in completely and quotes only known figures |
-| `test_coaching_prompt.py` | 12 | What the model is shown and forbidden; that its answer can only name findings and phrases that exist; the size estimate staying above the model's real token counts; a long recording losing its timings before any words, then being cut to fit |
+| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects; a database from before Phase 4 upgrades with its rows intact, each result becoming calibration version 1 and the first result of its own recording |
+| `test_calibration_engine.py` | 34 | The adjustment rules with no database: one or two reports move nothing; three from one recording are not enough; disagreement and ties change nothing; only recent reports count; the minimum pause is steered by the silences reported and never moves more than 100 ms at once; **no setting ever leaves its allowed range**; a report already answered by an earlier change stops counting; moving back needs five reports; the detection threshold is not adjustable |
+| `test_feedback.py` | 26 | What each kind of feedback is taken to mean: labels speak for no setting; a short false pause for raising the minimum pause; a long one for nothing; a missed pause for lowering it only where a silence of 250 ms or more was heard; one silence can be reported only once; **no feedback speaks for more than one setting** |
+| `test_feedback_api.py` | 28 | Through the API: storing, replacing, noting and removing feedback; a fresh install says it is still calibrating; two reports change nothing; **three agreeing reports from two recordings move only the minimum pause**, with a reason and a confidence; each adjustment needs fresh reports; **undo, reset and switching off**; new analyses use the new value and old ones stay as they were; **labelling a pause changes no measurement**, and reaches the coaching when it is written again; saying a WPM looks wrong changes no number |
+| `test_transcript_correction.py` | 20 | **Segment WPM is the corrected word count over the phrase's own length, with no correction factor**; totals recounted; untouched phrases keep every figure; everything measured from the sound identical; corrected words get times between their neighbours; hesitation sounds recounted; emphasis candidates kept only for words still there |
+| `test_revisions.py` | 16 | A corrected transcript becomes revision 2 and the corrected result stays exactly as it was; both are in the history; pause labels come along and reports do not; the kept recording is shared and each copy can be deleted alone. Analysing again: a new revision with the settings in force, for takes and references; asking twice; refused without a kept recording; a cancelled one leaves the kept recording alone |
+| `test_wpm_review.py` | 12 | The arithmetic shown; too high points at extra words and speech lost in a pause, too low at dropped words and silences counted as speaking; word timing is always part of it; reviewing changes nothing |
+| `test_coaching_findings.py` | 45 | Every finding: its band, its wording, its role under each profile; what is left out when a measurement is missing; that statements contain no figure that is not a measurement or a band. Pause labels: an accidental pause is not praised as a held silence, an intentional one is never an issue, labels never change a measurement. Priorities move an issue down the list without removing it |
+| `test_coaching_rules.py` | 64 | Template coaching: order, practice phrase, profile sentence, targets; every template under every profile fills in completely and quotes only known figures |
+| `test_coaching_prompt.py` | 14 | What the model is shown and forbidden; that its answer can only name findings and phrases that exist; the size estimate staying above the model's real token counts; a long recording losing its timings before any words, then being cut to fit; the model is told which pauses the actor marked |
 | `test_coaching_grounding.py` | 32 | Invented figures, times, segments and quotations are caught; copied ones pass; units in their common spellings |
 | `test_coaching_coach.py` | 26 | A clean answer is used; a bad one is sent back once; what still fails is removed; nothing surviving means templates; every way the model can be unavailable; cancellation |
 | `test_llm.py` | 19 | The Ollama client against a scripted server: status, streaming, cut-off answers, errors, timeouts, cancellation, refusing non-local addresses, never downloading a model |
@@ -1385,3 +1871,32 @@ Also checked at the end of Phase 5, with the real worker on synthesised recordin
 | Compare a Hindi take with a Hindi reference | 17 of 19 words lined up; the missing and the extra pauses correct |
 | Compare a two-minute recording with a copy of itself | At first: 6 of 23 pauses wrongly reported as missing and extra. After the fix in decision S39: 23 of 23 matched, no differences |
 | Clear the takes, then the references | Each clear removed only its own role, and its kept audio |
+
+Also checked at the end of Phase 6, through the real API, worker, speech model and
+`llama3.1:8b`, on a separate test database so the real one was never touched. The two test
+recordings were synthesised with silences of known length inside their phrases; the
+detector measured those as 324, 356 and 356 ms in one and 356 and 356 ms in the other.
+All 48 checks in the script passed.
+
+| Check | Result |
+| --- | --- |
+| A fresh database | Calibration version 1, "still calibrating", 13 adjustable settings |
+| Analyse the two takes and a reference | 49 s (first run, models loading), 21 s and 6 s. Each result records calibration version 1, the 500 ms minimum pause, and its short silences, every one inside the phrase it is listed under |
+| Label one pause accidental and one intentional | The stored result is byte for byte the same; no report is waiting |
+| Write the coaching again with those labels | The AI model answered in 38 s and passed the checks. The 2.7 s pause marked accidental is no longer read as a held silence, and is still counted in every pause figure at full length |
+| Report two missed pauses in one recording | Nothing moves: "2 of the 3 reports needed for lowering it, from 1 of the 2 recordings needed" |
+| Report a third, in the second recording | Minimum pause 500 → 400 ms, with its reason; no other setting changed; the earlier results untouched |
+| Analyse the first recording again | 26 s. Revision 2, version 2, 400 ms. Pauses unchanged, as predicted: the silences are 324 to 356 ms, still under 400 |
+| Compare that revision with the reference made at 500 ms | `settingsNote` says the two were analysed with different settings |
+| Three fresh reports on the revisions | 400 → 350 ms. Analysed again: 5 pauses instead of 3; the two 356 ms silences are now pauses and the 324 ms one is not; speaking time fell by exactly 2 × 0.356 s; the word count is unchanged |
+| Say a phrase's WPM looks too high | Nothing changed. Review: "16 words ÷ 4.51 s of speaking × 60 = 212.9 WPM" |
+| Correct that phrase's transcript, removing two words | Revision 4: 14 words, 186.3 WPM, which is 14 ÷ 4.51 × 60. Pauses, phrase times, loudness and pitch identical to revision 3; revision 3 unchanged; the revision plays its recording |
+| Undo twice | 350 → 400 → 500 ms, then nothing left to undo |
+| Analyse the first recording again at 500 ms | Cut exactly as it was the first time: same pauses, same short silences, same phrases and WPM |
+| Switch automatic adjustment off and report | Reports saved, nothing moves |
+| Reset | Every default back; no reports waiting; the history lists all six versions |
+
+Not checked: a real human voice, a noisy room, a quiet or whispered delivery, and feedback
+built up over many days of real use. See "Accuracy and limits" in the science document for
+what was measured about the speech detector on hard audio.
+

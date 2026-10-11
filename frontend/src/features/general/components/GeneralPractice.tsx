@@ -10,11 +10,13 @@ import type { LanguageHint, Profile } from "../types";
 import {
   generalApi,
   useBackendHealth,
+  useFeedback,
   useGeneralStore,
   useRecorder,
 } from "../useGeneralPractice";
 import { validateAudioFile } from "../validation";
 import { BackendNotice } from "./BackendNotice";
+import { CalibrationPanel } from "./CalibrationPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { MUTED, Notice, Section } from "./parts";
 import { ReferenceComparison } from "./ReferenceComparison";
@@ -151,6 +153,8 @@ export function GeneralPractice() {
 
   const viewed = state.viewed;
   const viewedAnalysis = viewed.status === "ready" ? viewed.analysis : null;
+  // Feedback is given on your own takes. With nothing on view, only the calibration loads.
+  const feedback = useFeedback(viewedAnalysis?.role === "take" ? viewedAnalysis.analysisId : null);
   const audioSrc = viewedAnalysis ? audioSourceFor(viewedAnalysis, state.localAudio, generalApi) : null;
   const chosenReference = state.references.items.find(
     (item) => item.analysisId === state.selectedReferenceId,
@@ -232,6 +236,7 @@ export function GeneralPractice() {
         kind={state.runKind}
         role={state.runRole}
         coachingFor={state.coachingFor}
+        again={state.reanalysisFor !== null}
         store={store}
       />
 
@@ -255,7 +260,17 @@ export function GeneralPractice() {
               title="Compare with a reference recording"
               description="Set this take against a recording you supply, such as the original performance: where each of you pauses, and how fast each phrase is said. This is a measured comparison of two real recordings, separate from the delivery profile above."
             >
-              <ReferenceLibrary state={state} store={store} options={options} busy={busy} />
+              <ReferenceLibrary
+                state={state}
+                store={store}
+                options={options}
+                busy={busy}
+                calibration={
+                  feedback.state.calibration.status === "ready"
+                    ? feedback.state.calibration.data
+                    : null
+                }
+              />
               {chosenReference && (
                 <ReferenceComparison
                   // Fresh players and a closed waveform for each pair of recordings.
@@ -282,6 +297,13 @@ export function GeneralPractice() {
           onClose={() => store.closeAnalysis()}
           onDelete={() => ask({ kind: "delete_analysis", analysisId: viewedAnalysis.analysisId })}
           onDeleteAudio={() => ask({ kind: "delete_audio", analysisId: viewedAnalysis.analysisId })}
+          feedback={viewedAnalysis.role === "take" ? feedback : undefined}
+          correction={state.correction}
+          onCorrectTranscript={(corrections) =>
+            store.correctTranscript(viewedAnalysis.analysisId, corrections)
+          }
+          onReanalyse={() => store.reanalyse(viewedAnalysis.analysisId)}
+          onOpenRevision={(analysisId) => store.openAnalysis(analysisId)}
         />
       )}
 
@@ -294,6 +316,8 @@ export function GeneralPractice() {
         onClear={() => ask({ kind: "clear_history" })}
         onRetry={() => store.refreshHistory()}
       />
+
+      <CalibrationPanel state={feedback.state} store={feedback.store} />
 
       <ConfirmDialog
         open={confirmation !== null}

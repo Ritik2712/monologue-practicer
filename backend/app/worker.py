@@ -19,7 +19,8 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app import job_queue, schemas, uploads
+from app import feedback, job_queue, schemas, uploads
+from app.calibration import store as calibration
 from app.coaching.coach import Coach, CoachingUnavailable
 from app.config import settings
 from app.models import Analysis, Job, WorkerState, utcnow
@@ -170,12 +171,17 @@ class Worker:
         """
         if not audio_path or not uploads.audio_exists(audio_path, self.data_dir):
             raise PipelineError("audio_missing", "The uploaded audio is no longer available.")
+        # The calibration in force when the job starts is the one the whole job uses, and
+        # its version number is stored with the result.
+        with self.session_factory() as session:
+            active = calibration.active(session)
+        analysis_settings = active.analysis_settings(self.analysis_settings)
         pictures: list[schemas.Waveform] = []
         body = run_analysis(
             uploads.absolute(audio_path, self.data_dir),
             profile=profile,
             language=language,
-            settings=self.analysis_settings,
+            settings=analysis_settings,
             max_seconds=self.max_audio_seconds,
             deps=self.deps,
             on_stage=on_stage,
@@ -186,7 +192,9 @@ class Worker:
         coaching = None
         if role != job_queue.REFERENCE:
             on_stage("generating_feedback")
-            coaching = self._coach_safely(body, check)
+            coaching = self._coach_safely(
+                body, check, active.coaching_settings(self.coach.settings)
+            )
             check()
         with self.session_factory() as session:
             job = session.get(Job, job_id)
@@ -194,7 +202,7 @@ class Worker:
                 session,
                 job,
                 body,
-                self.analysis_settings.version,
+                analysis_settings.version,
                 self.clock(),
                 self.data_dir,
                 coaching=coaching,
@@ -203,7 +211,7 @@ class Worker:
         return saved is not None
 
     def _coach_safely(
-        self, body: schemas.AnalysisBody, check: Callable[[], None]
+        self, body: schemas.AnalysisBody, check: Callable[[], None], settings
     ) -> schemas.Coaching | None:
         """Coaching must never cost the user their measurements.
 
@@ -211,7 +219,7 @@ class Worker:
         without coaching, and the screen offers to write it again.
         """
         try:
-            return self.coach.generate(body, now=self.clock(), check=check)
+            return self.coach.generate(body, now=self.clock(), check=check, settings=settings)
         except (JobCancelled, WorkerStopping):
             raise
         except Exception as error:
@@ -230,14 +238,27 @@ class Worker:
         with self.session_factory() as session:
             analysis = session.get(Analysis, analysis_id) if analysis_id else None
             stored = analysis.result if analysis else None
+            before = (analysis.coaching or {}) if analysis else {}
+            labels = feedback.pause_labels(session, analysis_id) if analysis else {}
+            settings = calibration.active(session).coaching_settings(self.coach.settings)
         if stored is None:
             raise PipelineError("analysis_gone", "The analysis this coaching was for was deleted.")
         body = schemas.AnalysisBody.model_validate(stored)
+        # The user has labelled pauses since the coaching was written: coaching from the
+        # templates that takes the labels in is then already an improvement.
+        labels_changed = labels != (before.get("labelsUsed") or {})
         on_stage("generating_feedback")
         try:
-            # Template coaching would be no improvement on what is already stored, so
+            # Otherwise template coaching would be no improvement on what is stored, so
             # anything short of an answer from the model fails the job and changes nothing.
-            coaching = self.coach.generate(body, now=self.clock(), check=check, require_model=True)
+            coaching = self.coach.generate(
+                body,
+                now=self.clock(),
+                check=check,
+                require_model=not labels_changed,
+                settings=settings,
+                labels=labels,
+            )
         except CoachingUnavailable as error:
             raise PipelineError(error.code, error.message) from None
         check()

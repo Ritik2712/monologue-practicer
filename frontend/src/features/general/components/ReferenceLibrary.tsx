@@ -5,9 +5,10 @@ import { useId, useRef, useState } from "react";
 import { Button } from "@/components/Button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 
+import { madeWithOlderSettings } from "../feedback";
 import { formatBytes, formatDateTime, formatSpan } from "../format";
 import type { GeneralState, GeneralStore } from "../generalStore";
-import type { AnalysisOptions, LanguageHint } from "../types";
+import type { AnalysisOptions, Calibration, LanguageHint } from "../types";
 import { acceptAttribute, validateAudioFile } from "../validation";
 import { FOCUS_RING, LinkButton, MUTED, Notice } from "./parts";
 
@@ -18,6 +19,8 @@ type ReferenceLibraryProps = {
   options: AnalysisOptions | null;
   /** True while an analysis is in progress, when another cannot be started. */
   busy: boolean;
+  /** The settings in force now, to tell when a reference was measured with older ones. */
+  calibration?: Calibration | null;
 };
 
 /**
@@ -26,11 +29,20 @@ type ReferenceLibraryProps = {
  * A reference is a recording you supply, such as the original performance. It is measured
  * on this computer exactly like one of your own takes.
  */
-export function ReferenceLibrary({ state, store, options, busy }: ReferenceLibraryProps) {
+export function ReferenceLibrary({
+  state,
+  store,
+  options,
+  busy,
+  calibration = null,
+}: ReferenceLibraryProps) {
   const selectId = useId();
   const { references, selectedReferenceId } = state;
   const selected = references.items.find((item) => item.analysisId === selectedReferenceId);
   const [confirming, setConfirming] = useState(false);
+  const outdated = selected
+    ? madeWithOlderSettings({ settings: selected.settings ?? {} }, calibration)
+    : null;
 
   return (
     <div className="flex flex-col gap-3">
@@ -56,6 +68,7 @@ export function ReferenceLibrary({ state, store, options, busy }: ReferenceLibra
               <option key={item.analysisId} value={item.analysisId}>
                 {item.title ?? "Reference"} · {formatSpan(item.durationSeconds)} · added{" "}
                 {formatDateTime(item.createdAt)}
+                {item.revision > 1 ? ` · revision ${item.revision}` : ""}
               </option>
             ))}
           </select>
@@ -66,6 +79,34 @@ export function ReferenceLibrary({ state, store, options, busy }: ReferenceLibra
                 : "Its recording was not kept: it can be compared with, but not played."}{" "}
               <LinkButton onClick={() => setConfirming(true)}>Delete this reference</LinkButton>
             </p>
+          )}
+          {selected && outdated && (
+            <Notice kind="info">
+              <p>
+                This reference was measured when a silence counted as a pause from{" "}
+                {outdated.then} ms. Your feedback has since moved that to {outdated.now} ms, so
+                takes analysed now are cut differently from it.
+              </p>
+              {selected.audioRetained ? (
+                <div className="mt-2">
+                  <Button
+                    disabled={busy}
+                    onClick={() => store.reanalyse(selected.analysisId, "reference")}
+                  >
+                    Measure this reference again
+                  </Button>
+                  <p className={`mt-1 ${MUTED}`}>
+                    That adds it again as a new revision, measured with the settings as they are
+                    now. The earlier one stays until you delete it.
+                  </p>
+                </div>
+              ) : (
+                <p className={`mt-1 ${MUTED}`}>
+                  Its recording was not kept, so it cannot be measured again. Add the recording
+                  again to measure it with the settings as they are now.
+                </p>
+              )}
+            </Notice>
           )}
         </div>
       )}

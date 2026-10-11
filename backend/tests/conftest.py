@@ -177,6 +177,16 @@ def make_pause(index: int, start: float, end: float) -> schemas.PauseEvent:
     )
 
 
+def make_silence(start: float, end: float, segment_id: str) -> schemas.ShortSilence:
+    """A silence too short to be a pause, lying inside the given segment."""
+    return schemas.ShortSilence(
+        start_seconds=start,
+        end_seconds=end,
+        duration_seconds=round(end - start, 3),
+        segment_id=segment_id,
+    )
+
+
 # A 17-second take of four phrases. The third is rushed; the pauses are 0.6, 0.7 and 0.8 s.
 TAKE_SEGMENTS = (
     (0.0, 4.0, "You clearly do not know who you are talking to"),
@@ -190,10 +200,13 @@ def make_body(profile: str = "custom", **overrides) -> schemas.AnalysisBody:
     """A complete measured recording for the coaching tests, built without any audio.
 
     Keyword arguments named after a metric (snake_case) replace that metric's value; `None`
-    makes it unavailable. `segments`, `pauses`, `words`, `warnings`, `hesitations` and
-    `emphasis_candidates` replace those lists.
+    makes it unavailable. `segments`, `pauses`, `words`, `warnings`, `hesitations`,
+    `emphasis_candidates` and `short_silences` replace those lists, and `settings` adds to
+    the settings the result says it was made with.
     """
     duration_seconds = overrides.pop("duration_seconds", 17.3)
+    short_silences = overrides.pop("short_silences", None)
+    settings = {"version": 1, "min_pause_ms": 500, **overrides.pop("settings", {})}
     segments = overrides.pop("segments", None)
     if segments is None:
         segments = [make_segment(i, a, b, text) for i, (a, b, text) in enumerate(TAKE_SEGMENTS)]
@@ -263,10 +276,11 @@ def make_body(profile: str = "custom", **overrides) -> schemas.AnalysisBody:
         transcript=" ".join(s.transcript or "" for s in segments) or None,
         segments=segments,
         pauses=pauses,
+        short_silences=short_silences,
         words=words,
         metrics=schemas.Metrics(**values),
         energy_timeline=schemas.EnergyTimeline(seconds_per_point=0.25, unit="dBFS", values=[]),
-        settings={"version": 1, "min_pause_ms": 500},
+        settings=settings,
         pipeline=schemas.PipelineInfo(
             speech_model="fake-model", voice_activity_detector="silero-vad", pitch_tracker="pyin"
         ),
@@ -454,3 +468,25 @@ def add_job(session_factory, data_dir: Path, clock: FakeClock):
         return job_id
 
     return add
+
+
+@pytest.fixture
+def store_result(session_factory, data_dir: Path, clock: FakeClock, add_job):
+    """Stores a prepared result as a finished analysis and returns its ID.
+
+    For tests that need exact pauses and silences, which the scripted worker cannot give.
+    The coaching comes from the templates, as it does when no language model is set up.
+    """
+
+    def store(body: schemas.AnalysisBody, **job_fields) -> str:
+        add_job(profile=body.profile, **job_fields)
+        with session_factory() as active:
+            job = job_queue.claim_next_job(active, clock())
+            coaching = None if job.role == "reference" else Coach(None).generate(body, now=clock())
+            analysis = job_queue.complete_job(
+                active, job, body, 1, clock(), data_dir, coaching=coaching
+            )
+        clock.advance(seconds=1)
+        return analysis.id
+
+    return store

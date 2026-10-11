@@ -2,18 +2,19 @@
 
 How a recording is turned into numbers — speaking rate, pauses, loudness, pitch — how those
 numbers are turned into coaching, with a local AI model doing the wording and ordinary code
-checking it, and how one recording is compared with another.
+checking it, how one recording is compared with another, and how the user's feedback
+adjusts a few settings.
 
 - Start with [DOCUMENTATION.md](DOCUMENTATION.md) for the big picture and the general glossary.
 - How jobs are queued, run, cancelled and stored is in
   [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md). This file is about **what is
   measured, how the coaching is produced, and why it is done that way**.
 
-Anything not built yet is marked **Planned**.
+Everything described here is built.
 
-**Last updated:** end of Phase 5. All measurements below are built, so is the coaching
-(section 13), and so is the comparison of a take with a reference recording (section 14),
-with its waveform picture.
+**Last updated:** end of Phase 6. The measurements, the coaching (section 13), the
+comparison of a take with a reference recording (section 14) and feedback with calibration
+(section 15) are all built.
 
 ## Contents
 
@@ -31,13 +32,16 @@ with its waveform picture.
 12. [The settings](#12-the-settings)
 13. [Coaching and the AI model](#13-coaching-and-the-ai-model)
 14. [Comparing with a reference recording](#14-comparing-with-a-reference-recording)
-15. [Accuracy and limits](#15-accuracy-and-limits)
-16. [Science decisions](#16-science-decisions)
-17. [Glossary](#17-glossary)
+15. [Feedback and calibration](#15-feedback-and-calibration)
+16. [Accuracy and limits](#16-accuracy-and-limits)
+17. [Science decisions](#17-science-decisions)
+18. [Glossary](#18-glossary)
 
 The measuring code is in `backend/app/pipeline/`. The coaching code is in
 `backend/app/coaching/`, and the one file that talks to the AI model is `backend/app/llm.py`.
-The code that compares two recordings is in `backend/app/comparison/`.
+The code that compares two recordings is in `backend/app/comparison/`. The code that turns
+feedback into adjusted settings is in `backend/app/feedback.py` and
+`backend/app/calibration/`.
 
 ## 1. The pipeline at a glance
 
@@ -147,6 +151,16 @@ are ordinary gaps between words, not pauses. So regions are joined:
 | **Segment** | Speech regions joined across every gap shorter than 0.5 s. Roughly, one phrase said in one go. |
 | **Pause** | The silence between two segments. Always at least 0.5 s. |
 | **Section** | A group of segments. A new section starts after every pause of 5 s or more. |
+| **Short silence** | A gap between speech regions that is shorter than 0.5 s. It stays inside its segment and counts as speaking time. |
+
+The 0.5 s here is the **minimum pause**. It is the one threshold in this section that the
+user's feedback can move, between 0.25 s and 0.8 s (section 15). Wherever this document says
+"0.5 s" for a pause, read "the minimum pause the result was made with": every result
+records its own.
+
+Short silences are measured and stored with every result, although no figure is built from
+them. They are there for one purpose: when the user says "a pause was missed here", the app
+can look up what the detector actually heard at that spot (section 15).
 
 Each pause gets a size label:
 
@@ -182,7 +196,7 @@ silences inserted on purpose):
                  medium                          short               long
 ```
 
-Code: `segmentation.py` (`build_segments`, `classify_pause`).
+Code: `segmentation.py` (`build_segments`, `classify_pause`, `find_short_silences`).
 
 ## 5. Words
 
@@ -194,7 +208,7 @@ through the **faster-whisper** library. The model size is `small` (about 480 MB)
 Whisper works on windows of up to 30 seconds. For each word it also reports a start time,
 an end time and a **confidence** between 0 and 1.
 
-Three choices in how it is run (reasons in section 16):
+Three choices in how it is run (reasons in section 17):
 
 - **Silence is removed first.** Whisper tends to invent words when given silence. If step 2
   found no speech at all, Whisper is not run.
@@ -234,7 +248,7 @@ are downgraded to estimates with the warning `word_timing_uncertain`.
 
 Whisper has a known failure: on a difficult stretch it can lock onto one character or word
 and repeat it, producing output like `हुँँँँँँँँँँँँ…` in place of several seconds of speech.
-This happened in testing (section 16, decision S9).
+This happened in testing (section 17, decision S9).
 
 Two things guard against it:
 
@@ -549,11 +563,15 @@ All thresholds are in one place, `settings.py`, as `AnalysisSettings`.
 | `vad_min_silence_ms` | 100 | Shorter gaps do not split a speech region |
 | `vad_speech_pad_ms` | 30 | Widening of each speech region |
 | `version` | 1 | Goes up whenever a default changes |
+| `calibration_version` | 1 | Which version of the user's calibration supplied `min_pause_ms`. 1 means the default |
 
 **Every result stores a full copy of the settings that produced it.** Months later it is
-still possible to say "this was measured with a 0.5 s pause threshold". When the calibration
-feature (Phase 6) starts adjusting these values, old results will stay explainable and will
-not be silently recalculated.
+still possible to say "this was measured with a 0.5 s pause threshold".
+
+Of all these, feedback can adjust exactly one: `min_pause_ms` (section 15). The value in
+this table is its default. When feedback moves it, results made afterwards use the new
+value and say so; results made before are not recalculated and keep the settings they
+record.
 
 Settings that contradict each other are refused when created; for example, a minimum pause
 longer than the long-silence boundary.
@@ -868,6 +886,13 @@ There can be **none**. A recording with no speech, or under three seconds, gets 
 at all, and the reason is shown. A recording in which nothing works against the profile gets
 no corrections, and says so.
 
+Since Phase 6 two things the user says reach the coaching. Their **labels on pauses**
+(intentional or accidental) change how the pause findings are worded and judged, and are
+shown to the AI model beside each pause. Their **ratings of corrections** (useful or not
+useful) can move a kind of issue down the order in which issues are offered. Neither
+changes a measurement, and the checks on the model's answer are exactly as described
+above. Both are explained in section 15.
+
 ### When the model is not available
 
 | Situation | What the user gets |
@@ -1168,7 +1193,376 @@ and 23 KB for a 133-second one.
   shape can be seen; it is off by default and says, when on, that it hides any real
   difference in level.
 
-## 15. Accuracy and limits
+## 15. Feedback and calibration
+
+The analysis makes mistakes, and only the speaker knows which. A pause the app found may
+have been a slip. A silence the app ignored may have been a real pause. The words may be
+wrong. This section is about what the app does when the user says so.
+
+Two rules hold throughout:
+
+1. **Feedback never changes a stored measurement.** A pause that was measured stays in
+   every pause figure, at its measured length, whatever is said about it.
+2. **Numbers are changed by fixed rules, never by the AI model.** The model has no part in
+   anything in this section.
+
+### The idea in one picture
+
+```
+                         one piece of feedback
+                                  │
+            ┌─────────────────────┼──────────────────────┐
+            ▼                     ▼                      ▼
+         A LABEL               A REPORT               A RECORD
+   "this pause was       "a pause was missed     "the WPM looks too high"
+    accidental"           here"                  "the words are wrong"
+            │                     │                      │
+            ▼                     ▼                      ▼
+   changes how the       counts towards moving    changes nothing by itself.
+   coaching reads        ONE setting, chosen      WPM: shows a review of what
+   that pause            from what was            went into the figure.
+                         measured at that spot    Words: corrected only if you
+            │                     │               supply them (a new revision).
+            │                     ▼
+            │            enough reports that agree?
+            │              no → nothing moves
+            │              yes → the setting moves one small step,
+            │                    inside its allowed range
+            ▼                     ▼
+    the next coaching     recordings analysed from now on
+    written for this      (results already made keep the
+    result                 settings they were made with)
+```
+
+Which of the three a piece of feedback is depends only on its category and on what was
+measured. Code: `feedback.py` (`classify`).
+
+### The ten kinds of feedback
+
+| What the user says | About | Kind | Counts towards |
+| --- | --- | --- | --- |
+| "Intentional: I meant this pause" | A pause | Label | Nothing |
+| "Accidental: I lost my place" | A pause | Label | Nothing |
+| "Not a pause: I was still speaking" | A pause | Report, if the pause is shorter than 800 ms | Raising the minimum pause |
+| "Too short to split the phrase here" | A pause | Report, if the pause is shorter than 800 ms | Raising the minimum pause |
+| "A pause was missed here: it should be two phrases" | A phrase and a time | Report, if a silence of 250 ms or more was heard there | Lowering the minimum pause |
+| "The WPM looks too high" / "too low" | A phrase, or the whole recording | Record | Nothing; opens a review |
+| "The words are wrong" | A phrase | Record; or a correction, if the words are supplied | Nothing |
+| "Useful" / "Not useful" | A correction in the coaching | Report | Raising or lowering the priority of that kind of correction |
+
+The brief lists "this segment was incorrectly split" and "these two segments should be
+separate" as feedback of their own. In this app a pause is exactly what ends a segment
+(section 4), so a wrong split *is* a pause that should not have counted, and two segments
+that should be separate *are* a missed pause. They are offered under those wordings on the
+pause and on the phrase, and counted the same way.
+
+### What is looked up when a report arrives
+
+A report is only as good as the measurement behind it, so each one is checked against what
+the detector heard.
+
+**A report about a detected pause** carries that pause's measured length.
+
+**A report of a missed pause** carries a phrase and a time. The app looks among that
+phrase's short silences (section 4) for one within half a second of the time. If there are
+several, it takes the one whose middle is nearest.
+
+```
+ phrase:   ████████████░░░████████████████░██████
+                       ↑                  ↑
+              a short silence      a short silence
+              of 356 ms            of 132 ms
+
+ the user marks a time near the first one
+   → "a silence of 356 ms was heard there, and it was under the 500 ms minimum"
+```
+
+The length found, the minimum pause the recording was analysed with, and the calibration
+version are stored with the feedback, as its **features**.
+
+### From a report to a setting
+
+| Report | What was measured | Counts towards | Why |
+| --- | --- | --- | --- |
+| Not a pause / wrong split | The pause lasted under 800 ms | Raising the minimum pause | A higher minimum would no longer report it |
+| Not a pause | The pause lasted 800 ms or more | Nothing | No minimum pause explains a silence that long. If the user was speaking, the detector did not hear them, and no adjustable setting would have made it (see below) |
+| Wrong split | The pause lasted 800 ms or more | Nothing | A silence that long ends a phrase at any setting |
+| Missed pause | A silence of 250 ms or more near the time | Lowering the minimum pause | A lower minimum would have caught it |
+| Missed pause | A silence shorter than 250 ms | Nothing | Nothing shorter than 250 ms is ever counted as a pause |
+| Missed pause | No silence near the time | Nothing | The detector heard speech straight through; no pause setting could have caught it |
+| Missed pause | No time given, or a result from before short silences were kept | Nothing | It cannot be checked against anything |
+| Useful / Not useful | The kind of finding the correction was about | The priority of that kind | |
+
+Every row leads to **at most one** setting. When a report counts towards nothing it is
+still saved, and the screen says why in a sentence.
+
+### When a setting moves
+
+One report never moves anything. The reports about a setting that have not yet been used
+are looked at together, most recent ten only, and the setting moves when all of these hold:
+
+| Rule | Value | Why |
+| --- | --- | --- |
+| Enough reports point the same way | 3 | One or two can be a slip or an odd moment |
+| They come from more than one recording | 2 recordings | One unusual recording must not retune the app for every later one. Revisions of one recording count as one |
+| They are most of what was said | 75% of the reports looked at | Three for and two against is a disagreement, not a signal |
+| The move is not straight back the way the setting just came | 5 reports instead of 3 | So a setting cannot flip back and forth |
+| The setting is not already at the end of its range | | |
+| Automatic adjustment is switched on | | The user can switch it off |
+
+Until then the screen says "still calibrating" and shows the count: "2 of the 3 reports
+needed for lowering it, from 1 of the 2 recordings needed".
+
+Two more rules keep it honest:
+
+- **A report is used once.** When a setting moves, every report that was waiting on it is
+  spent, whichever way it pointed. The next move needs new reports.
+- **A report that has been answered stops counting.** A missed silence of 420 ms needs no
+  further lowering once the minimum pause is 400 ms. So a report made on an old result,
+  about a value that has since changed, counts only if it would still be a complaint today.
+
+Code: `calibration/engine.py` (`tally`, `still_applies`, `propose`).
+
+### How far it moves
+
+The minimum pause sits on a grid of 50 ms and moves 50 or 100 ms at a time. Where it lands
+is steered by the silences that were reported: it goes to the grid value that would have
+got the *typical* (median) reported silence right, but never more than 100 ms in one move.
+
+| Now | Reported | Typical | Would be right at | Moves to |
+| --- | --- | --- | --- | --- |
+| 500 ms | Missed silences of 380, 420, 450 ms | 420 ms | 400 ms (420 counts as a pause from 400) | **400 ms** |
+| 500 ms | Missed silences of 470, 480, 490 ms | 480 ms | 450 ms | **450 ms** |
+| 500 ms | Missed silences of 260, 300, 320 ms | 300 ms | 300 ms | **400 ms** (the 100 ms limit) |
+| 500 ms | False pauses of 520, 560, 610 ms | 560 ms | 600 ms (560 is no longer a pause at 600) | **600 ms** |
+
+In the third row the reported silences are still missed after the move. That is on
+purpose. The user reports them again on recordings made with the new value, and the
+minimum pause moves again: a setting is walked to where it should be in small confirmed
+steps, never thrown there by three clicks.
+
+A priority moves by 0.2 at a time.
+
+Code: `calibration/engine.py` (`next_value`).
+
+### What can be adjusted, and what cannot
+
+| Setting | Default | Allowed range | One move | Moved by |
+| --- | --- | --- | --- | --- |
+| **Minimum pause** | 500 ms | 250 to 800 ms | 50 or 100 ms | Missed pauses (down); false pauses and wrong splits (up) |
+| **Priority of a kind of correction** (twelve of them: overall pace, pause length, pitch, a rushed phrase, …) | 1.0 | 0.4 to 1.0 | 0.2 | "Not useful" (down); "Useful" (back up) |
+
+- **250 ms** is the floor because a shorter silence is usually part of pronouncing a word
+  (the closure before a "p" or a "t"), not a pause between words.
+- **800 ms** is the ceiling because a silence that long is a pause for any speaker.
+- **A priority never reaches zero.** A kind of correction can be moved down the list; it
+  cannot be switched off, and the measurement behind it is always still shown.
+
+Everything else is fixed, and is listed on the calibration screen so that nothing is
+hidden: the 1-second and 5-second pause labels, the 2 seconds and 3 words a phrase needs
+for a trusted WPM, the 180 WPM review flag, the coaching bands.
+
+**The speech detection threshold is deliberately fixed.** The brief suggests that feedback
+could adjust the detector's sensitivity, so this was measured on the real detector before
+deciding. `vad_threshold` is how sure the detector must be that a sound is speech (0.5 by
+default).
+
+| Test, on the real detector | 0.35 | 0.50 | 0.65 |
+| --- | --- | --- | --- |
+| Three clean recordings (17 s, 22 s and 133 s): phrases and pauses found | 4, 6 and 24 phrases | The same | The same |
+| The same: the measured length of a pause | Up to 64 ms shorter | — | Up to 64 ms longer |
+| A recording with steady noise as loud as the voice | 4 phrases | The same 4 | The same 4 |
+| A phrase made 30 dB quieter than the rest | Found whole | Found whole | Starts 0.5 s late |
+| A phrase made 40 dB quieter: how late its start is found | 0.9 s late | 1.5 s late | 1.7 s late |
+| A phrase made 45 dB quieter | Lost | Lost | Not run |
+
+And outside that range: at 0.1 the clean recordings lost most of their pauses (23 became
+12 in the two-minute one). At 0.2 a real 0.8-second pause disappeared from the recordings
+with a quiet phrase and from those with background noise.
+
+So inside the range where the detector is safe, the threshold never added or removed a
+pause in any test. What it does change is the measured length of a silence, by up to about
+0.06 s either way, and the minimum pause already adjusts for exactly that, in milliseconds
+the user can read. Where it would matter most, a phrase spoken far more quietly than the
+rest, it helps a little and not enough.
+
+A setting that changes almost nothing a user could see must not be "learned" from their
+reports: the app would announce that it had adapted, and the results would stay the same.
+Reports the minimum pause cannot explain are therefore saved, with an honest sentence, and
+count towards nothing.
+
+Code: `calibration/registry.py`.
+
+### Undo, reset and off
+
+| Control | What it does |
+| --- | --- |
+| **Undo last adjustment** | Puts back the value the most recent adjustment replaced. Repeating it walks back one adjustment at a time. The reports behind an undone adjustment stay used, so they cannot bring it back |
+| **Reset to defaults** | Every setting back to its default; reports that were waiting are set aside. The feedback itself and every result are kept |
+| **Adjust automatically: off** | Feedback is still saved and labels still shape the coaching, but no setting moves. Switching it on again acts on reports that built up meanwhile |
+
+None of them changes a result that already exists. Each one adds a version to the
+calibration's history (backend document, section 4a).
+
+### Confidence
+
+Each adjustment says how many reports were looked at, how many agreed, and from how many
+recordings. From the number that agreed it also gets one word:
+
+| Agreeing reports behind the current value | Confidence |
+| --- | --- |
+| 3 or 4 | Low |
+| 5 to 7 | Medium |
+| 8 or more | High |
+
+It is a count turned into a word, nothing more. An adjustment is made as soon as the rules
+allow, which is usually at three reports, so a first adjustment is always "low", and the
+screen says so. The app never says it has "learned" anything.
+
+### Labels: what they change in the coaching
+
+Marking a pause intentional or accidental is the one kind of feedback that reaches the
+coaching directly. It changes how findings (section 13) are *worded and judged*; it never
+changes a figure.
+
+Take four phrases with pauses of 0.6 s, 3.0 s and 0.7 s, under a profile that wants a held
+silence.
+
+| | No labels | The 3-second pause marked **accidental** | The 3-second pause marked **intentional** |
+| --- | --- | --- | --- |
+| Pause figures (count, median, longest) | 3 pauses, longest 3.0 s | **Identical** | **Identical** |
+| "Held silence" finding | "The longest pause is 3 seconds… That is a held silence." A strength | "Leaving out the 1 pause you marked as accidental, the longest pause is 0.7 seconds… No pause was held for 2 seconds." An issue | "The longest pause is 3 seconds… You marked it as intentional." A strength |
+| New finding | — | "You marked 1 pause as accidental: 3 seconds at 0:08.6. It still counts in the pause figures…" An issue, with a drill for getting through that spot | "You marked 1 pause as intentional: 3 seconds at 0:08.6." A strength |
+
+- An **accidental** pause is left out of the *judgement* of pause length and of held
+  silence: a slip is not a silence the speaker chose to hold. The measured figures are
+  stated first, unchanged; the sentence then says what remains without the slips.
+- An **intentional** pause is never turned into an issue, and the AI model is told never to
+  advise shortening or removing it.
+- The AI model sees the labels beside the pauses in the transcript ("marked accidental by
+  the actor"), and its answer is checked exactly as before.
+
+A label takes effect the next time the coaching is written for that result. The screen
+says when the labels have changed since the coaching was written and offers to write it
+again. Labels do not train any setting: there is nothing measured in a pause that tells an
+intended one from a slip, so nothing to adjust.
+
+Code: `coaching/findings.py` (`_pauses`, `_longest_pause`, `_labelled_pauses`).
+
+### Priorities: useful and not useful
+
+Each issue has a weight that decides its place in the list (section 13). A priority is a
+number that weight is multiplied by. At 1.0 nothing changes. After three "not useful"
+ratings of, say, corrections about pitch, from at least two recordings, the priority of
+pitch corrections drops to 0.8, and other issues are more likely to make the top three.
+
+The finding itself is untouched: "Pitch varied by 1.6 semitones…" still appears in the
+summary and in the list of findings. Only the order in which issues are offered changes.
+"Useful" ratings count the other way, and cancel "not useful" ones.
+
+### "The WPM looks wrong": a review, not a correction
+
+WPM is words divided by speaking time. If it is wrong, the words are wrong or the time is
+wrong. A report that it "looks too high" changes no figure. Instead the app lays out what
+went into it:
+
+```
+ 16 words ÷ 4.51 s of speaking × 60 = 212.9 WPM.
+
+ THE WORDS          16 words were counted in this phrase. The speech recogniser was
+                    reasonably sure of each of them. A word you did not say, or one word
+                    heard as two, makes the WPM too high. …correct them.
+ THE SPEAKING TIME  The phrase lasts 4.51 s. There is a pause of 1.64 s after it. Time
+                    inside a pause is not speaking time. If you were still speaking during
+                    one of them, the WPM comes out too high: mark that pause as "Not a pause".
+ FLAGGED FOR REVIEW The figure is above 180 WPM, the level at which the app flags a phrase
+                    for review. The figure itself was not changed.
+ WORD TIMING        Every word's timing falls inside this phrase.
+```
+
+The words, the speaking time and the word timing are always part of it; the other entries
+appear when they apply. Each points at the feedback that would correct it: fixing the
+words, reporting a missed pause (speaking time too long, WPM too low), or reporting a false
+pause (speaking time too short, WPM too high). No figure is multiplied by a correction.
+
+Code: `wpm_review.py`.
+
+### Correcting the transcript
+
+When the user supplies the words of a phrase as they really said them, the app works the
+word-based figures out again and stores the outcome as a new **revision**. The result that
+was corrected is not touched.
+
+```
+ segment WPM  =  corrected word count  ÷  the phrase's own measured length  × 60
+```
+
+The length is the one the speech detector measured. It does not change, because the sound
+did not change. Example from a real run: the recogniser heard 16 words in a phrase of
+4.51 s (212.9 WPM); corrected to 14 words, it is 14 ÷ 4.51 × 60 = **186.3 WPM**.
+
+| Worked out again | Copied exactly as it was |
+| --- | --- |
+| The phrase's word count, WPM and reliability flags | Where every phrase and pause is, and how long |
+| Total words, speech-active WPM, whole-clip WPM | All pause statistics |
+| Typical pace, pace variation, slowest and fastest phrase | Loudness and pitch, overall and per phrase |
+| Each phrase's "faster / slower than typical" | The settings the result was made with |
+| Hesitation sounds (counted from the corrected words) | Figures of phrases that were not corrected |
+
+**Word times.** A corrected word that is also in the recognised version, in the same
+order, keeps the time the recogniser gave it. Words are matched the way two recordings are
+lined up in section 14. New words in between were never timed by anything, so they are
+spread evenly across the gap they sit in and carry no confidence figure. **Emphasis
+candidates** rest on loudness and pitch per word, measured from sound that is no longer
+there; one is kept only if its word is still present at the same time.
+
+The settings used are the ones the result was made with, not today's: the phrases were cut
+by those, and what counts as "too few words to trust" should not shift under a result.
+
+The revision is marked "transcript corrected" and carries a note saying so. Its coaching
+is written from the fixed rules at once; the AI model is asked when the user chooses.
+
+Code: `transcript_correction.py`.
+
+### Old results, and analysing again
+
+A result records the calibration version and the minimum pause it was made with, and is
+never recalculated. After the minimum pause moves, an older result and a newer one have
+their pauses cut differently, so the app says so wherever the two meet:
+
+| Where | What is shown |
+| --- | --- |
+| On an older result | "This result was made when a silence counted as a pause from 500 ms. Your feedback has since moved that to 400 ms…" |
+| Comparing with an earlier attempt | A warning that the two were analysed with different settings |
+| Comparing with a reference | The same, with both values |
+
+If the recording was kept, it can be **analysed again** with the settings as they are now.
+That makes a further revision; the earlier result stays. The check that this does what the
+rules say is simple and was run on real audio: at a lower minimum pause, the pauses found
+are exactly the earlier pauses plus the earlier short silences that are at least as long
+as the new minimum.
+
+### What was seen with the real pipeline
+
+Two recordings were synthesised with silences of known length inside their phrases, and
+the whole path was run through the real API, worker, speech model and AI model.
+
+| Step | Result |
+| --- | --- |
+| Silences inserted as 380, 420 and 400 ms in one recording, 390 and 430 ms in the other | Measured as 324, 356 and 356 ms, and 356 and 356 ms: 35 to 75 ms shorter. Each speech region is widened by 30 ms on each side, and the detector works in steps of 32 ms |
+| Two missed pauses reported in one recording | Nothing moved |
+| A third reported in the second recording | 500 → 400 ms: "…after 3 reports of a pause that was missed, from 2 recordings. The silences reported were around 356 ms long." |
+| The recording analysed again at 400 ms | Same 3 pauses: the silences are under 400 ms. As the rules predict |
+| Three fresh reports on the new results | 400 → 350 ms |
+| Analysed again at 350 ms | 5 pauses: the two 356 ms silences now count and the 324 ms one does not. Speaking time fell by exactly 2 × 0.356 s. Word count unchanged |
+| Both adjustments undone, analysed again | Cut exactly as the first time |
+| A pause marked accidental, coaching written again by the AI model | The pause no longer praised; a correction about carrying on through it; every measurement identical |
+
+The first adjustment did not fix the reported silences, and the second did. That is the
+"small confirmed steps" behaviour working as designed, and it is also a real cost: reaching
+350 ms took six reports and two rounds of analysing again.
+
+## 16. Accuracy and limits
 
 What is known, stated plainly.
 
@@ -1199,6 +1593,15 @@ What is known, stated plainly.
 | Comparison: phrase pace | Rests on word times good to about a tenth of a second, so it is an estimate, weakest on short phrases. |
 | Comparison: what it cannot say | Whether a difference matters. It lists where the two recordings differ in pauses and pace. It does not hear emphasis, tone or intention, and it never calls a difference a mistake. |
 | Waveform | A picture. Its height depends on how each recording was made. Nothing is measured from it. |
+| Short silences | Measured 35 to 75 ms shorter than the silence really is, for the same reason pauses are (the 30 ms widening and the 32 ms steps). A real gap of 400 ms shows as about 350 ms. This is what the minimum pause is compared with, so "500 ms" means about 550 ms of true silence. |
+| Calibration: what it can adjust | One measuring setting, the minimum pause, between 250 and 800 ms, and the order of corrections. It cannot make the detector hear speech it missed, fix a misheard word, or change how pitch and loudness are measured. |
+| Calibration: how much it has to go on | An adjustment is made on as few as three reports. That is a small sample, and the screen says "low confidence". It is one person's judgement of their own recordings, which is the point of it, and also its limit. |
+| Calibration: speed | Deliberately slow. Each step is 50 or 100 ms and needs three fresh reports from two recordings. In the test run, going from 500 to 350 ms took six reports and analysing the recordings again in between. |
+| Calibration: older results | Not recalculated. A result made before an adjustment has its pauses cut by the old value, and is marked wherever it is set beside a newer one. Analysing again needs the recording to have been kept. |
+| A quiet or whispered phrase | The detector can miss the start of a phrase spoken far more quietly than the rest (measured: 1.5 s lost at 40 dB quieter). Feedback cannot correct this; recording closer to the microphone can. The app says so when a long "pause" is reported as speech. |
+| Corrected transcripts: word times | A word the user adds or changes has no measured time. It is placed evenly between its neighbours, so emphasis candidates are kept only for unchanged words, and anything that depends on exact word times is an estimate there. |
+| Corrected transcripts: what is trusted | The user's words are taken as given. The app does not check them against the audio. |
+| Pause labels | Taken as given. Nothing in the sound tells an intended pause from a slip, so the app never guesses one, and a label is never applied to other pauses or other recordings. |
 | AI coaching: what the speaker says | The transcript is part of what the model reads. Words in a recording that sound like instructions could in principle steer its wording. They cannot make it name a finding or segment that does not exist, or get an unmeasured figure past the checks. |
 
 **How it has been tested so far.** The arithmetic is covered by tests whose answers can be
@@ -1238,6 +1641,20 @@ The third check is the one that found a real fault, described in section 14 and 
 S39. It has **not** been run on real human recordings, on a reference taken from a film, or
 on two recordings in which the same text is spoken by different voices.
 
+**How feedback and calibration have been tested.** The rules are covered by automated
+tests whose answers can be worked out by hand, including that no setting ever leaves its
+range, that one piece of feedback never counts towards two settings, and that a corrected
+WPM is the corrected word count over the phrase's own length. The complete path was then
+run through the real pipeline and the real AI model on two synthesised recordings with
+silences of known length inside their phrases; what was seen is in section 15. The speech
+detector's threshold was measured on five synthesised recordings, and on nine altered
+copies of one of them (a phrase made quieter, or noise added), before deciding to leave it
+fixed. It has **not** been tried on a real human
+voice, with feedback given by someone who actually spoke the words, or over the weeks of
+use that calibration is meant for. Whether the 250 and 800 ms limits, "three reports from
+two recordings" and the 50 to 100 ms step suit real use is not known yet; they are
+cautious first choices.
+
 **How the coaching has been tested.** Its logic is covered by automated tests that replace
 the AI model with a scripted stand-in, including one that invents figures, misquotes, names
 things that do not exist, answers in broken JSON or is not running. The real model was then
@@ -1247,7 +1664,7 @@ measurements of a 133-second recording end to end, to confirm that it fits and i
 It has **not** been tried on real human recordings, on a real recording near the 10-minute
 limit, or compared with what a human speaking coach would say.
 
-## 16. Science decisions
+## 17. Science decisions
 
 Each entry says what was chosen, what was considered, and what was decided against and why.
 
@@ -1784,7 +2201,258 @@ worth understanding.
   is in decibels, four points a second: a different thing, and too coarse); a charting
   library (two filled shapes do not need one).
 
-## 17. Glossary
+### S46. Feedback is one of three kinds, and a label is never a report
+
+- **Chosen:** every piece of feedback is a **label** (what a pause meant), a **report**
+  (the analysis got something wrong) or a **record** (noted; changes nothing by itself).
+  Which one is fixed by its category and by what was measured.
+- **Why:** the brief asks for two things that pull apart: the app should learn from
+  corrections, and "intentional" or "accidental" must never change a measured pause. Kept
+  apart, neither can leak into the other. "This pause was accidental" says nothing about
+  whether it *was* a pause, so it must not nudge the pause threshold.
+- **Decided against:** one "this pause is wrong" control, with the app working out what
+  was meant. An accidental 3-second pause is still a 3-second pause.
+
+### S47. A report counts towards one setting, chosen from what was measured
+
+- **Chosen:** the setting is picked by code from the measurement at the spot: the length
+  of the pause reported, or of the silence the detector heard where a pause was "missed".
+  A report the measurement does not support counts towards nothing, and says why.
+- **Why:** the brief says to adjust "the relevant setting only". Relevance is a fact about
+  the audio, not about the button pressed. "You missed a pause" where the detector heard a
+  380 ms silence is a case for a lower minimum pause. The same words where it heard no
+  silence at all are not: no pause threshold could have found one there.
+- **Decided against:** *category alone decides* ("missed pause" always lowers the
+  threshold): three reports of pauses that were never silences would lower it for nothing.
+  *Letting the AI model interpret feedback*: the brief requires fixed rules for anything
+  that changes a number.
+
+### S48. Two things are adjustable: the minimum pause, and the order of corrections
+
+- **Chosen:** `min_pause_ms`, and a priority for each of twelve kinds of correction.
+- **Why these:** each has a kind of feedback that is direct evidence about it, and a
+  change the user can see and check. The minimum pause decides what counts as a pause, and
+  a missed or false pause is evidence about exactly that. A priority decides what the
+  coaching leads with, and "not useful" is evidence about exactly that.
+- **Decided against:**
+  - *The 5-second long-silence boundary*: the brief asks that feedback refine how a long
+    silence is *read*, which labels do, not where the boundary is.
+  - *The 2 seconds / 3 words needed for a trusted WPM, and the 180 WPM review flag*: no
+    kind of feedback is evidence about them. "The WPM looks too high" is about one
+    figure's inputs, not about when figures in general deserve trust.
+  - *The coaching bands* (what counts as "fast"): they come from the profile's meaning,
+    and "not useful" does not say which way a band is wrong.
+  - *The speech detector's threshold*: see S49.
+
+### S49. The speech detection threshold is not adjustable, because it was measured first
+
+- **Chosen:** `vad_threshold` stays at 0.5. Reports that only the detector could answer
+  ("a long silence was really speech", "a pause was missed where no silence was heard") are
+  saved and count towards nothing.
+- **What was built first:** exactly what the brief suggests: those reports moved the
+  threshold in steps of 0.05 between 0.35 and 0.65. It worked in the tests, where the
+  detector is scripted.
+- **What the real detector showed** (section 15): from 0.35 to 0.65 it found the same
+  phrases and pauses in every recording tried, clean or noisy; it changed the length of a
+  silence by about 0.06 s; and it recovered only part of a phrase spoken 40 dB quieter.
+  Below 0.3 it began to swallow real pauses.
+- **Why that settles it:** the app would have told the user "speech detection adjusted
+  after your reports" and then produced the same results. That is the claim to have
+  learned that the brief warns against. The one real effect, a few hundredths of a second
+  on a silence's length, is what the minimum pause already adjusts, in units the user can
+  read.
+- **Decided against:** *a wider range*, where it does change results: it changes them by
+  losing pauses. *Keeping it adjustable but rarely triggered*: an adjustment that does
+  nothing is worse than none.
+
+### S50. The minimum pause may move between 250 and 800 ms
+
+- **Chosen:** explicit bounds, enforced where a value is calculated and again where it is
+  stored.
+- **Why 250 ms:** below about a quarter of a second, a silence is usually part of saying a
+  word (the closure before "p", "t", "k"). A quarter of a second is also a cut-off often
+  used for a "silent pause" in research on speech.
+- **Why 800 ms:** a silence that long is a pause for any speaker. A threshold above it
+  would start hiding pauses nobody would dispute. It also stays below the 1-second line
+  where a pause becomes "medium".
+- **Decided against:** *no bounds, trusting the rules to behave*. The brief requires
+  explicit bounds, and a bound is what turns "the rules should not run away" into "they
+  cannot".
+
+### S51. Three reports that agree, from two recordings, making up three-quarters
+
+- **Chosen:** the rules in section 15: at least 3 reports one way, from at least 2
+  recordings, at least 75% of the last 10 reports about that setting.
+- **Why three:** it is the smallest number that is not a single slip or a coincidence of
+  two. **Why two recordings:** one recording can be unusual (a noisy room, a cold) and
+  should not retune the app for all the others. Revisions of one recording count as one.
+  **Why 75%:** three for and two against is the user disagreeing with themselves.
+  **Why the last ten:** what suited the user's recordings months ago should fade.
+- **Decided against:**
+  - *Adjusting a little on every piece of feedback*: one click would move a threshold, and
+    the brief says not to claim learning from one or two noisy events.
+  - *A statistical test*: with three to ten reports it would add an air of precision and
+    nothing else.
+  - *Weighting reports by how sure the detector was*: no such confidence is measured.
+- **Not known:** whether three is the right number in real use. It is a cautious guess.
+
+### S52. One adjustment is a small step, steered by the silences reported
+
+- **Chosen:** 50 or 100 ms at a time, to the grid value that would have got the typical
+  reported silence right.
+- **Why steered:** the reports carry a measurement. If the missed silences were around
+  420 ms, moving to 400 fixes them and moving to 450 would not; a fixed 50 ms step would
+  need a second round of reports to get there.
+- **Why capped at 100 ms:** three reports are a small sample. A cap means three reports
+  about one extreme case cannot take the threshold from 500 to 250 in one go.
+- **Why the median:** one odd report (a 260 ms silence among 420s) does not drag it.
+- **Decided against:** *jumping straight to the evidence*; *a fixed step* (see above);
+  *averaging old and new value*, which lands on values like 437 ms that mean nothing to a
+  reader.
+
+### S53. A report is used once, and stops counting once it is answered
+
+- **Chosen:** an adjustment spends every report waiting on its setting. Separately, a
+  report counts only while it would still be a complaint under today's value.
+- **Why spend them:** so each step is earned by new evidence gathered under the new value.
+  Otherwise ten reports of 300 ms silences would walk the threshold from 500 to 300 in the
+  same instant, three steps at once.
+- **Why "still a complaint":** feedback can be given on an old result at any time. A
+  missed silence of 420 ms on a result made at 500 ms is no reason to go below 400.
+- **Decided against:** *counting every report ever made*: a setting could never settle.
+
+### S54. Moving back the way a setting just came needs five reports
+
+- **Chosen:** if the last adjustment still in effect lowered a setting, raising it needs 5
+  agreeing reports instead of 3; and the other way round.
+- **Why:** the brief asks that thresholds do not oscillate. A user who reports both missed
+  and false pauses near the threshold would otherwise push it down, then up, then down,
+  making neighbouring recordings hard to compare.
+- **Not affected:** undo. That is the user's own decision and takes effect at once.
+
+### S55. One calibration for every profile and every language
+
+- **Chosen:** a single set of adjusted values, whatever delivery profile or language a
+  recording was analysed with.
+- **Why:** the brief says to keep separate settings only where real evidence supports it.
+  What counts as a pause depends on the speaker and the microphone, and nothing measured
+  so far says it depends on which profile was chosen. Splitting three reports four ways
+  would also mean none of the four ever had enough to go on.
+- **Decided against:** *per-profile calibration* (overfitting each profile to a handful of
+  recordings, which the brief warns against); *per-language* (plausible, since Hindi and
+  English differ in rhythm, but untested here, and it can be added later because every
+  report already records which analysis it was about).
+
+### S56. Confidence is a count, said in a word
+
+- **Chosen:** every adjustment shows how many reports were looked at, how many agreed and
+  from how many recordings, plus low (3 or 4 agreeing), medium (5 to 7) or high (8 or more).
+- **Why:** the brief asks for "confidence/sample count". With samples this small the count
+  *is* the confidence; a percentage would pretend to more. The word is there so the first
+  adjustment is plainly called "low".
+- **Decided against:** *a probability or a score out of 100*.
+
+### S57. "The WPM looks wrong" changes nothing and opens a review
+
+- **Chosen:** the report is saved, no figure moves, and the user is shown the words, the
+  speaking time and the word timing behind the figure, each with the feedback that would
+  correct it.
+- **Why:** required by the brief ("do not blindly multiply WPM by an arbitrary correction
+  factor"), and right in itself: a WPM is a division. If it is wrong, one of its two
+  inputs is wrong, and the user is the only one who can say which.
+- **Decided against:** *a correction factor learned from "too high" reports*: every later
+  recording would be multiplied by a number that described an earlier one's mistake.
+
+### S58. A corrected transcript changes the word-based figures, by the pipeline's own code
+
+- **Chosen:** segment WPM = corrected word count ÷ the phrase's measured length. The
+  functions that work it out are the ones the audio pipeline uses, given the corrected
+  words. Everything measured from sound is copied unchanged.
+- **Why:** the brief requires WPM to be "recalculated from the corrected transcript" and
+  not patched. Reusing the pipeline's functions means a corrected figure and a measured
+  one can never be calculated in two different ways.
+- **Why the phrase's length is kept:** it comes from the speech detector, not from the
+  words. Changing the words does not change when the speaker was speaking.
+- **Why untouched phrases keep their stored figures exactly:** recalculating them from
+  stored, rounded times could move a figure in its last digit, and a figure that changes
+  when nothing about it was corrected is a small lie.
+- **Decided against:** *running the recogniser again with the corrected text as a hint*
+  (needs the audio, and may still disagree with the user); *forced alignment* to get real
+  word times (a second model for a modest gain: see S7).
+
+### S59. A label changes how a pause is read, never the pause
+
+- **Chosen:** accidental pauses are left out of the *judgement* of pause length and of
+  held silence, and named in a finding of their own. Intentional pauses are noted and
+  never made an issue. The measured figures are stated first, unchanged, in the same
+  sentence.
+- **Why:** required by the brief, and it is the honest reading: a 3-second stop while
+  finding the next line is in the recording, so it is in the figures, but it is not "a
+  held silence that fits the profile".
+- **Decided against:** *removing labelled pauses from the statistics* (forbidden, and it
+  would make the figures describe a recording that does not exist); *a second set of
+  "adjusted" figures on the results screen*: two numbers for one thing invite reading the
+  wrong one. The one place the leave-out appears is inside the finding's sentence, next
+  to the measured figure.
+
+### S60. A label does not train anything
+
+- **Chosen:** labels apply to the one pause they are put on, in the one result.
+- **Why:** to generalise, something measurable would have to separate an intended pause
+  from a slip, and nothing does. Length does not: a dramatic pause and a lost line can
+  both last three seconds.
+- **Decided against:** *guessing labels for unlabelled pauses* from the user's history.
+  The app would be inventing intention, which section 4 rules out.
+
+### S61. A priority moves a kind of correction down the list and never removes it
+
+- **Chosen:** a multiplier between 0.4 and 1.0 on the weight that orders issues.
+- **Why a multiplier on the order, and not a filter:** the top three corrections are a
+  choice among issues. "Not useful" is a reason to choose differently, not a reason to
+  stop measuring. The finding stays in the summary and the list.
+- **Why per kind of finding:** it is the level at which a rating means something for
+  another recording. "Slow your overall pace" on one take and on the next are the same
+  advice.
+- **Why 0.4 and not 0:** at 0 a kind of issue could never be a correction again, however
+  large it became.
+- **Not built:** telling "the advice was wrong for me" from "this wording was poor". Both
+  are "not useful", and both lower the priority.
+
+### S62. Short silences are measured and stored with every result
+
+- **Chosen:** every gap between speech regions that is shorter than the minimum pause is
+  kept in the result, with the phrase it lies in.
+- **Why:** without it a report of a missed pause is only a time and an opinion. With it,
+  the app can say "the detector heard 356 ms of silence there", decide what the report
+  counts towards, and show the candidates so the user picks a real one.
+- **Cost:** about forty entries for a two-minute recording.
+- **Consequence:** results stored before Phase 6 do not have them. A missed-pause report
+  on one is saved and cannot count; analysing the recording again adds them.
+
+### S63. Old results are never recalculated; a new analysis is a new revision
+
+- **Chosen:** an adjustment affects only recordings analysed afterwards. A kept recording
+  can be analysed again, which adds a revision beside the earlier result. Where an older
+  and a newer result meet, a notice says they were cut differently.
+- **Why:** required by the brief, and the only way a result stays traceable to its
+  settings. A history in which last week's pause counts quietly changed would make every
+  comparison across time meaningless.
+- **Decided against:** *recalculating everything in the background after each adjustment*;
+  *re-cutting old results from their stored short silences without the audio*, which
+  could move the pauses but not the loudness and pitch per phrase, giving results that
+  are half old and half new.
+
+### S64. The AI model has no part in calibration
+
+- **Chosen:** classifying feedback, counting reports, moving settings, undo and reset are
+  all ordinary code. The model only ever sees labels, as text beside a pause, when it
+  words coaching.
+- **Why:** required by the brief ("deterministic code must apply and validate numeric
+  setting changes"), and consistent with S21: numbers come from code.
+- **Not built:** the brief allows the model to *summarise* feedback. With a handful of
+  structured items per result there is nothing a summary would add to the list itself.
+
+## 18. Glossary
 
 | Term | Meaning |
 | --- | --- |
@@ -1836,3 +2504,14 @@ worth understanding.
 | **Waveform** | A picture of the sound wave itself: how far the air pressure swings, moment by moment. |
 | **Outline (envelope)** | The lowest and highest value of the waveform in each small stretch of time. What is actually drawn. |
 | **Parameters (as in "8b")** | The numbers inside a model that were learned in training; 8 billion here. More usually means more capable and slower. |
+| **Feedback** | Something the user says about one analysis: a label, a report or a record. |
+| **Label** | The user's word for what a pause meant: intentional or accidental. Changes the coaching's reading of it, never the measurement. |
+| **Report** | Feedback saying the analysis got something wrong. Counts towards moving one setting. |
+| **Calibration** | The current values of the settings feedback may adjust, and the history of how they got there. |
+| **Adjustable setting** | A setting with a default, an allowed range and a step, that enough agreeing reports can move. Here: the minimum pause, and the priority of each kind of correction. |
+| **Bounds** | The lowest and highest value a setting is allowed to take. |
+| **Minimum pause** | The shortest silence that counts as a pause. 500 ms by default. |
+| **Short silence** | A silence the detector heard that was shorter than the minimum pause. |
+| **Priority** | A number from 0.4 to 1.0 that the weight of a kind of issue is multiplied by, deciding how readily it becomes one of the corrections. |
+| **Revision** | A later result made from a recording that already has one: after a transcript correction, or a fresh analysis. |
+| **Decibel difference (as in "40 dB quieter")** | A ratio. 20 dB quieter is a tenth of the amplitude; 40 dB quieter is a hundredth. |

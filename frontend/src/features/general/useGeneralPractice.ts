@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 
 import { createApi } from "./api";
 import { isResolvingDuration, resolveUnknownDuration } from "./audioDuration";
+import { createFeedbackStore, INITIAL_FEEDBACK_STATE } from "./feedbackStore";
 import { createGeneralStore, INITIAL_GENERAL_STATE } from "./generalStore";
 import { createHealthMonitor, INITIAL_HEALTH } from "./healthMonitor";
 import { browserRecorderEnv, createRecorder, type RecorderState } from "./recorder";
@@ -39,6 +40,7 @@ const generalStore = createGeneralStore({
   getStorage: localStorageOrNull,
   revokeUrl: (url) => URL.revokeObjectURL(url),
 });
+const feedbackStore = createFeedbackStore(generalApi);
 const healthMonitor = createHealthMonitor(generalApi, schedule);
 const recorder = createRecorder(browserRecorderEnv());
 
@@ -54,6 +56,25 @@ export function useGeneralStore() {
     generalStore.init();
   }, []);
   return { state, store: generalStore };
+}
+
+/**
+ * The feedback given on one analysis, and the calibration it feeds. Pass null when no
+ * result is on view: the calibration is still loaded.
+ */
+export function useFeedback(analysisId: string | null) {
+  const state = useSyncExternalStore(
+    feedbackStore.subscribe,
+    feedbackStore.getSnapshot,
+    () => INITIAL_FEEDBACK_STATE,
+  );
+  useEffect(() => {
+    feedbackStore.loadCalibration();
+  }, []);
+  useEffect(() => {
+    feedbackStore.watch(analysisId);
+  }, [analysisId]);
+  return { state, store: feedbackStore };
 }
 
 export function useBackendHealth() {

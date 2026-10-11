@@ -6,17 +6,15 @@ top to bottom and understand what each part does and why it was built that way.
 | Document | What is in it |
 | --- | --- |
 | **This file** | What the app is, what is built, how the parts fit together, glossary |
-| [DOCUMENTATION_FRONTEND.md](DOCUMENTATION_FRONTEND.md) | Everything that runs in the browser: pages, the Daily Practice checklist, the timer, General Practice, the Monologue screen, browser storage, and the frontend decisions |
-| [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md) | The Python side: the API list, the database, the job queue and worker (and why there is no Celery), and the backend decisions |
-| [DOCUMENTATION_SCIENCE.md](DOCUMENTATION_SCIENCE.md) | How a recording is measured — speech detection, pauses, the three kinds of WPM, loudness, pitch — with formulas and limits; how the coaching is produced with a local AI model and how its answer is checked; how a take is compared with a reference recording; and the science decisions |
+| [DOCUMENTATION_FRONTEND.md](DOCUMENTATION_FRONTEND.md) | Everything that runs in the browser: pages, the Daily Practice checklist, the timer, General Practice, the Monologue screen, the feedback controls and the calibration panel, browser storage, and the frontend decisions |
+| [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md) | The Python side: the API list, the database, the job queue and worker (and why there is no Celery), how feedback, calibration and revisions are stored, and the backend decisions |
+| [DOCUMENTATION_SCIENCE.md](DOCUMENTATION_SCIENCE.md) | How a recording is measured — speech detection, pauses, the three kinds of WPM, loudness, pitch — with formulas and limits; how the coaching is produced with a local AI model and how its answer is checked; how a take is compared with a reference recording; how feedback adjusts settings, and what it is not allowed to change; and the science decisions |
 | [README.md](README.md) | The commands to install, run and check the app |
 
-The documents are updated at the end of every phase. Anything that is not built yet is
-clearly marked **Planned**. If the code and a document ever disagree, the code is right and
-the document needs fixing.
+The documents are updated at the end of every phase. Every phase in the plan is now built.
+If the code and a document ever disagree, the code is right and the document needs fixing.
 
-**Last updated:** end of Phase 5 (comparison with a reference recording, the Monologue
-screen, the waveform picture).
+**Last updated:** end of Phase 6 (feedback, calibration and revisions).
 
 ## 1. What this app is
 
@@ -29,7 +27,7 @@ computer. No paid services, no cloud, no account. The full plan has these parts:
   loudness, pitch) and coaching from a local AI model.
 - **Feedback / calibration**: tell the app when its analysis was wrong so it adjusts.
 
-Today three screens exist:
+All four are built. There are three screens:
 
 - the **Daily Speaking Practice** checklist;
 - **Monologue**, where you add the original recording once, study it, record your own take,
@@ -38,7 +36,12 @@ Today three screens exist:
   coaching on what to change for the next take. The coaching is worded by an AI model
   running on this computer (Ollama), or by fixed rules when that model is not available.
 
-Feedback and calibration are not built yet.
+**Feedback and calibration** live inside General Practice. Beside each pause, phrase and
+correction you can say where the analysis got it wrong: this pause was a slip, a pause was
+missed here, these words are wrong, this advice was not useful. Two things come of it. A
+label on a pause changes how the coaching reads that pause. And when several reports
+agree, one setting moves a small step, inside a fixed range, with the reason shown and an
+undo. No feedback ever changes a measurement that is already stored.
 
 ## 2. What is built so far
 
@@ -50,14 +53,16 @@ Feedback and calibration are not built yet.
 | 3 | General Practice screen (record, upload, results, history) | The whole screen: recording, upload, job progress, results, chart, compare, history | 6 small endpoints (form options, list, delete, kept audio); typical-pace labels; a fix to the speech recogniser's settings | **Built** |
 | 4 | AI coaching through the local Ollama model | The Coaching section of the results, "write the coaching again", a notice when the model is unavailable | Findings, templates, the Ollama client, checks on the model's answer, a coaching-only job, 1 new endpoint, 4 new database columns | **Built** |
 | 5 | Reference comparison, Monologue screen, waveform overlay | The Monologue screen, the reference library, the comparison section (also inside General Practice), the waveform picture, checklist links | Reference recordings as a role of analysis, lining up two transcripts, the comparison, the waveform outline, 2 new endpoints, 5 new database columns | **Built** |
-| 6 | Feedback and automatic calibration | Feedback panel | Storing feedback, adjusting settings | Planned |
+| 6 | Feedback and automatic calibration | Feedback controls beside each pause, phrase and correction; the list of what was said; the calibration panel with undo, reset and on/off; revisions in the header and history | Storing feedback; deciding what each piece counts towards; the adjustment rules; versions of the settings; corrected transcripts and fresh analyses as new revisions; 9 new endpoints, 3 new tables | **Built** |
 
 Phase 1 was a frontend-only phase: the checklist runs completely in the browser and never
 calls the backend. Phase 2 was a backend-only phase. Phase 3 is where the two meet: the
 General Practice screen drives the backend built in Phase 2. Phase 4 touched all three
 documents: backend (most of the work), frontend (showing it) and science (how coaching is
 produced and checked). Phase 5 again touched all three, about evenly: a new screen, a new
-kind of recording, and a new piece of science (comparing two recordings).
+kind of recording, and a new piece of science (comparing two recordings). Phase 6 touched
+all three as well: the rules for what feedback may change (science), where it is stored
+and how old results stay traceable (backend), and the controls and the panel (frontend).
 
 ## 3. The big picture
 
@@ -106,7 +111,8 @@ lives.
   (never the audio) and gets the wording of the coaching back. If Ollama is not running,
   everything else still works and the coaching is written from fixed rules instead.
 - The **database** is a single file on disk that both of them read and write. The queue is
-  a table in it.
+  a table in it. So are the user's feedback and the calibration: the API writes them, and
+  the worker reads the calibration at the start of each job.
 
 The API and the worker never talk to each other directly. They only meet in the database
 and in the folder of uploaded files. Only the worker talks to Ollama.
@@ -144,7 +150,9 @@ monologue coach/
 | A recording you just made or chose | The page's memory, until the tab is closed or refreshed | Only this tab | **Built** | Frontend document |
 | Uploaded recordings | `backend/data/uploads/`, deleted once analysed | Only this computer | **Built** | Backend document |
 | Recordings you ask to keep | `backend/data/audio/` | Only this computer | **Built** | Backend document |
-| Feedback and calibration | SQLite | Only this computer | Planned | |
+| Feedback: labels, reports, notes | The same SQLite file, in the `feedback` table. Deleted with the analysis it is about | Only this computer | **Built** | Backend document |
+| Calibration: the adjusted settings and their history | The same SQLite file, in `calibration_versions`. Rows are only ever added | Only this computer | **Built** | Backend and science documents |
+| Later results of one recording (revisions) | The same SQLite file, as further rows in `analyses` | Only this computer | **Built** | Backend document |
 | The speech model | `~/.cache/huggingface/` (downloaded once) | Only this computer | **Built** | Science document |
 | The AI language model | Inside Ollama's own folder (`~/.ollama/`). Installed by you; this app never downloads it | Only this computer | **Built** | Science document |
 | Settings | Optional `.env` file in the project root | Only this computer | **Built** | README |
@@ -177,8 +185,8 @@ are in their own documents.
 
 ### G3. Each feature stores its data where it is used
 
-- **Chosen:** the checklist saves in the browser; everything that needs Python (jobs and
-  analysis results today, feedback and calibration later) saves in SQLite.
+- **Chosen:** the checklist saves in the browser; everything that needs Python (jobs,
+  analysis results, feedback and calibration) saves in SQLite.
 - **Why and what was decided against:** see frontend decision F2 and backend decision B1.
 
 ### G4. After setup, nothing leaves this computer
@@ -231,6 +239,40 @@ are in their own documents.
   cloning. Measuring a reference the same way as a take is also what makes the comparison
   fair.
 
+### G8. Feedback may change how things are read and how future recordings are measured, never what was measured
+
+- **Chosen:** three firm lines. A label on a pause changes the coaching's reading of it. A
+  report can, with others, move one setting for recordings analysed from then on. Nothing
+  the user says changes a stored measurement; a correction or a fresh analysis is stored as
+  a new revision beside the earlier result.
+- **Why:** the brief requires each of the three, and together they are what keeps the
+  history meaningful. If last week's results quietly changed whenever a setting moved, no
+  two takes could be compared across time.
+- **Decided against:** recalculating old results after an adjustment; removing a pause
+  from the statistics because it was labelled; multiplying a WPM that "looks wrong" by a
+  correction. See science decisions S46 to S64 and backend decisions B38 to B51.
+
+### G9. Settings move by fixed rules, slowly, and say so
+
+- **Chosen:** an adjustment needs several reports that agree, from more than one
+  recording; it is small; it stays inside a stated range; it is announced with its reason
+  and the number of reports behind it; and it can be undone, reset, or switched off.
+- **Why:** an app that adapts invisibly cannot be trusted or debugged. The brief asks for
+  conservative, transparent rules, and for the app never to claim it has learned from one
+  or two noisy events.
+- **Decided against:** letting the AI model decide what to adjust, or adjusting a little
+  on every click.
+
+### G10. A setting is adjustable only if moving it does something
+
+- **Chosen:** before the speech detector's sensitivity was made adjustable, as the brief
+  suggests it could be, its effect was measured on the real detector. Inside its safe range
+  it changed almost nothing; outside it, it lost real pauses. So it stays fixed, and the
+  reports it would have answered are saved with an honest explanation.
+- **Why:** "the app adjusted itself after your feedback", followed by identical results, is
+  a false claim. Measuring before promising is the rule this project has followed since
+  Phase 4.
+
 ## 7. Glossary
 
 | Word | Meaning |
@@ -263,6 +305,12 @@ are in their own documents.
 | **Reference** | A recording you supply to compare your takes with, such as the original performance. |
 | **Line-up (alignment)** | Working out which word of one recording is which word of the other. |
 | **Waveform** | A picture of a sound wave. Here it is only ever a picture: nothing is measured from it. |
+| **Feedback** | Something you say about one analysis: a label, a report, or a note for the record. |
+| **Label** | Your word for what a pause meant: intentional or accidental. It changes the coaching's reading of the pause, never the measurement. |
+| **Report** | Feedback saying the analysis got something wrong, such as a missed pause. Several that agree can move a setting. |
+| **Calibration** | The current values of the few settings feedback may adjust, with the history of every change. |
+| **Minimum pause** | The shortest silence that counts as a pause. 500 ms unless feedback has moved it. |
+| **Revision** | A later result made from a recording that already has one, stored beside the earlier result. |
 | **Epoch milliseconds** | A moment in time written as the number of milliseconds since 1 January 1970 UTC. |
 | **Pure function** | A function whose result depends only on its inputs and that changes nothing else. Easy to test. |
 | **Reconcile** | Here: bringing saved state up to date with the real clock, e.g. finishing a timer that ended while the page was closed. |

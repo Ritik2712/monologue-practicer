@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import LOCAL_ORIGIN_REGEX, settings
-from app.routes import analyses, health, jobs
+from app.routes import analyses, feedback, health, jobs
 
 app = FastAPI(title="Monologue Coach API")
 
@@ -33,6 +33,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(analyses.router)
 app.include_router(jobs.router)
+app.include_router(feedback.router)
 
 
 @app.exception_handler(RequestValidationError)

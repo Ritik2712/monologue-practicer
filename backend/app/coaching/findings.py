@@ -11,8 +11,14 @@ Each finding also gets a role against the chosen delivery profile:
 - "issue":    works against the profile (or is a common weakness when no profile is chosen)
 - "strength": already fits the profile
 - "context":  worth knowing, but neither
+
+The user can label a pause as intentional or accidental. A label changes how a pause is read
+here: an accidental pause is not praised as a held silence, and an intentional one is never
+called a fault. It does not change what was measured. Every pause stays in the pause
+figures, whatever its label.
 """
 
+import statistics
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -154,26 +160,47 @@ def banded_role(dimension: str, level: Level, wants: dict[str, Want]) -> tuple[R
 # --- Building ----------------------------------------------------------------------------
 
 
-def build_findings(body: schemas.AnalysisBody, settings: CoachingSettings) -> FindingSet:
+def known_labels(body: schemas.AnalysisBody, labels: dict[str, str] | None) -> dict[str, str]:
+    """The labels that belong to pauses this recording really has."""
+    pause_ids = {pause.id for pause in body.pauses}
+    return {
+        pause_id: label
+        for pause_id, label in (labels or {}).items()
+        if pause_id in pause_ids and label in ("intentional", "accidental")
+    }
+
+
+def build_findings(
+    body: schemas.AnalysisBody,
+    settings: CoachingSettings,
+    labels: dict[str, str] | None = None,
+) -> FindingSet:
+    """`labels` are the user's own labels on pauses: pause ID -> "intentional" / "accidental"."""
     wants = profile_wants(body.profile)
     metrics = body.metrics
+    labels = known_labels(body, labels)
     found: list[Found] = []
 
     pace = _pace(metrics, settings, wants)
     variation = _pace_variation(body, settings, wants)
-    pauses = _pauses(body, settings, wants)
-    longest = _longest_pause(body, settings, wants)
+    pauses = _pauses(body, settings, wants, labels)
+    longest = _longest_pause(body, settings, wants, labels)
     loudness = _loudness(metrics, settings, wants)
     pitch = _pitch(metrics, settings, wants)
     confidence = _recognition_confidence(body)
 
-    found += [f for f in (pace, variation, pauses, longest, loudness, pitch) if f]
+    found += [f for f in (pace, variation, pauses, longest) if f]
+    found += _labelled_pauses(body, wants, labels)
+    found += [f for f in (loudness, pitch) if f]
     found += _segment_findings(body, settings, wants)
     found += [f for f in (_hesitations(body), _emphasis(body, wants), confidence) if f]
 
     findings: list[schemas.Finding] = []
     details: dict[str, Found] = {}
     for index, item in enumerate(found, start=1):
+        # Feedback on corrections can move a kind of issue down the list. It only changes
+        # the order issues are offered in; the finding itself is always still listed.
+        item.weight *= settings.priority(item.kind)
         finding_id = f"f{index}"
         details[finding_id] = item
         findings.append(
@@ -280,7 +307,9 @@ def _pace_variation(body: schemas.AnalysisBody, settings: CoachingSettings, want
     )
 
 
-def _pauses(body: schemas.AnalysisBody, settings: CoachingSettings, wants) -> Found | None:
+def _pauses(
+    body: schemas.AnalysisBody, settings: CoachingSettings, wants, labels: dict[str, str]
+) -> Found | None:
     metrics = body.metrics
     if metrics.pause_count.value is None:
         return None
@@ -308,16 +337,52 @@ def _pauses(body: schemas.AnalysisBody, settings: CoachingSettings, wants) -> Fo
     median = metrics.median_pause_seconds.value
     if median is None:
         return None
+    measured = (
+        f"{plural(count, 'pause')} of {shortest_pause} or more, with a median of "
+        f"{seconds_text(median)}."
+    )
+    share = metrics.pause_ratio.value
+    share_text = (
+        f" Pauses make up {round(share * 100)}% of the recording." if share is not None else ""
+    )
     threshold = settings.registering_pause_seconds
+
+    # Pauses the user marked as accidental stay in the figures above, which describe the
+    # recording as it is. They are left out only of the judgement of pause length: a slip
+    # is not a pause the speaker chose to hold.
+    accidental = [p for p in body.pauses if labels.get(p.id) == "accidental"]
+    meant = [p for p in body.pauses if labels.get(p.id) != "accidental"]
+    marked = ""
+    if accidental and meant:
+        # Rounded to the millisecond first: the mean of 0.6 and 0.7 must read as 0.65,
+        # not as the 0.6499999 that floating-point arithmetic makes of it.
+        median = round(statistics.median(pause.duration_seconds for pause in meant), 3)
+        marked = (
+            f" You marked {len(accidental)} as accidental. Leaving "
+            f"{'it' if len(accidental) == 1 else 'them'} out, the other {len(meant)} "
+            f"{'has' if len(meant) == 1 else 'have'} a median of {seconds_text(median)}."
+        )
+    elif accidental:
+        return Found(
+            kind="pause_length",
+            level="low",
+            role="issue"
+            if "high" in (wants.get("pause_length"), wants.get("held_silence"))
+            else "context",
+            weight=1.0,
+            statement=(
+                f"{measured} You marked {'it' if count == 1 else 'all of them'} as "
+                "accidental, so no pause in this take was one you chose to make."
+                f"{share_text}"
+            ),
+            evidence=evidence,
+        )
+
     level = band(median, threshold, threshold)
     described = (
         f"That is short: under {seconds_text(threshold)}."
         if level == "low"
         else f"That is long enough to register: {seconds_text(threshold)} or more."
-    )
-    share = metrics.pause_ratio.value
-    share_text = (
-        f" Pauses make up {round(share * 100)}% of the recording." if share is not None else ""
     )
     role, weight = banded_role("pause_length", level, wants)
     return Found(
@@ -325,18 +390,20 @@ def _pauses(body: schemas.AnalysisBody, settings: CoachingSettings, wants) -> Fo
         level=level,
         role=role,
         weight=weight,
-        statement=(
-            f"{plural(count, 'pause')} of {shortest_pause} or more, with a median of "
-            f"{seconds_text(median)}. {described}{share_text}"
-        ),
+        statement=f"{measured}{marked} {described}{share_text}",
         evidence=evidence,
     )
 
 
-def _longest_pause(body: schemas.AnalysisBody, settings: CoachingSettings, wants) -> Found | None:
-    if not body.pauses:
+def _longest_pause(
+    body: schemas.AnalysisBody, settings: CoachingSettings, wants, labels: dict[str, str]
+) -> Found | None:
+    # An accidental pause is not a silence the speaker held, however long it lasted.
+    meant = [p for p in body.pauses if labels.get(p.id) != "accidental"]
+    if not meant:
         return None
-    pause = max(body.pauses, key=lambda p: p.duration_seconds)
+    pause = max(meant, key=lambda p: p.duration_seconds)
+    left_out = len(body.pauses) - len(meant)
     threshold = settings.held_silence_seconds
     level = band(pause.duration_seconds, threshold, threshold)
     described = (
@@ -350,19 +417,72 @@ def _longest_pause(body: schemas.AnalysisBody, settings: CoachingSettings, wants
         role, weight = "strength", 0.0
     else:
         role, weight = "context", 0.0
+    opening = (
+        f"Leaving out the {plural(left_out, 'pause')} you marked as accidental, the longest pause"
+        if left_out
+        else "The longest pause"
+    )
+    intended = " You marked it as intentional." if labels.get(pause.id) == "intentional" else ""
     return Found(
         kind="held_silence",
         level=level,
         role=role,
         weight=weight,
         statement=(
-            f"The longest pause is {seconds_text(pause.duration_seconds)}, at "
+            f"{opening} is {seconds_text(pause.duration_seconds)}, at "
             f"{timecode(pause.start_seconds)}, between segments {pause.index + 1} and "
-            f"{pause.index + 2}. {described}"
+            f"{pause.index + 2}.{intended} {described}"
         ),
         evidence=[pause_evidence(pause)],
         data={"after": pause.after_segment_id, "before": pause.before_segment_id},
     )
+
+
+def _labelled_pauses(body: schemas.AnalysisBody, wants, labels: dict[str, str]) -> list[Found]:
+    """What the user said about their own pauses, as findings the coaching can build on."""
+
+    def listed(pauses: list[schemas.PauseEvent]) -> str:
+        shown = ", ".join(
+            f"{seconds_text(pause.duration_seconds)} at {timecode(pause.start_seconds)}"
+            for pause in pauses[:LISTED_EXAMPLES]
+        )
+        more = len(pauses) - LISTED_EXAMPLES
+        return shown + (f", and {more} more" if more > 0 else "")
+
+    found: list[Found] = []
+    accidental = [p for p in body.pauses if labels.get(p.id) == "accidental"]
+    if accidental:
+        found.append(
+            Found(
+                kind="accidental_pauses",
+                role="issue",
+                weight=0.7,
+                statement=(
+                    f"You marked {plural(len(accidental), 'pause')} as accidental: "
+                    f"{listed(accidental)}. "
+                    f"{'It still counts' if len(accidental) == 1 else 'They still count'} in "
+                    "the pause figures, which describe the recording as it is."
+                ),
+                evidence=[pause_evidence(pause) for pause in accidental[:LISTED_EXAMPLES]],
+                # The phrase that ran into the first slip is the one to practise through.
+                data={"segment": accidental[0].after_segment_id},
+            )
+        )
+    intentional = [p for p in body.pauses if labels.get(p.id) == "intentional"]
+    if intentional:
+        wanted = "high" in (wants.get("pause_length"), wants.get("held_silence"))
+        found.append(
+            Found(
+                kind="intentional_pauses",
+                role="strength" if wanted else "context",
+                statement=(
+                    f"You marked {plural(len(intentional), 'pause')} as intentional: "
+                    f"{listed(intentional)}."
+                ),
+                evidence=[pause_evidence(pause) for pause in intentional[:LISTED_EXAMPLES]],
+            )
+        )
+    return found
 
 
 def _loudness(metrics: schemas.Metrics, settings: CoachingSettings, wants) -> Found | None:

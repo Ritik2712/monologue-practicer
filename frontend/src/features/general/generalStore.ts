@@ -17,6 +17,7 @@ import type {
   LanguageHint,
   Profile,
   Role,
+  SegmentCorrection,
   Waveform,
 } from "./types";
 
@@ -83,6 +84,12 @@ export type WaveformState =
   | { status: "missing" }
   | { status: "error"; message: string };
 
+/** How saving a corrected transcript is going. It is one quick request, with no job. */
+export type CorrectionState =
+  | { status: "idle" }
+  | { status: "saving"; analysisId: string }
+  | { status: "failed"; analysisId: string; message: string };
+
 export type GeneralState = {
   options:
     | { status: "loading" }
@@ -102,6 +109,9 @@ export type GeneralState = {
   runKind: JobKind;
   /** The analysis whose coaching is being written again. Null for an ordinary analysis. */
   coachingFor: string | null;
+  /** The analysis whose kept recording is being analysed again. Null otherwise. */
+  reanalysisFor: string | null;
+  correction: CorrectionState;
   /** Whether the recording in the current run is a take or a reference. */
   runRole: Role;
   viewed: ViewedState;
@@ -142,6 +152,18 @@ export type GeneralStore = {
    * not touched. Returns false, doing nothing, if something is already in progress.
    */
   regenerateCoaching: (analysisId: string) => boolean;
+  /**
+   * Analyses an analysis's kept recording again, with the settings in force now. The
+   * result is a new revision; the earlier one is not changed. Returns false, doing
+   * nothing, if something is already in progress. `role` says whether the recording is one
+   * of your takes (the default) or a reference.
+   */
+  reanalyse: (analysisId: string, role?: Role) => boolean;
+  /**
+   * Saves the words of some phrases as they were really said. The backend stores a new
+   * revision with word counts and WPM worked out again, and that revision is then shown.
+   */
+  correctTranscript: (analysisId: string, corrections: SegmentCorrection[]) => void;
   /** Clears a finished, failed or cancelled run so a new one can start. */
   dismissRun: () => void;
   openAnalysis: (analysisId: string) => void;
@@ -177,6 +199,8 @@ const INITIAL: GeneralState = {
   run: { phase: "idle" },
   runKind: "analysis",
   coachingFor: null,
+  reanalysisFor: null,
+  correction: { status: "idle" },
   runRole: "take",
   viewed: { status: "none" },
   references: { status: "loading", items: [], message: null },
@@ -386,11 +410,17 @@ export function createGeneralStore({
 
   async function handleJob(job: JobStatus, token: number) {
     // A job picked up after a page refresh says for itself what kind it is.
-    if (state.runKind !== job.kind || state.runRole !== job.role) {
+    const reanalysisFor = job.sourceAnalysisId ?? null;
+    if (
+      state.runKind !== job.kind ||
+      state.runRole !== job.role ||
+      state.reanalysisFor !== reanalysisFor
+    ) {
       set({
         runKind: job.kind,
         runRole: job.role,
         coachingFor: job.kind === "coaching" ? job.analysisId : null,
+        reanalysisFor,
       });
     }
     switch (job.status) {
@@ -518,8 +548,11 @@ export function createGeneralStore({
   function forget(analysisIds: string[]) {
     const localAudio = { ...state.localAudio };
     for (const id of analysisIds) {
-      if (localAudio[id]) revokeUrl(localAudio[id]);
+      const url = localAudio[id];
       delete localAudio[id];
+      // Two revisions of one recording play the same audio: it is released only once
+      // neither of them needs it any more.
+      if (url && !Object.values(localAudio).includes(url)) revokeUrl(url);
     }
     return localAudio;
   }
@@ -599,9 +632,68 @@ export function createGeneralStore({
     submit(submission) {
       if (isBusy()) return false;
       pending = { submission, key: newKey() };
-      set({ runKind: "analysis", runRole: submission.role ?? "take", coachingFor: null });
+      set({
+        runKind: "analysis",
+        runRole: submission.role ?? "take",
+        coachingFor: null,
+        reanalysisFor: null,
+      });
       void send(startRun());
       return true;
+    },
+
+    reanalyse(analysisId, role = "take") {
+      if (isBusy()) return false;
+      pending = null;
+      const token = startRun();
+      set({
+        run: { phase: "submitting" },
+        runKind: "analysis",
+        runRole: role,
+        coachingFor: null,
+        reanalysisFor: analysisId,
+        notice: null,
+      });
+      api.requestReanalysis(analysisId).then(
+        (job) => {
+          if (token === runToken) void handleJob(job, token);
+        },
+        (error) => {
+          if (token !== runToken) return;
+          set({
+            run: { phase: "failed", job: null, error: describeError(error), canResubmit: false },
+          });
+        },
+      );
+      return true;
+    },
+
+    correctTranscript(analysisId, corrections) {
+      if (state.correction.status === "saving") return;
+      set({ correction: { status: "saving", analysisId }, notice: null });
+      api.correctTranscript(analysisId, corrections).then(
+        (revision) => {
+          // The same audio plays for the new revision as for the result it came from.
+          const url = state.localAudio[analysisId];
+          const { viewed } = state;
+          const stillShown =
+            viewed.status === "ready" && viewed.analysis.analysisId === analysisId;
+          set({
+            correction: { status: "idle" },
+            viewed: stillShown ? { status: "ready", analysis: revision } : viewed,
+            localAudio: url ? { ...state.localAudio, [revision.analysisId]: url } : state.localAudio,
+            notice: {
+              kind: "info",
+              text: `Saved as revision ${revision.revision}. Word counts and WPM were worked out again from your words. The earlier result is still in your history, unchanged.`,
+            },
+          });
+          refreshHistory();
+        },
+        (error) =>
+          set({
+            correction: { status: "failed", analysisId, message: describeError(error).message },
+          }),
+      );
     },
 
     regenerateCoaching(analysisId) {
@@ -612,6 +704,7 @@ export function createGeneralStore({
         run: { phase: "submitting" },
         runKind: "coaching",
         coachingFor: analysisId,
+        reanalysisFor: null,
         notice: null,
       });
       api.requestCoaching(analysisId).then(

@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
 
-from app import history, job_queue, profiles, schemas, uploads
+from app import history, job_queue, profiles, revisions, schemas, uploads
 from app.comparison.compare import compare
 from app.comparison.settings import DEFAULT_COMPARISON_SETTINGS
 from app.config import settings
@@ -152,18 +152,80 @@ def submit_analysis(
     return job_queue.to_status(session, job, now, data_dir)
 
 
-@router.get("/analyses/{analysis_id}", response_model=schemas.AnalysisResult)
-def get_analysis(analysis_id: str, session: SessionDep) -> schemas.AnalysisResult:
-    """The stored result of a finished analysis, exactly as it was measured."""
-    analysis = session.get(Analysis, analysis_id)
-    if analysis is None:
-        raise _error(404, "analysis_not_found", "No analysis with this ID exists.")
+def _result(session, analysis: Analysis) -> schemas.AnalysisResult:
     result = schemas.AnalysisResult.model_validate(analysis.result)
     # The recording can be deleted later without touching the measurements.
     result.audio_retained = analysis.audio_path is not None
     if analysis.coaching:
         result.coaching = schemas.Coaching.model_validate(analysis.coaching)
+    # Looked up now, so an older result also lists the revisions made after it.
+    result.revisions = revisions.revision_infos(session, analysis)
     return result
+
+
+@router.get("/analyses/{analysis_id}", response_model=schemas.AnalysisResult)
+def get_analysis(analysis_id: str, session: SessionDep) -> schemas.AnalysisResult:
+    """The stored result of a finished analysis, exactly as it was measured.
+
+    `revisions` lists every result made from the same recording: the first analysis, and
+    any later one made by correcting the transcript or analysing the recording again.
+    """
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise _error(404, "analysis_not_found", "No analysis with this ID exists.")
+    return _result(session, analysis)
+
+
+@router.post(
+    "/analyses/{analysis_id}/transcript", response_model=schemas.AnalysisResult, status_code=201
+)
+def correct_transcript(
+    analysis_id: str,
+    request: schemas.TranscriptCorrectionRequest,
+    session: SessionDep,
+    data_dir: DataDirDep,
+    now: NowDep,
+) -> schemas.AnalysisResult:
+    """Stores a new revision of a take with the words of some phrases corrected.
+
+    Word counts and WPM are worked out again from the corrected words and each phrase's own
+    measured length. Nothing measured from the sound changes, and the result that was
+    corrected stays as it was. Returns the new revision.
+    """
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise _error(404, "analysis_not_found", "No analysis with this ID exists.")
+    try:
+        revision = revisions.create_corrected(session, analysis, request.corrections, now, data_dir)
+    except revisions.RevisionError as error:
+        raise _error(error.status, error.code, error.message) from None
+    return _result(session, revision)
+
+
+@router.post(
+    "/analyses/{analysis_id}/reanalysis",
+    response_model=schemas.JobStatus,
+    status_code=202,
+    responses={200: {"model": schemas.JobStatus, "description": "One is already in progress"}},
+)
+def analyse_again(
+    analysis_id: str, response: Response, session: SessionDep, data_dir: DataDirDep, now: NowDep
+) -> schemas.JobStatus:
+    """Queues a fresh analysis of this result's kept recording, with the current settings.
+
+    Returns at once with a job to poll. The new result is stored as a further revision of
+    the same recording; this one is not changed. Needs the recording to have been kept.
+    """
+    analysis = session.get(Analysis, analysis_id)
+    if analysis is None:
+        raise _error(404, "analysis_not_found", "No analysis with this ID exists.")
+    try:
+        job, created = revisions.create_reanalysis_job(session, analysis, now, data_dir)
+    except revisions.RevisionError as error:
+        raise _error(error.status, error.code, error.message) from None
+    if not created:
+        response.status_code = 200
+    return job_queue.to_status(session, job, now, data_dir)
 
 
 @router.get("/analyses/{analysis_id}/waveform", response_model=schemas.Waveform)

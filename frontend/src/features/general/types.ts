@@ -64,6 +64,14 @@ export type PauseEvent = {
   startsNewSection: boolean;
 };
 
+/** A silence too short to count as a pause. It stays inside a segment as speaking time. */
+export type ShortSilence = {
+  startSeconds: number;
+  endSeconds: number;
+  durationSeconds: number;
+  segmentId: string | null;
+};
+
 export type WordTiming = {
   text: string;
   startSeconds: number;
@@ -170,8 +178,24 @@ export type Coaching = {
   nextTake: string[];
   caveats: string[];
   settings: Record<string, number>;
+  /** Your own labels on pauses that this coaching took into account, by pause ID. */
+  labelsUsed?: Record<string, PauseLabel>;
   generatedAt: string;
   modelSeconds: number | null;
+};
+
+export type PauseLabel = "intentional" | "accidental";
+
+export type RevisionReason = "transcript_corrected" | "reanalysed";
+
+/** One result in the family of results made from the same recording. */
+export type RevisionInfo = {
+  analysisId: string;
+  revision: number;
+  /** Null for the first analysis of the recording. */
+  reason: RevisionReason | null;
+  createdAt: string;
+  calibrationVersion: number;
 };
 
 export type AnalysisResult = {
@@ -182,7 +206,11 @@ export type AnalysisResult = {
   role: Role;
   /** The name given to a reference. Null for a take. */
   title: string | null;
+  /** 1 for the first analysis. A corrected transcript or a fresh analysis adds a revision. */
   revision: number;
+  revisionReason?: RevisionReason | null;
+  /** Every result made from this recording, oldest first. */
+  revisions?: RevisionInfo[];
   audioRetained: boolean;
   profile: Profile;
   language: LanguageInfo;
@@ -190,6 +218,8 @@ export type AnalysisResult = {
   transcript: string | null;
   segments: SpeechSegment[];
   pauses: PauseEvent[];
+  /** Null or missing for results stored before these were recorded. */
+  shortSilences?: ShortSilence[] | null;
   words: WordTiming[];
   metrics: Metrics;
   energyTimeline: EnergyTimeline;
@@ -217,10 +247,13 @@ export type AnalysisSummary = {
   language: string;
   durationSeconds: number;
   revision: number;
+  revisionReason?: RevisionReason | null;
   audioRetained: boolean;
   originalFilename: string | null;
   metrics: Partial<Record<MetricName, MetricValue>>;
   warningCodes: string[];
+  /** The thresholds that produced the numbers. */
+  settings?: Record<string, number>;
 };
 
 export type AnalysisList = { items: AnalysisSummary[]; total: number };
@@ -237,6 +270,8 @@ export type JobStatus = {
   cancelRequested: boolean;
   error: JobError | null;
   analysisId: string | null;
+  /** Set when this job analyses the kept recording of an earlier analysis again. */
+  sourceAnalysisId?: string | null;
   canRetry: boolean;
   canCancel: boolean;
   queuePosition: number | null;
@@ -385,6 +420,145 @@ export type Comparison = {
   pauses: ComparedPause[];
   phrases: ComparedPhrase[];
   differences: Difference[];
+  /** Set when the two were analysed with different settings. */
+  settingsNote?: string | null;
   caveats: string[];
   settings: Record<string, number>;
 };
+
+// --- Feedback and calibration ------------------------------------------------------------
+
+export type FeedbackCategory =
+  | "pause_intentional"
+  | "pause_accidental"
+  | "pause_false"
+  | "split_wrong"
+  | "pause_missed"
+  | "wpm_too_high"
+  | "wpm_too_low"
+  | "transcript_wrong"
+  | "coaching_useful"
+  | "coaching_not_useful";
+
+export type FeedbackRequest = {
+  category: FeedbackCategory;
+  /** "pause-2", "seg-3", a finding such as "f4", or nothing for the whole recording. */
+  targetId?: string | null;
+  /** Where in the recording, for a missed pause. */
+  atSeconds?: number | null;
+  /** Leaving this out keeps the note that is there; an empty string clears it. */
+  note?: string | null;
+};
+
+export type WpmCheck = {
+  label: string;
+  text: string;
+  action: "correct_transcript" | "report_missed_pause" | "report_false_pause" | null;
+};
+
+/** How a WPM figure was arrived at, shown when you say it looks wrong. */
+export type WpmReview = {
+  target: string;
+  words: number | null;
+  speakingSeconds: number | null;
+  wpm: number | null;
+  formula: string;
+  checks: WpmCheck[];
+};
+
+export type FeedbackItem = {
+  id: string;
+  analysisId: string;
+  category: FeedbackCategory;
+  targetKind: "pause" | "segment" | "correction" | "recording";
+  targetId: string | null;
+  atSeconds: number | null;
+  note: string | null;
+  createdAt: string;
+  calibrationVersion: number;
+  /** What was measured at the spot the feedback is about. */
+  features: Record<string, number | string | boolean | null>;
+  /**
+   * "label": changes how the coaching reads a pause. "report": counts towards adjusting a
+   * setting. "used": already counted. "recorded": saved, and changes nothing by itself.
+   */
+  effect: "label" | "report" | "used" | "recorded";
+  setting: string | null;
+  direction: number;
+  /** One sentence saying what this feedback does. */
+  message: string;
+  review: WpmReview | null;
+};
+
+export type Confidence = "low" | "medium" | "high";
+
+export type CalibrationChange = {
+  version: number;
+  createdAt: string;
+  cause: "defaults" | "auto" | "undo" | "reset";
+  setting: string | null;
+  label: string | null;
+  unit: string | null;
+  oldValue: number | null;
+  newValue: number | null;
+  reason: string;
+  reportCount: number;
+  agreeingCount: number;
+  recordingCount: number;
+  confidence: Confidence | null;
+  /** True once this adjustment has been undone or reset away. */
+  undone: boolean;
+};
+
+export type CalibratedSetting = {
+  name: string;
+  group: "analysis" | "coaching";
+  label: string;
+  description: string;
+  unit: string;
+  digits: number;
+  value: number;
+  default: number;
+  minimum: number;
+  maximum: number;
+  step: number;
+  changed: boolean;
+  pending: { raiseCount: number; lowerCount: number; recordings: number; needed: number };
+  supportingReports: number;
+  confidence: Confidence | "none";
+  status: string;
+};
+
+export type Calibration = {
+  /** The version new analyses are made with. */
+  version: number;
+  /** False when automatic adjustment is switched off. */
+  adaptive: boolean;
+  /** "calibrating" while every setting is still at its default. */
+  state: "calibrating" | "adjusted";
+  summary: string;
+  feedbackCount: number;
+  pendingReportCount: number;
+  settings: CalibratedSetting[];
+  fixed: { name: string; label: string; value: number; unit: string }[];
+  /** Newest first. */
+  changes: CalibrationChange[];
+  canUndo: boolean;
+  rules: {
+    minReports: number;
+    minRecordings: number;
+    minAgreement: number;
+    window: number;
+    reversalReports: number;
+  };
+};
+
+/** What the screen needs after any change to feedback or calibration. */
+export type FeedbackUpdate = {
+  items: FeedbackItem[];
+  /** Settings that changed because of this request. Usually empty. */
+  adjustments: CalibrationChange[];
+  calibration: Calibration;
+};
+
+export type SegmentCorrection = { segmentId: string; text: string };

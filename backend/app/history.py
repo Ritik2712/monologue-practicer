@@ -47,10 +47,12 @@ def summarize(analysis: Analysis, original_filename: str | None) -> schemas.Anal
         language=analysis.language,
         duration_seconds=analysis.duration_seconds,
         revision=analysis.revision,
+        revision_reason=analysis.revision_reason,
         audio_retained=analysis.audio_path is not None,
         original_filename=original_filename,
         metrics=metrics,
         warning_codes=[warning["code"] for warning in analysis.result.get("warnings", [])],
+        settings=analysis.result.get("settings", {}),
     )
 
 

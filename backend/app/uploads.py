@@ -7,6 +7,7 @@ Paths stored in the database are relative to the data folder, so the folder can 
 """
 
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import BinaryIO
@@ -135,6 +136,30 @@ def retain_audio(relative_path: str, analysis_id: str, data_dir: Path | None = N
     target.parent.mkdir(parents=True, exist_ok=True)
     os.replace(source, target)
     return kept
+
+
+def duplicate_audio(
+    relative_path: str, folder: str, name: str, data_dir: Path | None = None, *, link: bool
+) -> str:
+    """Gives a stored recording a second file of its own. Returns its relative path.
+
+    With `link`, the second file is another name for the same bytes on disk, which takes no
+    extra space; deleting either name leaves the other playable. Where the disk cannot do
+    that, or without `link`, the bytes are copied.
+    """
+    source = absolute(relative_path, data_dir)
+    relative = f"{folder}/{name}{source.suffix}"
+    target = absolute(relative, data_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.unlink(missing_ok=True)
+    if link:
+        try:
+            os.link(source, target)
+            return relative
+        except OSError:
+            pass
+    shutil.copyfile(source, target)
+    return relative
 
 
 def delete_stray_uploads(

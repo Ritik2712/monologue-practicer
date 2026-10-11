@@ -29,11 +29,13 @@ type RunPanelProps = {
   role: Role;
   /** The analysis whose coaching is being written again. */
   coachingFor: string | null;
+  /** True when the job analyses a recording that was kept earlier, not a new upload. */
+  again?: boolean;
   store: GeneralStore;
 };
 
 /** What is happening to the recording that was just submitted, or to its coaching. */
-export function RunPanel({ run, kind, role, coachingFor, store }: RunPanelProps) {
+export function RunPanel({ run, kind, role, coachingFor, again = false, store }: RunPanelProps) {
   if (run.phase === "idle") return null;
 
   return (
@@ -43,35 +45,53 @@ export function RunPanel({ run, kind, role, coachingFor, store }: RunPanelProps)
       className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
     >
       <h2 id="run-heading" className="text-lg font-semibold">
-        {HEADINGS[run.phase](run, kind, role)}
+        {HEADINGS[run.phase](run, kind, role, again)}
       </h2>
       <div className="mt-2 flex flex-col gap-3">
-        <RunBody run={run} kind={kind} role={role} coachingFor={coachingFor} store={store} />
+        <RunBody
+          run={run}
+          kind={kind}
+          role={role}
+          coachingFor={coachingFor}
+          again={again}
+          store={store}
+        />
       </div>
     </section>
   );
 }
 
-type Heading = (run: RunState, kind: JobKind, role: Role) => string;
+type Heading = (run: RunState, kind: JobKind, role: Role, again: boolean) => string;
 
 const HEADINGS: { [Phase in RunState["phase"]]: Heading } = {
   idle: () => "",
-  submitting: (_, kind) =>
-    kind === "coaching" ? "Asking for new coaching" : "Sending the recording to the local backend",
-  tracking: (run, kind, role) => {
+  submitting: (_, kind, __, again) =>
+    kind === "coaching"
+      ? "Asking for new coaching"
+      : again
+        ? "Asking for the recording to be analysed again"
+        : "Sending the recording to the local backend",
+  tracking: (run, kind, role, again) => {
     if (run.phase !== "tracking") return "";
     if (run.job.cancelRequested) return "Cancelling";
     if (run.job.status === "queued") return "Waiting in the queue";
     if (kind === "coaching") return "Writing the coaching again";
+    if (again) {
+      return role === "reference" ? "Measuring the reference again" : "Analysing the recording again";
+    }
     return role === "reference" ? "Measuring the reference recording" : "Analysing your recording";
   },
   loading_result: () => "Loading the result",
-  done: (_, kind, role) =>
+  done: (_, kind, role, again) =>
     kind === "coaching"
       ? "New coaching written"
-      : role === "reference"
-        ? "Reference added"
-        : "Analysis finished",
+      : again
+        ? role === "reference"
+          ? "Reference measured again"
+          : "New revision ready"
+        : role === "reference"
+          ? "Reference added"
+          : "Analysis finished",
   cancelled: (_, kind) => (kind === "coaching" ? "Coaching cancelled" : "Analysis cancelled"),
   failed: (_, kind, role) =>
     kind === "coaching"
@@ -81,7 +101,7 @@ const HEADINGS: { [Phase in RunState["phase"]]: Heading } = {
         : "The analysis did not finish",
 };
 
-function RunBody({ run, kind, role, coachingFor, store }: RunPanelProps) {
+function RunBody({ run, kind, role, coachingFor, again = false, store }: RunPanelProps) {
   switch (run.phase) {
     case "idle":
       return null;
@@ -164,9 +184,13 @@ function RunBody({ run, kind, role, coachingFor, store }: RunPanelProps) {
           <p>
             {kind === "coaching"
               ? "It replaces the earlier coaching in the results below. The measurements were not changed."
-              : role === "reference"
-                ? "It is now in your reference recordings and has been chosen to compare with."
-                : "The results are below and have been added to your history."}
+              : again && role === "reference"
+                ? "It is in your reference recordings as a new revision, measured with the settings as they are now, and has been chosen to compare with. The earlier one is still listed until you delete it."
+                : again
+                  ? "It is shown below as a new revision, made with the settings as they are now. The earlier result is still in your history, unchanged."
+                  : role === "reference"
+                  ? "It is now in your reference recordings and has been chosen to compare with."
+                  : "The results are below and have been added to your history."}
           </p>
           <div>
             <Button onClick={() => store.dismissRun()}>Dismiss</Button>
@@ -180,7 +204,9 @@ function RunBody({ run, kind, role, coachingFor, store }: RunPanelProps) {
           <p>
             {kind === "coaching"
               ? "The coaching that was already there has been left as it was."
-              : "Nothing was saved, and the uploaded audio was deleted from the backend."}
+              : again
+                ? "No new revision was made. The earlier result and its recording are as they were."
+                : "Nothing was saved, and the uploaded audio was deleted from the backend."}
           </p>
           <div>
             <Button onClick={() => store.dismissRun()}>Dismiss</Button>
@@ -227,8 +253,9 @@ function RunBody({ run, kind, role, coachingFor, store }: RunPanelProps) {
           )}
           {!canRetry && !run.canResubmit && (
             <p className={`text-sm ${MUTED}`}>
-              Trying the same audio again would fail the same way. Record or upload again to
-              start a new analysis.
+              {again
+                ? "No new revision was made. The earlier result is as it was."
+                : "Trying the same audio again would fail the same way. Record or upload again to start a new analysis."}
             </p>
           )}
           <div className="flex flex-wrap gap-2">

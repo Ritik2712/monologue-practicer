@@ -25,7 +25,14 @@ from app.pipeline.metrics import (
     typical_wpm,
     unavailable,
 )
-from app.pipeline.segmentation import Segment, SpeechRegion, Word, assign_words, build_segments
+from app.pipeline.segmentation import (
+    Segment,
+    SpeechRegion,
+    Word,
+    assign_words,
+    build_segments,
+    find_short_silences,
+)
 from app.pipeline.settings import SAMPLE_RATE, AnalysisSettings
 from app.pipeline.transcribe import LanguageHint, Transcriber, Transcription, looks_garbled
 from app.pipeline.vad import detect_speech
@@ -41,6 +48,7 @@ from app.schemas import (
     PauseEvent,
     PipelineInfo,
     Profile,
+    ShortSilence,
     SpeechSegment,
     WordTiming,
 )
@@ -81,7 +89,21 @@ WARNINGS = {
         "The background is loud compared with the voice, so pause detection may be less accurate."
     ),
     "pitch_unavailable": "There was too little clearly voiced sound to measure pitch.",
+    # Added by `app.transcript_correction`, never by an analysis of the audio.
+    "transcript_corrected": (
+        "You corrected the transcript, and this revision uses your words. Word counts and WPM "
+        "were worked out again from them. Where a word changed, its timing is an estimate, "
+        "and emphasis candidates are kept only for words that stayed the same."
+    ),
 }
+# The warnings that speak about how far the recognised words can be trusted.
+WORD_WARNINGS = (
+    "no_words",
+    "hinglish_best_effort",
+    "uncertain_transcription",
+    "garbled_transcription",
+    "word_timing_uncertain",
+)
 
 
 @dataclass
@@ -125,7 +147,9 @@ def run_analysis(
     check()
 
     on_stage("detecting_speech")
-    segments, pauses = build_segments(deps.detect_speech(samples, settings), settings)
+    regions = deps.detect_speech(samples, settings)
+    segments, pauses = build_segments(regions, settings)
+    short_silences = find_short_silences(regions, settings)
     check()
 
     transcription: Transcription | None = None
@@ -145,7 +169,7 @@ def run_analysis(
     if segments and not has_transcript:
         warnings.append("no_words")
 
-    word_quality = _word_quality(words, moved_words, language, settings, warnings)
+    word_quality = word_quality_of(words, moved_words, language, settings, warnings)
     paces = [segment_pace(segment, settings, has_transcript=has_transcript) for segment in segments]
     pace = summarize_pace(
         segments, paces, duration, has_transcript=has_transcript, word_quality=word_quality
@@ -181,28 +205,28 @@ def run_analysis(
                 id=segment_ids[id(segment)],
                 index=segment.index,
                 section_index=segment.section_index,
-                start_seconds=_r(segment.start, 3),
-                end_seconds=_r(segment.end, 3),
-                speech_active_seconds=_r(segment.duration, 3),
+                start_seconds=round_out(segment.start, 3),
+                end_seconds=round_out(segment.end, 3),
+                speech_active_seconds=round_out(segment.duration, 3),
                 transcript=" ".join(word.text for word in segment.words)
                 if has_transcript
                 else None,
                 word_count=pace_info.word_count if has_transcript else None,
-                segment_wpm=_r(pace_info.wpm, 1),
+                segment_wpm=round_out(pace_info.wpm, 1),
                 pace_vs_typical=pace_vs_typical(pace_info, typical, settings),
-                quality=_weaker(pace_info.quality, word_quality),
+                quality=weaker(pace_info.quality, word_quality),
                 reliable=pace_info.reliable,
                 flags=list(pace_info.flags),
-                confidence=_r(pace_info.confidence, 3),
-                mean_energy_db=_r(level, 1),
+                confidence=round_out(pace_info.confidence, 3),
+                mean_energy_db=round_out(level, 1),
                 energy_delta_db=(
-                    _r(level - typical_level, 1)
+                    round_out(level - typical_level, 1)
                     if level is not None and typical_level is not None
                     else None
                 ),
-                median_pitch_hz=_r(segment_pitch, 1),
+                median_pitch_hz=round_out(segment_pitch, 1),
                 pitch_delta_semitones=(
-                    _r(acoustics.semitones(segment_pitch, pitch_summary.median_hz), 1)
+                    round_out(acoustics.semitones(segment_pitch, pitch_summary.median_hz), 1)
                     if segment_pitch is not None and pitch_summary is not None
                     else None
                 ),
@@ -213,9 +237,9 @@ def run_analysis(
         PauseEvent(
             id=f"pause-{pause.index + 1}",
             index=pause.index,
-            start_seconds=_r(pause.start, 3),
-            end_seconds=_r(pause.end, 3),
-            duration_seconds=_r(pause.duration, 3),
+            start_seconds=round_out(pause.start, 3),
+            end_seconds=round_out(pause.end, 3),
+            duration_seconds=round_out(pause.duration, 3),
             significance=pause.significance,
             after_segment_id=f"seg-{pause.index + 1}",
             before_segment_id=f"seg-{pause.index + 2}",
@@ -231,16 +255,32 @@ def run_analysis(
     return AnalysisBody(
         profile=profile,
         language=_language_info(language, transcription, warnings),
-        duration_seconds=_r(duration, 3),
+        duration_seconds=round_out(duration, 3),
         transcript=transcription.text if has_transcript and transcription else None,
         segments=segments_out,
         pauses=pauses_out,
+        short_silences=[
+            ShortSilence(
+                start_seconds=round_out(silence.start, 3),
+                end_seconds=round_out(silence.end, 3),
+                duration_seconds=round_out(silence.duration, 3),
+                segment_id=next(
+                    (
+                        segment_ids[id(segment)]
+                        for segment in segments
+                        if segment.start <= silence.start and silence.end <= segment.end
+                    ),
+                    None,
+                ),
+            )
+            for silence in short_silences
+        ],
         words=[
             WordTiming(
                 text=word.text,
-                start_seconds=_r(word.start, 3),
-                end_seconds=_r(word.end, 3),
-                confidence=_r(word.probability, 3),
+                start_seconds=round_out(word.start, 3),
+                end_seconds=round_out(word.end, 3),
+                confidence=round_out(word.probability, 3),
                 segment_id=word_segment.get(id(word)),
             )
             for word in words
@@ -265,17 +305,18 @@ def run_analysis(
         emphasis_candidates=[
             EmphasisCandidate(
                 text=candidate.word.text,
-                start_seconds=_r(candidate.word.start, 3),
-                end_seconds=_r(candidate.word.end, 3),
+                start_seconds=round_out(candidate.word.start, 3),
+                end_seconds=round_out(candidate.word.end, 3),
                 segment_id=word_segment.get(id(candidate.word)),
                 reasons=list(candidate.reasons),
-                energy_delta_db=_r(candidate.energy_delta_db, 1),
-                pitch_delta_semitones=_r(candidate.pitch_delta_semitones, 1),
+                energy_delta_db=round_out(candidate.energy_delta_db, 1),
+                pitch_delta_semitones=round_out(candidate.pitch_delta_semitones, 1),
             )
             for candidate in emphasis
         ],
         hesitations=[
-            Hesitation(text=word.text, start_seconds=_r(word.start, 3)) for word in hesitations
+            Hesitation(text=word.text, start_seconds=round_out(word.start, 3))
+            for word in hesitations
         ],
         settings=settings.to_dict(),
         pipeline=PipelineInfo(
@@ -287,7 +328,7 @@ def run_analysis(
     )
 
 
-def _word_quality(
+def word_quality_of(
     words: list[Word],
     moved_words: int,
     language: LanguageHint,
@@ -325,7 +366,7 @@ def _language_info(
     if confidence is not None and confidence < UNCERTAIN_LANGUAGE:
         warnings.append("language_uncertain")
     return LanguageInfo(
-        code=transcription.language, source="detected", confidence=_r(confidence, 3)
+        code=transcription.language, source="detected", confidence=round_out(confidence, 3)
     )
 
 
@@ -377,47 +418,17 @@ def _metrics(
             "Spread around the speaker's own median pitch.",
         )
 
-    if has_transcript:
-        fillers = Metric(
-            float(hesitation_count),
-            "count",
-            "estimated",
-            "Hesitation sounds such as 'um' and 'uh'. Speech recognition often leaves these "
-            "out, so the real number may be higher.",
-        )
-    else:
-        fillers = unavailable("count", "No transcript is available.")
-
     return Metrics(
-        total_word_count=_out(
-            Metric(float(pace.total_words), "words", word_quality)
-            if has_transcript
-            else unavailable("words", "No transcript is available."),
-            0,
+        **word_metric_values(
+            pace,
+            typical,
+            hesitation_count=hesitation_count,
+            has_transcript=has_transcript,
+            word_quality=word_quality,
+            settings=settings,
         ),
         speech_active_seconds=_out(
             seconds(pace.speech_active_seconds, "Total length of all speech segments."), 3
-        ),
-        speech_active_wpm=_out(pace.speech_active_wpm, 1),
-        whole_clip_wpm=_out(pace.whole_clip_wpm, 1),
-        pace_variation=_out(pace.pace_variation, 1),
-        pace_min_wpm=_out(pace.pace_min_wpm, 1),
-        pace_max_wpm=_out(pace.pace_max_wpm, 1),
-        typical_segment_wpm=_out(
-            Metric(
-                typical,
-                "words/minute",
-                word_quality,
-                "Median WPM of the segments long enough to measure reliably: your usual pace "
-                "in this recording.",
-            )
-            if typical is not None
-            else unavailable(
-                "words/minute",
-                f"Needs at least {settings.min_segments_for_typical_pace} segments long enough "
-                "to measure reliably.",
-            ),
-            1,
         ),
         pause_count=_out(pauses.count, 0),
         total_pause_seconds=_out(pauses.total_seconds, 3),
@@ -461,7 +472,6 @@ def _metrics(
         pitch_range_hz=_out(pitch_range_hz, 1),
         pitch_range_semitones=_out(pitch_range_st, 1),
         pitch_variation_semitones=_out(pitch_variation, 2),
-        filler_word_count=_out(fillers, 0),
         breath_count=_out(
             unavailable(
                 "count",
@@ -479,17 +489,77 @@ def _metrics(
     )
 
 
+def word_metric_values(
+    pace,
+    typical: float | None,
+    *,
+    hesitation_count: int,
+    has_transcript: bool,
+    word_quality: Quality,
+    settings: AnalysisSettings,
+) -> dict[str, MetricValue]:
+    """The metrics that are built on the recognised words, and on nothing else.
+
+    Kept apart from the rest so that a corrected transcript can have exactly these worked
+    out again, by the same code, while every acoustic measurement stays as it was.
+    """
+    if has_transcript:
+        fillers = Metric(
+            float(hesitation_count),
+            "count",
+            "estimated",
+            "Hesitation sounds such as 'um' and 'uh'. Speech recognition often leaves these "
+            "out, so the real number may be higher.",
+        )
+    else:
+        fillers = unavailable("count", "No transcript is available.")
+
+    return {
+        "total_word_count": _out(
+            Metric(float(pace.total_words), "words", word_quality)
+            if has_transcript
+            else unavailable("words", "No transcript is available."),
+            0,
+        ),
+        "speech_active_wpm": _out(pace.speech_active_wpm, 1),
+        "whole_clip_wpm": _out(pace.whole_clip_wpm, 1),
+        "pace_variation": _out(pace.pace_variation, 1),
+        "pace_min_wpm": _out(pace.pace_min_wpm, 1),
+        "pace_max_wpm": _out(pace.pace_max_wpm, 1),
+        "typical_segment_wpm": _out(
+            Metric(
+                typical,
+                "words/minute",
+                word_quality,
+                "Median WPM of the segments long enough to measure reliably: your usual pace "
+                "in this recording.",
+            )
+            if typical is not None
+            else unavailable(
+                "words/minute",
+                f"Needs at least {settings.min_segments_for_typical_pace} segments long enough "
+                "to measure reliably.",
+            ),
+            1,
+        ),
+        "filler_word_count": _out(fillers, 0),
+    }
+
+
 def _out(metric: Metric, digits: int) -> MetricValue:
     return MetricValue(
-        value=_r(metric.value, digits), unit=metric.unit, quality=metric.quality, note=metric.note
+        value=round_out(metric.value, digits),
+        unit=metric.unit,
+        quality=metric.quality,
+        note=metric.note,
     )
 
 
-def _r(value: float | None, digits: int) -> float | None:
+def round_out(value: float | None, digits: int) -> float | None:
     """Rounds for output, so results do not suggest more precision than the method has."""
     return None if value is None else round(float(value), digits)
 
 
-def _weaker(a: Quality, b: Quality) -> Quality:
+def weaker(a: Quality, b: Quality) -> Quality:
     order = {"measured": 0, "estimated": 1, "unavailable": 2}
     return a if order[a] >= order[b] else b
