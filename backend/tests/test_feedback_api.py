@@ -5,7 +5,7 @@ import pytest
 from app.calibration.registry import ADAPTIVE, DEFAULT_VALUES
 from app.pipeline.runner import PipelineDeps
 from app.worker import Worker
-from tests.conftest import fake_vad, make_words, no_pitch
+from tests.conftest import fake_vad, make_words, no_pitch, no_resonance
 from tests.test_feedback import recording
 
 
@@ -536,6 +536,7 @@ def worker_with_a_short_gap(session_factory, data_dir, clock):
             transcriber=transcriber,
             detect_speech=fake_vad([(0.5, 4.5), (4.95, 7.0)]),
             measure_pitch=no_pitch,
+            measure_resonance=no_resonance,
         )
         return Worker(session_factory, deps, data_dir=data_dir, clock=clock)
 

@@ -12,13 +12,15 @@ top to bottom and understand what each part does and why it was built that way.
 | [README.md](README.md) | The commands to install, run and check the app |
 
 The documents are updated at the end of every phase. Every phase in the original plan
-(0 to 6) is built, Phase 7 added what Phase 6 had left out, and Phase 8 joined the Monologue
-screen and Daily Practice into one flow. If the code and a document ever disagree, the code
+(0 to 6) is built, Phase 7 added what Phase 6 had left out, Phase 8 joined the Monologue
+screen and Daily Practice into one flow, and Phase 9 added where a voice sits (its pitch
+and its resonance) and an optional voice goal. If the code and a document ever disagree, the code
 is right and the document needs fixing.
 
-**Last updated:** end of Phase 8 (a list of monologues, Daily Practice done on one of
-them with each step's tools inside it, takes stored under their monologue, and General
-Practice left for speaking that has no original to compare with).
+**Last updated:** end of Phase 9 (every result says where the voice sat, in pitch and in
+resonance, for the recording and for each phrase; a speaker may choose to keep their
+voice lower or higher, and the coaching then follows that). Before that, Phase 8 (a list
+of monologues, Daily Practice done on one of them, takes stored under their monologue).
 
 ## 1. What this app is
 
@@ -59,6 +61,15 @@ Practice: its misheard words can be corrected, and mistakes in its pauses report
 counts up everything you have said so far, and on request the local AI model puts that
 count into a few sentences. That summary is only something to read.
 
+**Where your voice sits** (Phase 9) is part of every result. The app measures the pitch
+of the voice and its resonance (how deep or bright it sounds), and places each in one of
+three stated ranges: lower, neutral or higher, with how far into the range it lies. It
+does this for the whole recording and for every phrase. The ranges describe how a voice
+is typically heard; the app never says who is speaking. If you are working on your voice
+you can choose a goal, "keep my voice lower" or "keep my voice higher", and the coaching
+then points at the phrases that left that range and gives a drill. With no goal, nothing
+about it is judged.
+
 All three programs can be started with one command: `./run.sh`.
 
 ## 2. What is built so far
@@ -74,6 +85,7 @@ All three programs can be started with one command: `./run.sh`.
 | 6 | Feedback and automatic calibration | Feedback controls beside each pause, phrase and correction; the list of what was said; the calibration panel with undo, reset and on/off; revisions in the header and history | Storing feedback; deciding what each piece counts towards; the adjustment rules; versions of the settings; corrected transcripts and fresh analyses as new revisions; 9 new endpoints, 3 new tables | **Built** |
 | 7 | What Phase 6 left out, and one command to start the app | Picking the word a missed pause came after; feedback controls on a reference, on the Monologue screen; "What your feedback adds up to" in the calibration panel, with a button to ask the AI model | Feedback and transcript corrections on references; the rule that a setting needs a report from one of your own takes; the facts counted from the feedback; a third kind of job that has the AI model word them, with checks; 2 new endpoints, 1 new table; `run.sh` | **Built** |
 | 8 | Monologues and Daily Practice as one flow | The Monologues list; Daily Practice on a chosen monologue, with the tools of each step under it; the script of the original; rounds ("practise again"); a page for a take's full analysis; General Practice without the reference comparison | Which monologue a take belongs to; the monologues as a list with their takes counted; deleting a monologue with its takes; the General Practice history narrowed to takes that belong to none; 2 new endpoints, 2 new database columns | **Built** |
+| 9 | Where a voice sits, and a voice goal | The "Where your voice sits" section of every result (two cards, a table per phrase, the ranges and limits); the goal list on the recording forms, remembered in the browser | Resonance measured from the formants; pitch and resonance placed in three ranges, for the recording and each phrase; the goal carried from the form to the coaching; two new findings and four templates; a check on the AI model's wording; 1 new form field, 1 new database column, no new endpoint | **Built** |
 
 Phase 1 was a frontend-only phase: the checklist runs completely in the browser and never
 calls the backend. Phase 2 was a backend-only phase. Phase 3 is where the two meet: the
@@ -89,6 +101,10 @@ Phase 8 was not in the plan either. It came from using the app: the daily routin
 always done on a monologue, so keeping the routine on one screen and the monologue on
 another made no sense. It is mostly frontend work, with a small backend part (a take
 remembers its monologue), and it changes no measurement.
+Phase 9 also came from use: a speaker who is working on how their voice is heard asked
+whether the app could show it. It is mostly science: a new measurement (resonance) that
+was tried on recordings with known answers before anything was shown, the ranges, and
+what the AI model may and may not say about them.
 
 ## 3. The big picture
 
@@ -175,6 +191,8 @@ monologue coach/
 | Reference recordings: their measurements | The same SQLite file, as analyses with the role "reference" | Only this computer | **Built** | Backend document |
 | Reference recordings: their audio | `backend/data/audio/`, when kept (the default for a reference) | Only this computer | **Built** | Backend document |
 | The waveform outline of each recording | The same SQLite file, in its own column; sent only when the picture is switched on | Only this computer | **Built** | Science document |
+| Where the voice sat, and the ranges that placed it | Inside each stored result, in the same SQLite file | Only this computer | **Built** | Science and backend documents |
+| The voice goal last chosen | The browser's `localStorage`. Each result also records the goal it was made with | Only this browser on this device | **Built** | Frontend document |
 | The ID of an analysis in progress | The browser's `localStorage`, until the job ends | Only this browser on this device | **Built** | Frontend document |
 | A recording you just made or chose | The page's memory, until the tab is closed or refreshed | Only this tab | **Built** | Frontend document |
 | Uploaded recordings | `backend/data/uploads/`, deleted once analysed | Only this computer | **Built** | Backend document |
@@ -362,6 +380,28 @@ are in their own documents.
   comparison of a take with an original it was not recorded for is a question nobody
   asked.
 
+### G15. The app describes a voice, and never says who is speaking
+
+- **Chosen:** pitch and resonance are placed in a lower, a neutral or a higher range.
+  Each range is explained once, by how such a voice is *typically heard* (as masculine,
+  either way, as feminine). The speaker is never labelled, on screen, in the stored
+  result or in the coaching. A voice is judged against a range only when the speaker has
+  chosen a goal, and then only as "inside" or "outside" the range they chose.
+- **Why:** the feature was asked for by someone whose voice is heard differently from how
+  they want it to be, and it has to serve them without telling anyone what they are. Two
+  measurements cannot know that. They can say where a sound sits, which is also all that
+  practice can change. Keeping the goal a direction ("lower" or "higher") makes it work
+  the same for any speaker, in either direction, for any reason.
+- **Where it is enforced:** in the wording written by code (science decision S78), in
+  what the AI model is shown and in a check on what it writes (S81), and on screen
+  (frontend decision F79).
+- **Decided against:** *a "masculine/feminine" score or label for the speaker*: a guess
+  about a person, with nothing behind it that could be checked. *Judging the voice by
+  default*: the app's own position is still that a voice's register is nobody's mistake.
+- **Honest limit:** the ranges are rough, the resonance ranges were set from synthesised
+  voices only, and how a voice is heard depends on much that is not measured here. The
+  screens say so beside the figures.
+
 ## 7. Glossary
 
 | Word | Meaning |
@@ -395,6 +435,10 @@ are in their own documents.
 | **Monologue** | One piece you practise: its reference recording, and the takes you recorded for it. |
 | **Free take** | A take that belongs to no monologue: one made in General Practice. |
 | **Round** | One pass through the five steps of the daily routine. One round is the day's routine; more are extra. |
+| **Pitch** | How high or low the note of a voice is, in Hz. |
+| **Resonance** | How deep or bright a voice sounds, apart from its note. Measured here as the spacing of its formants, in Hz. |
+| **Voice range** | Where a voice sits: its pitch and its resonance, each in the lower, neutral or higher range, with a percentage saying how far into the range. |
+| **Voice goal** | Your own choice to keep your voice lower or higher. Optional; it changes the coaching and no measurement. |
 | **Line-up (alignment)** | Working out which word of one recording is which word of the other. |
 | **Waveform** | A picture of a sound wave. Here it is only ever a picture: nothing is measured from it. |
 | **Feedback** | Something you say about one analysis: a label, a report, or a note for the record. |

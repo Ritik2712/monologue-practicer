@@ -77,6 +77,8 @@ def test_jobs_stored_before_coaching_existed_become_analysis_jobs(tmp_path):
             text("SELECT calibration_version, root_id, revision, revision_reason FROM analyses")
         ).one() == (1, "a1", 1, None)
         assert connection.execute(text("SELECT source_analysis_id FROM jobs")).scalar_one() is None
+        # A job queued before voice goals existed was submitted with none.
+        assert connection.execute(text("SELECT voice_goal FROM jobs")).scalar_one() == "none"
         # A take stored before monologues existed belongs to none of them.
         assert connection.execute(text("SELECT monologue_id FROM jobs")).scalar_one() is None
         assert connection.execute(text("SELECT monologue_id FROM analyses")).scalar_one() is None

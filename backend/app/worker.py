@@ -99,6 +99,7 @@ class Worker:
             # Copied out now: the row is not read again until the job finishes.
             audio_path, analysis_id = job.audio_path, job.analysis_id
             profile, language = job.profile, job.language_hint
+            voice_goal = job.voice_goal
 
         self.current_job_id = job_id
         started = time.monotonic()
@@ -126,7 +127,9 @@ class Worker:
             elif kind == job_queue.SUMMARY:
                 saved = self._sum_up_feedback(job_id, on_stage, check)
             else:
-                saved = self._analyse(job_id, audio_path, profile, language, role, on_stage, check)
+                saved = self._analyse(
+                    job_id, audio_path, profile, language, role, voice_goal, on_stage, check
+                )
             if not saved:
                 raise JobCancelled
             logger.info("job %s succeeded in %.1fs", short_id, time.monotonic() - started)
@@ -164,6 +167,7 @@ class Worker:
         profile: str,
         language: str,
         role: str,
+        voice_goal: str,
         on_stage: Callable[[str], None],
         check: Callable[[], None],
     ) -> bool:
@@ -184,6 +188,7 @@ class Worker:
             uploads.absolute(audio_path, self.data_dir),
             profile=profile,
             language=language,
+            voice_goal=voice_goal,
             settings=analysis_settings,
             max_seconds=self.max_audio_seconds,
             deps=self.deps,

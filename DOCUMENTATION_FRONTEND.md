@@ -9,9 +9,10 @@ is in [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md).
 
 Everything described here is built.
 
-**Last updated:** end of Phase 8 (the Monologues list, Daily Practice done on a chosen
-monologue with each step's tools under it, rounds, the script of the original, a page for
-a take's full analysis, and General Practice without the reference comparison).
+**Last updated:** end of Phase 9 (the "Where your voice sits" section of every result,
+and the optional voice goal on the recording form). Before that, Phase 8 (the Monologues
+list, Daily Practice done on a chosen monologue, rounds, the script of the original, a
+page for a take's full analysis).
 
 ## Contents
 
@@ -94,6 +95,7 @@ frontend/
             ├── validation.ts         Checks a chosen file before sending it
             ├── compare.ts            The change between two attempts
             ├── coaching.ts           Small decisions about showing coaching
+            ├── voiceRange.ts         Small decisions about showing where a voice sits
             ├── feedbackStore.ts      The feedback on the result on view, and the calibration
             ├── feedback.ts           Small decisions about showing feedback and calibration
             ├── waveform.ts           The arithmetic behind the waveform picture
@@ -107,6 +109,7 @@ frontend/
             │   ├── RunPanel.tsx          Progress, cancel, retry, failure
             │   ├── Results.tsx           Everything shown for one analysis
             │   ├── Coaching.tsx          Corrections, drills, what works, targets, caveats
+            │   ├── VoiceRangeSection.tsx Where the voice sits: pitch and resonance, phrase by phrase
             │   ├── FeedbackControls.tsx  The controls beside a pause, a phrase and a correction
             │   ├── FeedbackSection.tsx   Everything said about one result, gathered in one place
             │   ├── CalibrationPanel.tsx  The settings in force; undo, reset, on/off
@@ -615,6 +618,7 @@ it rests on.
 | `validation.ts` | Is this file an audio type, non-empty and under the size limit? |
 | `compare.ts` | The difference between two attempts, metric by metric. |
 | `coaching.ts` | What to play for a piece of evidence, which phrase a correction is practised on, what to do when the AI model is unavailable, and whether asking again could help. |
+| `voiceRange.ts` | The words for each range and marker, where the mark goes on a scale bar, and which phrases left the range aimed for. Works no measurement out. |
 | `feedbackStore.ts` | Holds the feedback on the result on view and the calibration; one request per action. No React. |
 | `feedback.ts` | Which feedback belongs to which pause or phrase, the silences inside a phrase, whether labels have changed, how the minimum pause is worded. |
 | `timeline.ts` | Scales, axis ticks and "what is happening at this moment" for the chart. |
@@ -771,6 +775,7 @@ From top to bottom, in `Results.tsx`:
 | Pace | Your typical pace, pace variation, slowest and fastest segment; phrases well away from your typical pace; the segments table, each row with **Report a problem** (6.18) |
 | Pauses | Average, total, pause share, silence before/after; the pauses table, each row with a **Your feedback** list (6.18) |
 | Voice | Loudness and pitch variation, pitch range, median pitch, voice above background, hesitation sounds, breaths (unavailable); emphasis candidates |
+| Where your voice sits | Pitch and resonance, each placed in a lower, neutral or higher range, for the recording and for every phrase. See 6.9b |
 | Your feedback on this result | Everything said about this result, with what each piece does (6.18) |
 | Compare | This attempt against an earlier one |
 | Details | The transcript, and the settings that produced the numbers |
@@ -846,6 +851,78 @@ in yet, and the button becomes "Write the coaching again with my labels". In thi
 the button works even when the AI model is not available: coaching from the fixed rules
 that knows about the labels is already an improvement, and the line beside the button says
 that is what will happen.
+
+### 6.9b Where your voice sits, and the voice goal
+
+Added in Phase 9. How pitch and resonance are measured, what the three ranges are and
+what the percentage means is in the science document, sections 9a and 9b. This section is
+about how they are shown.
+
+**The goal, on the recording form.** Under "Language spoken", in General Practice and in
+step 4 of Daily Practice, there is one more list box, **Voice goal (optional)**:
+
+| Choice | The line under it |
+| --- | --- |
+| No goal | The general note only |
+| Keep my voice lower | "Coaching will point at the phrases where your pitch or resonance left the lower range." and the general note |
+| Keep my voice higher | The same, for the higher range |
+
+The general note says that the voice is measured whether or not a goal is chosen, that
+without one nothing about it is judged, and that the ranges describe how a voice is
+typically heard and not who is speaking. The choices and both texts come from the backend
+(`GET /api/analysis-options`), like the profiles. The form that adds a monologue's
+original does not show the list: a reference has no goal.
+
+The choice is **remembered in the browser** (section 7), because someone working on their
+voice wants the same goal every day and should not have to set it for each take. It is
+sent with the recording, and the result keeps the goal it was made with. Changing the
+list afterwards changes nothing already on screen.
+
+**The section, in every result** (`VoiceRangeSection.tsx`), under "Voice". For a
+reference it is headed "Where the voice sits", since it is not the user's voice.
+
+```
+ Where your voice sits
+ ┌ Your goal is to keep your voice in the lower range. 3 of 4 phrases stayed in it; ┐
+ └ the one that did not is marked below.                                            ┘
+ ┌ Pitch  [Measured] ─────────────┐  ┌ Resonance  [Measured] ─────────┐
+ │ 125 Hz                         │  │ 1,017 Hz                       │
+ │ Lower range (under 145 Hz),    │  │ Lower range (under 1040 Hz),   │
+ │ 34% of the way into it.        │  │ 23% of the way into it.        │
+ │ ▓▓▓▓▓▓▓●▓▓▓│░░░░│▓▓▓▓▓▓▓▓▓▓▓  │  │ ▓▓●▓▓│░░░│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓   │
+ │    Lower   Neutral   Higher    │  │ Lower Neutral    Higher        │
+ └────────────────────────────────┘  └────────────────────────────────┘
+ Together: lower. Typically heard as a masculine voice.
+ Phrase by phrase (3 lower, 1 higher)
+  Phrase          Pitch              Resonance           Together            Listen
+  1 at 0:00.0     125 Hz             1,019 Hz            Lower                 ▶
+    "You…"        Lower range, 33%   Lower range, 21%
+  2 at 0:05.1     182 Hz             1,197 Hz            Higher                ▶
+    "I am…"       Higher range, 9%   Higher range, 49%   Outside your goal
+ ▸ The ranges, and what the percentage means
+```
+
+| Part | What it shows | Notes |
+| --- | --- | --- |
+| The goal line | One sentence counted from the phrases: how many stayed in the range | Only with a goal. Counts only the phrases that could be placed |
+| Two cards | The value in Hz, the range with its edges, the position in words, and a bar | A value that could not be measured shows the reason in place of a number, never 0. An estimate carries the **Estimate** label and says why |
+| The bar | The three ranges drawn in proportion to their width, with a mark at the value | Decoration for sighted users: everything it says is also in the words above it, so it is hidden from screen readers |
+| Together | The one-word marker and how such a voice is typically heard | For "mixed": "Pitch and resonance point different ways, so a listener is given two different cues." |
+| Phrase by phrase | A table: each phrase's pitch, resonance and marker, and a Play button | A phrase that left the goal's range is marked **Outside your goal** in words, not only by colour |
+| The ranges (closed by default) | The table of all three ranges for both scales, as stored with this result; what the percentage means; the limits | Read from the result, so an old result always shows the ranges that placed it |
+
+The position is worded differently for the neutral range ("60% of the way to its
+middle"), because there the percentage counts from the edges inwards.
+
+A result stored before Phase 9 has no voice range. The section then says so, and that
+analysing the recording again adds it if the recording was kept. A recording with no
+speech says there is no voice to place.
+
+**In the coaching.** With a goal, the two voice findings can appear as corrections ("Keep
+your pitch in the lower range", "Deepen your resonance") or under "What is already
+working", like any other finding, with **Measured** beside them and a Play button for the
+phrase furthest from the range. That needed no new component: the Coaching section draws
+whatever findings the backend sends (6.9a).
 
 ### 6.10 The timeline chart
 
@@ -1365,14 +1442,15 @@ request carries a number, and only the answer to the latest one is used.
 
 ## 7. What is saved in the browser
 
-Two `localStorage` keys, and nothing else:
+Three `localStorage` keys, and nothing else:
 
 | Key | Written by | Holds |
 | --- | --- | --- |
 | `monologue-coach.practice.v1` | Daily Practice | All saved checklist days, as JSON: each day's steps, the monologue its round is on, and the rounds finished earlier that day |
 | `monologue-coach.general.active-job` | Daily Practice, Monologues, General Practice | The ID of an analysis still in progress, so a refresh can pick it up. Removed when the job ends |
+| `monologue-coach.voice-goal` | The recording form (Phase 9) | `lower` or `higher`: the voice goal last chosen. Not written at all for "No goal" |
 
-A third key, `monologue-coach.reference.selected`, was written until Phase 8: it
+Another key, `monologue-coach.reference.selected`, was written until Phase 8: it
 remembered which reference was chosen. The monologue being practised now says which
 reference is meant, so the key is no longer written, and is removed the first time the
 app opens.
@@ -2167,14 +2245,87 @@ Each entry says what was chosen, what was considered, and what was decided again
   Practice's. The store keeps recordings for every screen in one map, so it also keeps a
   note of which ones belong to a monologue.
 
+### F78. Where the voice sits has a section of its own, under "Voice"
+
+- **Chosen:** a separate section, "Where your voice sits", after the Voice section.
+- **Why:** the Voice section is about *movement* (how much loudness and pitch vary), and
+  every figure in it is relative to the speaker. This is about *where* the voice is,
+  against stated ranges, with a table per phrase and its own limits to explain. Mixed
+  into the Voice tiles it would have looked like one more variation figure.
+- **Decided against:** *a column in the Pace table* (that table is already wide, and is
+  about pace); *showing it only when a goal is set* (the user asked for it on every
+  recording, and it is a measurement like any other).
+
+### F79. The range is said in words and Hz; the bar is an extra
+
+- **Chosen:** each card states the value, the range with its edges ("Lower range (under
+  145 Hz)") and the position in a sentence. The bar under it is hidden from screen
+  readers.
+- **Why:** the app's rule is that a number comes with what it is. "34%" alone invites
+  reading it as "34% masculine"; "34% of the way into it", under the range and its
+  edges, cannot be read that way. And a bar with a dot cannot be the only way to learn
+  something (the same reasoning as the chart, F25).
+- **Decided against:** *a single gauge from "masculine" to "feminine"*: it is the
+  picture of the claim the app does not make. *Colour-coding the ranges blue and pink*:
+  the same, in colour. The three ranges are drawn in the page's greys, with the mark
+  in its one accent colour.
+
+### F80. The words come from one file, the ranges from the result
+
+- **Chosen:** `voiceRange.ts` holds the labels ("Lower range", "Typically heard as a
+  masculine voice."). The edges of the ranges are read from `voiceRange.bands` in the
+  result on view, never written into the screen.
+- **Why:** if the ranges are ever revised, an old result must still show the ranges that
+  placed it (the same reasoning as the minimum pause, F58). The labels are few and are
+  the screen's wording of three fixed ids, like the stage names.
+- **Decided against:** *working the range or the percentage out in the browser from the
+  value*: two implementations of one rule. The backend places; the screen displays.
+
+### F81. The goal is remembered in the browser, and belongs to no monologue
+
+- **Chosen:** one `localStorage` key holds the goal last chosen. It applies to every
+  recording made in that browser, in General Practice and in Daily Practice, until
+  changed. "No goal" removes the key.
+- **Why:** a goal is about the speaker, not about a piece. Someone working on their voice
+  wants it on every take; someone who is not should never be asked. The backend keeps no
+  profile of the user, and the result records the goal it was made with, so nothing is
+  lost if the browser forgets.
+- **Decided against:** *a setting stored in the backend* (there is no user there to hang
+  it on, and B63 explains why a result must keep its own); *asking on every take* (a
+  third list to set each time, defaulting to the answer most people never change).
+
+### F82. "Outside your goal" is worked out from the markers the backend sent
+
+- **Chosen:** a phrase is marked when a goal is set, the phrase has a marker, and the
+  marker is not the goal's range. "Mixed" and "neutral" count as outside.
+- **Why:** it is a comparison of two words the result already carries, so the screen and
+  the coaching cannot disagree about a measurement. A phrase that could not be placed is
+  not marked and not counted: unknown is not "outside".
+- **Honest difference from the coaching:** the coaching counts pitch and resonance
+  separately ("2 of 4 phrases stayed in it for pitch"), because each has its own drill.
+  The table marks a phrase on the two together. Both are stated on screen in their own
+  words; the numbers can differ and both be right.
+
+### F83. The goal list is on the recording forms only
+
+- **Chosen:** General Practice and step 4 of Daily Practice show it. The form that adds
+  a monologue's original does not, and there is no way to change the goal of a result
+  already made.
+- **Why:** the backend ignores a goal on a reference (B66), so offering one would be a
+  control that does nothing. And a result is a record: its goal is part of how its
+  coaching was written.
+- **Honest limit:** "Analyse again" keeps the goal the result already has. To read a
+  recording against another goal, the file has to be submitted again with that goal
+  chosen.
+
 ### Decisions already made for later phases
 
 None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 9. Tests
 
-Run with the command in the README. Current result: **292 tests pass**. 42 are new in
-Phase 8.
+Run with the command in the README. Current result: **309 tests pass**. 17 are new in
+Phase 9.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
@@ -2182,7 +2333,8 @@ Phase 8.
 | `features/practice/practiceStore.test.ts` | 34 | Saving and restoring after a refresh, new-day rollover, midnight edge cases, reset today vs. clear history, damaged or unavailable storage, two tabs. A day on which a monologue was only chosen is not saved; the monologue and the rounds survive a refresh; reset today clears every round and stays on the monologue; the next day starts with no monologue; **a day saved before Phase 8 still loads**, and can then be given a monologue; a monologue or round that does not read is dropped without losing the day |
 | `features/monologue/script.test.ts` | 6 | One line per phrase with the measured pause after it and none after the last; each phrase's pace and where to play it from; only the word that stood out is marked, not another saying of the same word; a phrase with no timed words falls back to its text, Hindi included; a recording with no words gives an empty script, not a broken one |
 | `features/practice/format.test.ts` | 9 | `03:00`-style text, durations, local dates vs. UTC |
-| `features/general/generalStore.test.ts` | 70 | *(Rewritten in part for Phase 8; the last sentences of this row say what replaced the tests about a chosen reference.)* Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh. A corrected reference becomes the chosen one, the take on view stays, and the comparison is fetched again with it. **Monologues (Phase 8):** the list loaded, and none watched until a screen says so; the history asking only for takes that belong to no monologue; watching one loads its takes and chooses its original, at once or when the list arrives; a late answer for the monologue watched before is ignored; an earlier revision of the original stays open until the original itself changes; a take sent with its monologue, shown, and every list brought up to date; adding a monologue without disturbing the take on view; deleting one with its takes; clearing the General Practice history leaving a monologue's take, run and recording. **The comparison:** fetched for a take of the watched monologue; **never for a take that belongs to none, and never with another monologue's original**; never twice for one pair; an out-of-date answer ignored |
+| `features/general/voiceRange.test.ts` | 12 | The ranges are read from the result, one set per scale, and not guessed when it carries none; each range in words; the percentage worded as a position, and differently for the neutral range; the bar drawn in proportion, with the mark at the end for a value beyond it; nothing marked with no goal; **the measured phrases that sat anywhere but the range aimed for are marked**, and one that could not be placed is not; the goal sentence counts only what was measured; the count of phrases lists only the markers that occur |
+| `features/general/generalStore.test.ts` | 75 | *(Five more in Phase 9: the voice goal is none until chosen, and a recording is then sent without one; once chosen it is remembered between visits and sent with the next take; it is forgotten when set back to none; a remembered value that is not a goal is ignored; changing it changes nothing on view.)* *(Rewritten in part for Phase 8; the last sentences of this row say what replaced the tests about a chosen reference.)* Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh. A corrected reference becomes the chosen one, the take on view stays, and the comparison is fetched again with it. **Monologues (Phase 8):** the list loaded, and none watched until a screen says so; the history asking only for takes that belong to no monologue; watching one loads its takes and chooses its original, at once or when the list arrives; a late answer for the monologue watched before is ignored; an earlier revision of the original stays open until the original itself changes; a take sent with its monologue, shown, and every list brought up to date; adding a monologue without disturbing the take on view; deleting one with its takes; clearing the General Practice history leaving a monologue's take, run and recording. **The comparison:** fetched for a take of the watched monologue; **never for a take that belongs to none, and never with another monologue's original**; never twice for one pair; an out-of-date answer ignored |
 | `features/general/feedbackStore.test.ts` | 28 | Feedback and calibration loaded together for the result on view; an answer about a result the user has left is dropped, but its calibration kept; saving, removing, and staying busy until every save has finished; an adjustment announced until dismissed; a failed save keeps what was there and says why; undo and reset reword the list on view; the calibration's last good answer survives a failed check. The summary: loaded on request; asking the AI model and checking every two seconds until it has picked; a second click ignored; a refusal shown with the facts still on screen; a failed job shown and the checking stopped; checking carried on while the backend is briefly away; stopping a request; counted again after every change to feedback or settings, and not before the panel has asked; a late answer never replacing a newer one |
 | `features/general/feedback.test.ts` | 27 | Which entry belongs to which pause, phrase or correction (a rating never jumping to another correction); the silences inside a phrase, in order; the word before a moment; labels new, changed and removed since the coaching was written; the minimum pause read from the result and worded; when a result was made with older settings; how each piece of feedback and each revision is named. Picking a word: the gap after every word but the last, in time order, kept inside the phrase; **the silence a report will be about is the nearest within half a second**; words shown without punctuation, a Hindi word kept whole; which word a saved report came after, looking only at its own phrase. A reference is offered the two reports and neither label. The line beside the AI button in every state |
 | `features/general/waveform.test.ts` | 16 | The shared timeline is as long as the longer recording; a shift moves a recording without changing its length; points that share a pixel keep their extremes; a quiet recording stays quiet unless stretched; nothing is drawn beyond full scale; round time-axis values, including before zero; where a moment falls in each recording |
@@ -2379,3 +2531,29 @@ with the original of the monologue watched before (decision F75).
 component as in General Practice; the take was sent from a file); a screen reader; the
 checklist left open across midnight with a monologue in the address; and whether three
 minutes is a sensible length for a step that now includes an analysis.
+
+### Checked by hand in the browser at the end of Phase 9
+
+With the real API, worker, speech model and AI model, in a complete copy of the project
+with its own database on other ports. The end-to-end script (backend document, section
+10) had first put into it a deeper voice, a higher voice, one recording with both, and
+two recordings with hiss.
+
+| Check | Result |
+| --- | --- |
+| The recording form in General Practice | "Voice goal (optional)" under the language, with three choices; the general note under it |
+| Choose "Keep my voice lower" | The line under the list gains "Coaching will point at the phrases where your pitch or resonance left the lower range." |
+| Reload the page | The list still says "Keep my voice lower"; `localStorage` holds `monologue-coach.voice-goal` = `lower` |
+| Open the result of the deeper voice | "Where your voice sits": two cards, pitch 125 Hz and resonance 1,017 Hz, each "Lower range", with its position and a bar with the mark in the left part; "Together: lower. Typically heard as a masculine voice." |
+| Open the recording with two voices, made with the goal "lower" | The goal line: one of two phrases stayed in it. The table has two rows; the second, 182 Hz and 1,197 Hz, is "Higher" and marked **Outside your goal** |
+| Open "The ranges, and what the percentage means" | The table of both scales with their edges, the meaning of the percentage, and the limits |
+| The browser console, throughout | No errors |
+| 375 px wide | No sideways scrolling of the page; the phrase table scrolls inside its own box |
+| A production build (`npm run build`), in the copy | All six routes built |
+
+**Not checked:** a real microphone and a real voice, as in every phase; a screen reader
+(the bar is hidden from it on purpose, and the words beside it were read on screen, not
+heard); the recordings with hiss and a result stored before Phase 9, whose wording is
+covered by tests and by the end-to-end script but was not looked at in the browser; and
+the section inside step 4 of Daily Practice, which is the same component on a narrower
+page.

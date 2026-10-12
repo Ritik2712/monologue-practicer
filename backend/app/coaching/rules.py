@@ -8,7 +8,14 @@ language model a starting idea for each drill.
 from dataclasses import dataclass
 
 from app import profiles, schemas
-from app.coaching.findings import FindingSet, Found, number, seconds_text, segment_evidence
+from app.coaching.findings import (
+    VOICE_KINDS,
+    FindingSet,
+    Found,
+    number,
+    seconds_text,
+    segment_evidence,
+)
 from app.coaching.settings import CoachingSettings
 
 MAX_CORRECTIONS = 3
@@ -180,6 +187,70 @@ TEMPLATES: dict[tuple[str, str], Template] = {
         target="Give each phrase one word that clearly stands out.",
         technique="choosing the one word that matters most and lifting only that word",
     ),
+    # Where the voice sits. These apply only when the speaker chose a goal, and say nothing
+    # about the speaker: they are about moving a sound towards a range.
+    ("voice_pitch", "lower"): Template(
+        title="Keep your pitch in the lower range",
+        why="In these phrases your pitch rose out of the range you set out to keep.",
+        drill=(
+            "Hum a comfortable low note, one you can hold without pressing, and slide from it "
+            "straight into {line}. Let the end of the phrase fall instead of rising. Repeat 3 "
+            "times, and stop if your throat feels strained."
+        ),
+        target="Keep every phrase's pitch in the lower range.",
+        technique=(
+            "a comfortable low hum that slides straight into the line, with the end of the "
+            "phrase falling"
+        ),
+    ),
+    ("voice_pitch", "raise"): Template(
+        title="Keep your pitch in the higher range",
+        why="In these phrases your pitch dropped out of the range you set out to keep.",
+        drill=(
+            "Hum a comfortable higher note, one you can hold without squeezing, and slide from "
+            "it straight into {line}. Keep the end of the phrase from dropping. Repeat 3 "
+            "times, and stop if your throat feels strained."
+        ),
+        target="Keep every phrase's pitch in the higher range.",
+        technique=(
+            "a comfortable higher hum that slides straight into the line, with the end of the "
+            "phrase kept up"
+        ),
+    ),
+    ("voice_resonance", "lower"): Template(
+        title="Deepen your resonance",
+        why=(
+            "Resonance is how deep or bright a voice sounds, apart from its note. In these "
+            "phrases it was brighter than the range you set out to keep."
+        ),
+        drill=(
+            "Begin a yawn to feel the back of your throat open. Keep that open space and say "
+            "{line} slowly, on a relaxed “aw” shape. Repeat 3 times, and stop if your throat "
+            "feels strained."
+        ),
+        target="Keep every phrase's resonance in the lower range.",
+        technique=(
+            "the open throat of a beginning yawn, kept while the line is said slowly on a "
+            "relaxed “aw” shape"
+        ),
+    ),
+    ("voice_resonance", "raise"): Template(
+        title="Brighten your resonance",
+        why=(
+            "Resonance is how deep or bright a voice sounds, apart from its note. In these "
+            "phrases it was deeper than the range you set out to keep."
+        ),
+        drill=(
+            "Smile slightly and bring your tongue forward, as for “ee”. Say {line} with the "
+            "sound placed at the front of your mouth. Repeat 3 times, and stop if your throat "
+            "feels strained."
+        ),
+        target="Keep every phrase's resonance in the higher range.",
+        technique=(
+            "a slight smile and a forward tongue, as for “ee”, with the sound placed at the "
+            "front of the mouth"
+        ),
+    ),
 }
 
 FALLBACK_TEMPLATE = Template(
@@ -209,6 +280,8 @@ STRENGTH_NOTES: dict[tuple[str, str | None], str] = {
         "The pauses you marked as intentional are doing what you meant. Keep placing them "
         "on purpose."
     ),
+    ("voice_pitch", None): "Your pitch stayed in the range you set out to keep. Keep it.",
+    ("voice_resonance", None): ("Your resonance stayed in the range you set out to keep. Keep it."),
     ("fast_segment", None): "This change of pace gives contrast. Keep it if it was intended.",
     ("slow_segment", None): "This change of pace gives contrast. Keep it if it was intended.",
 }
@@ -219,6 +292,9 @@ NOTHING_TO_CORRECT = "Record the same passage again and see whether the measurem
 
 def direction(found: Found, wants: dict[str, str]) -> str:
     """Which way the measurement should move for this issue: "raise" or "lower"."""
+    if found.kind in VOICE_KINDS:
+        # Decided by the goal the speaker chose, not by any profile.
+        return found.data.get("direction", "lower")
     if found.kind in ("fast_segment", "hesitations", "accidental_pauses"):
         return "lower"
     if found.kind in ("slow_segment", "no_emphasis", "no_pauses"):

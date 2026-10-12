@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from app.pipeline import acoustics
+from app.pipeline import acoustics, resonance, voice_range
 from app.pipeline.audio import clipping_ratio, decode_audio
 from app.pipeline.fillers import find_hesitations
 from app.pipeline.metrics import (
@@ -48,8 +48,13 @@ from app.schemas import (
     PauseEvent,
     PipelineInfo,
     Profile,
+    SegmentVoice,
     ShortSilence,
     SpeechSegment,
+    VoiceGoal,
+    VoicePhraseCounts,
+    VoicePlacement,
+    VoiceRange,
     WordTiming,
 )
 
@@ -89,6 +94,10 @@ WARNINGS = {
         "The background is loud compared with the voice, so pause detection may be less accurate."
     ),
     "pitch_unavailable": "There was too little clearly voiced sound to measure pitch.",
+    "resonance_noisy": (
+        "The background is loud enough to make the voice's resonance read brighter than it "
+        "is, so the resonance figures are estimates."
+    ),
     # Added by `app.transcript_correction`, never by an analysis of the audio.
     "transcript_corrected": (
         "You corrected the transcript, and this revision uses your words. Word counts and WPM "
@@ -114,6 +123,9 @@ class PipelineDeps:
     measure_pitch: Callable[[np.ndarray, list[Segment]], acoustics.PitchTrack] = (
         acoustics.measure_pitch
     )
+    measure_resonance: Callable[[np.ndarray, list[Segment]], resonance.ResonanceTrack] = (
+        resonance.measure_resonance
+    )
 
 
 def run_analysis(
@@ -124,6 +136,8 @@ def run_analysis(
     settings: AnalysisSettings,
     max_seconds: float | None,
     deps: PipelineDeps,
+    voice_goal: VoiceGoal = "none",
+    voice_ranges: voice_range.VoiceRangeSettings = voice_range.DEFAULT_VOICE_RANGES,
     on_stage: Callable[[str], None] = lambda stage: None,
     check: Callable[[], None] = lambda: None,
     on_audio: Callable[[np.ndarray], None] = lambda samples: None,
@@ -189,6 +203,12 @@ def run_analysis(
         warnings.append("pitch_unavailable")
     check()
 
+    formants = deps.measure_resonance(samples, segments)
+    voice = _VoiceReader(formants, energy_summary.snr_db, voice_ranges)
+    if voice.noisy and formants.times.size:
+        warnings.append("resonance_noisy")
+    check()
+
     segment_ids = {id(segment): f"seg-{segment.index + 1}" for segment in segments}
     word_segment = {
         id(word): segment_ids[id(segment)] for segment in segments for word in segment.words
@@ -200,6 +220,7 @@ def run_analysis(
     segments_out = []
     for segment, pace_info, level in zip(segments, paces, segment_levels, strict=True):
         segment_pitch = pitch.median_hz(segment.start, segment.end, min_frames=5)
+        segment_voice = voice.of_segment(segment, segment_pitch)
         segments_out.append(
             SpeechSegment(
                 id=segment_ids[id(segment)],
@@ -230,6 +251,7 @@ def run_analysis(
                     if segment_pitch is not None and pitch_summary is not None
                     else None
                 ),
+                voice=segment_voice,
             )
         )
 
@@ -325,7 +347,109 @@ def run_analysis(
             pitch_tracker="librosa-pyin",
         ),
         warnings=[AnalysisWarning(code=code, message=WARNINGS[code]) for code in warnings],
+        voice_range=(
+            voice.of_recording(
+                pitch_summary.median_hz if pitch_summary else None, segments_out, voice_goal
+            )
+            if segments
+            else None
+        ),
     )
+
+
+class _VoiceReader:
+    """Places pitch and resonance in this app's ranges, for a phrase and for a recording."""
+
+    def __init__(
+        self,
+        formants: resonance.ResonanceTrack,
+        snr_db: float | None,
+        ranges: voice_range.VoiceRangeSettings,
+    ) -> None:
+        self.formants = formants
+        self.ranges = ranges
+        # With a loud background the resonance reads brighter than the voice is.
+        self.unusable = snr_db is not None and snr_db < resonance.UNAVAILABLE_BELOW_SNR_DB
+        self.noisy = (
+            snr_db is not None and snr_db < resonance.ESTIMATE_BELOW_SNR_DB and not self.unusable
+        )
+
+    def _placed(self, value: float | None, scale, quality: Quality) -> VoicePlacement | None:
+        if value is None:
+            return None
+        placement = voice_range.place(value, scale, self.ranges)
+        return VoicePlacement(
+            value_hz=round(value, 1),
+            band=placement.band,
+            percent=placement.percent,
+            quality=quality,
+        )
+
+    def _resonance(self, start: float, end: float, min_frames: int, enough: int):
+        if self.unusable:
+            return None
+        spacing = self.formants.spacing_hz(start, end, min_frames=min_frames)
+        few = self.formants.frame_count(start, end) < enough
+        return self._placed(spacing, "resonance", "estimated" if few or self.noisy else "measured")
+
+    def of_segment(self, segment: Segment, pitch_hz: float | None) -> SegmentVoice | None:
+        pitch = self._placed(pitch_hz, "pitch", "measured")
+        placed = self._resonance(
+            segment.start,
+            segment.end,
+            resonance.MIN_SEGMENT_FRAMES,
+            resonance.RELIABLE_SEGMENT_FRAMES,
+        )
+        if pitch is None and placed is None:
+            return None
+        return SegmentVoice(
+            pitch=pitch,
+            resonance=placed,
+            marker=voice_range.overall_marker(
+                pitch.band if pitch else None, placed.band if placed else None
+            ),
+        )
+
+    def of_recording(
+        self, pitch_hz: float | None, segments: list[SpeechSegment], goal: VoiceGoal
+    ) -> VoiceRange:
+        pitch = self._placed(pitch_hz, "pitch", "measured")
+        everything = (0.0, float("inf"))
+        placed = self._resonance(
+            *everything, resonance.MIN_RECORDING_FRAMES, resonance.MIN_RECORDING_FRAMES
+        )
+        typical = (
+            None
+            if placed is None
+            else self.formants.formants_hz(*everything, min_frames=resonance.MIN_RECORDING_FRAMES)
+        )
+        counts = VoicePhraseCounts()
+        for segment in segments:
+            marker = segment.voice.marker if segment.voice else None
+            name = marker or "unmeasured"
+            setattr(counts, name, getattr(counts, name) + 1)
+        note = None
+        if self.unusable:
+            note = (
+                "The background is too loud for resonance to be measured: it would read "
+                "far brighter than the voice is."
+            )
+        elif placed is None:
+            note = "There was too little clear, voiced sound to measure resonance."
+        elif self.noisy:
+            note = WARNINGS["resonance_noisy"]
+        return VoiceRange(
+            goal=goal,
+            pitch=pitch,
+            resonance=placed,
+            marker=voice_range.overall_marker(
+                pitch.band if pitch else None, placed.band if placed else None
+            ),
+            formants_hz=None if typical is None else [round(float(hz)) for hz in typical],
+            phrases=counts,
+            bands=self.ranges.to_dict(),
+            resonance_note=note,
+        )
 
 
 def word_quality_of(

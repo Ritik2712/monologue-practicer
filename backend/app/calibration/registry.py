@@ -41,6 +41,8 @@ CORRECTION_KINDS: dict[str, str] = {
     "slow_segment": "a slow phrase",
     "hesitations": "hesitation sounds",
     "no_emphasis": "emphasis",
+    "voice_pitch": "the range your pitch sits in",
+    "voice_resonance": "the resonance of your voice",
 }
 PRIORITY_PREFIX = "priority_"
 

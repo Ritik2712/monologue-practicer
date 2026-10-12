@@ -11,9 +11,11 @@ the slow work: measuring the audio and getting the coaching written.
 
 Everything described here is built.
 
-**Last updated:** end of Phase 8 (a take remembers the monologue it was recorded for; the
-monologues as a list; deleting a monologue with its takes: two new endpoints, two new
-columns, no new table).
+**Last updated:** end of Phase 9 (where the voice sits: resonance is measured, pitch and
+resonance are placed in three ranges for every phrase and for the recording, and a
+recording can be submitted with a voice goal: two new pipeline files, one new form field,
+one new column, no new endpoint and no new table). Before that, Phase 8 (a take remembers
+the monologue it was recorded for).
 
 ## Contents
 
@@ -133,6 +135,8 @@ backend/
 │       ├── segmentation.py   Speech regions -> segments and pauses
 │       ├── metrics.py        Words per minute and pause statistics
 │       ├── acoustics.py      Loudness, pitch, emphasis candidates
+│       ├── resonance.py      Resonance: how deep or bright the voice sounds, from its formants
+│       ├── voice_range.py    The three ranges for pitch and for resonance; the voice goals
 │       ├── fillers.py        Hesitation sounds
 │       ├── waveform.py       The outline of the sound wave, for drawing only
 │       ├── settings.py       The thresholds (0.5 s pause, 5 s long silence…)
@@ -145,7 +149,8 @@ backend/
 │       ├── 0003_references_and_waveforms.py         Adds role, title and the waveform outline
 │       ├── 0004_feedback_and_calibration.py         Adds feedback, calibration and revisions
 │       ├── 0005_feedback_summary.py                 Adds the notes the AI model picked out
-│       └── 0006_monologue_takes.py                  Adds the monologue a take was recorded for
+│       ├── 0006_monologue_takes.py                  Adds the monologue a take was recorded for
+│       └── 0007_voice_goal.py                       Adds the voice goal a recording was submitted with
 ├── tests/                See section 10
 └── data/                 Created on first run; not in git
     ├── monologue_coach.db    The database
@@ -312,6 +317,17 @@ It is checked before the file is saved, so an unknown one costs nothing: `404`
 `monologue_not_found`. The job's status carries it back as `monologueId`, and so does the
 result. Section 4b explains what a monologue is.
 
+**A voice goal.** Since Phase 9, one more optional field:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `voiceGoal` | `none` (default), `lower`, `higher` | Whether the speaker wants to keep their voice in the lower or the higher range. Ignored for a reference, which is always stored with `none` |
+
+Where the voice sat is measured whatever is sent. The goal decides only whether the
+coaching reads it as something to work on (the science document, section 13). Any other
+value is refused with `422` `invalid_request`. The job's status carries it back as
+`voiceGoal`, and the result as `voiceRange.goal`.
+
 **The `Idempotency-Key`.** "Idempotent" means doing something twice has the same effect as
 doing it once. The browser makes up a random key for each recording it submits. If the
 button is clicked twice, or the request is sent again after a network hiccup, the same key
@@ -441,6 +457,50 @@ Since Phase 6 a result also carries:
 Since Phase 8 a result also carries `monologueId`: the monologue the take was recorded for,
 or `null`. It is read from its own column when the result is asked for, and is not part
 of the stored measurements (decision B58).
+
+Since Phase 9 a result also says **where the voice sat**. For the whole recording:
+
+```json
+"voiceRange": {
+  "goal": "lower",
+  "pitch":     { "valueHz": 125.3, "band": "lower", "percent": 33, "quality": "measured" },
+  "resonance": { "valueHz": 1017.0, "band": "lower", "percent": 23, "quality": "measured" },
+  "marker": "lower",
+  "formantsHz": [452, 1410, 2623],
+  "phrases": { "lower": 4, "neutral": 0, "higher": 0, "mixed": 0, "unmeasured": 0 },
+  "bands": { "version": 1,
+             "pitch_low_end_hz": 85.0, "pitch_neutral_from_hz": 145.0,
+             "pitch_neutral_to_hz": 175.0, "pitch_high_end_hz": 255.0,
+             "resonance_low_end_hz": 940.0, "resonance_neutral_from_hz": 1040.0,
+             "resonance_neutral_to_hz": 1100.0, "resonance_high_end_hz": 1300.0 },
+  "resonanceNote": null
+}
+```
+
+and inside each entry of `segments`, the same for that phrase:
+
+```json
+"voice": {
+  "pitch":     { "valueHz": 131.0, "band": "lower", "percent": 23, "quality": "measured" },
+  "resonance": { "valueHz": 1052.8, "band": "neutral", "percent": 43, "quality": "estimated" },
+  "marker": "lower"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `goal` | The voice goal the recording was submitted with |
+| `pitch`, `resonance` | The value in Hz, the range it falls in (`lower`, `neutral`, `higher`), how far into that range it lies (0 to 100), and whether it is `measured` or `estimated`. `null` when it could not be measured: never a zero |
+| `marker` | Pitch and resonance together: `lower`, `neutral`, `higher`, or `mixed` when one is lower and the other higher. `null` when neither was measured |
+| `formantsHz` | The three typical formants the resonance figure was worked out from |
+| `phrases` | How many phrases got each marker |
+| `bands` | The ranges that placed the values, with their version: a copy of `VoiceRangeSettings` |
+| `resonanceNote` | Why resonance is an estimate or is missing, in words, when it is |
+
+`voiceRange` is `null` for a recording with no speech, and absent from a result stored
+before Phase 9, as is `voice` on its segments. Nothing is filled in afterwards (decision
+B64). How each value is measured, and what the percentage means, is in sections 9a and 9b
+of the science document.
 
 ### `GET /api/analyses/{analysisId}/comparison/{referenceId}`
 
@@ -648,7 +708,7 @@ The settings in force, and how they got there.
 | `version` | The version new analyses are made with |
 | `adaptive` | `false` when the user has switched automatic adjustment off |
 | `state` | `calibrating` while every setting is still at its default; `adjusted` otherwise |
-| `settings` | The 13 adjustable settings: the minimum pause, and a priority for each of the 12 kinds of correction. Each has explicit bounds |
+| `settings` | The 15 adjustable settings: the minimum pause, and a priority for each of the 14 kinds of correction (12 until Phase 9 added the two about where the voice sits). Each has explicit bounds |
 | `fixed` | The thresholds feedback never changes, shown so that nothing is hidden |
 | `changes` | The history, newest first. `cause` is `defaults`, `auto`, `undo` or `reset` |
 | `pending.takeReports` | How many of the waiting reports on the larger side are about your own takes. `rules.minTakeReports` (1) of them are needed before the setting can move |
@@ -688,7 +748,8 @@ Queues a fresh analysis of this result's **kept** recording, with the settings i
 now, and answers `202` with a job to poll, exactly as an upload does. The job's
 `sourceAnalysisId` says which result it started from. The outcome is stored as a further
 revision; the earlier result is not changed. Asking again while one is queued or running
-returns that job (`200`).
+returns that job (`200`). The fresh analysis keeps the voice goal of the result it started
+from.
 
 Refused with `409 audio_not_kept` when the recording was not kept.
 
@@ -764,6 +825,19 @@ Everything the submission form needs, so that nothing is written twice:
   "languages": [{ "id": "auto", "label": "Detect automatically", "note": null }],
   "limits": { "maxUploadBytes": 52428800, "maxAudioSeconds": 600.0, "acceptedExtensions": [".aac", "…"] }
 }
+```
+
+Since Phase 9 the answer also lists the voice goals, with the note the form shows under
+them. The texts live in `app/pipeline/voice_range.py`:
+
+```json
+"voiceGoals": [
+  { "id": "none", "label": "No goal", "note": null },
+  { "id": "lower", "label": "Keep my voice lower",
+    "note": "Coaching will point at the phrases where your pitch or resonance left the lower range." },
+  { "id": "higher", "label": "Keep my voice higher", "note": "…" }
+],
+"voiceGoalNote": "Optional. The app measures where your voice sits, in pitch and in resonance, whether or not you choose a goal. …"
 ```
 
 The profile texts live in `app/profiles.py`. `focus[].metric` is the JSON name of a real
@@ -1392,6 +1466,7 @@ command runs. It is listed in `.gitignore`, so it is never committed.
 | `analysis_id` | The result, once succeeded. For a coaching job: the analysis it is for, from the start |
 | `source_analysis_id` | For a fresh analysis of a kept recording: the result it started from. Empty otherwise. Added in Phase 6 |
 | `monologue_id` | For a take recorded for a monologue: that monologue's ID. Empty for a reference and for a take of none. Added in Phase 8 |
+| `voice_goal` | `none`, `lower` or `higher`: the voice goal the recording was submitted with. Always `none` for a reference. Added in Phase 9; every earlier row has `none` |
 | `created_at`, `updated_at`, `started_at`, `finished_at`, `heartbeat_at` | Times, stored in UTC |
 
 **`analyses`** — one row per successful job.
@@ -1482,6 +1557,8 @@ and the migrations ever disagree.
 | `0004_feedback_and_calibration` | Creates `feedback`, `calibration_versions` and `calibration_state`. Adds `jobs.source_analysis_id` and, to `analyses`, `calibration_version`, `root_id` and `revision_reason`. Existing rows are kept: every stored result becomes calibration version 1 and the first result of its own recording |
 | `0005_feedback_summary` | Creates `feedback_summary`. Changes no existing table. The new kind of job, `summary`, needed no migration: `jobs.kind` is text |
 | `0006_monologue_takes` | Adds `monologue_id` to `jobs` and to `analyses`, with an index on the second. Existing rows are kept and have it empty: every take stored so far belongs to no monologue, and every reference stored so far is a monologue, because a monologue is nothing but its reference |
+
+| `0007_voice_goal` | Adds `voice_goal` to `jobs`, `none` for every existing row. Nothing is added to `analyses`: where the voice sat, and the goal, are inside the stored result (decisions B63 and B64) |
 
 **After updating the code to a new phase, run `uv run alembic upgrade head` once.** Until then
 the API reports `"database": "error"`, because the code expects columns the file does not
@@ -2285,21 +2362,87 @@ What was checked on this machine is in the table at the end of section 10.
 - **Decided against:** failing the job (the measurements are fine); refusing to delete a
   reference that has a job waiting (a new refusal on an endpoint that never had one).
 
+### B63. The voice goal is a column on the job, and is written into the result
+
+- **Chosen:** `jobs.voice_goal` carries the goal from the request to the worker. The
+  worker writes it into the result as `voiceRange.goal`. Nothing is added to `analyses`.
+- **Why a column on the job:** the worker needs it before any result exists, and a job's
+  row is the only thing that travels from the request to the worker (section 4).
+- **Why inside the result, when the monologue is not (B58):** the monologue says where a
+  take is *filed*, and can stop being true (its reference is deleted). The goal says how
+  this result is to be *read*: the coaching is written from the stored result alone, also
+  when it is written again weeks later, and a corrected or re-analysed revision must be
+  read the same way. `revisions.voice_goal` reads it back from the result for both.
+- **Decided against:** *a setting in the database, one goal for everything*: simpler, and
+  an old result would then be coached against whatever the goal is today. A recording
+  keeps the goal it was made with. *A column on `analyses` as well*: two copies that
+  could disagree.
+
+### B64. Where the voice sat is part of the result document; older results are left without it
+
+- **Chosen:** `voiceRange` on the result and `voice` on each segment, inside the one JSON
+  document (B15). No table, no column. A result stored before Phase 9 has neither, and
+  is not touched.
+- **Why:** it is a measurement, and measurements are stored once and never updated in
+  place (B16). The schema makes both fields optional, so an old result still reads, which
+  a test checks.
+- **How an old recording gets one:** "Analyse again", if the recording was kept. That is
+  a new revision by the pipeline as it now stands, like any other (science decision S63).
+- **Decided against:** *working it out for old results in the migration*: the audio of
+  most of them is gone, by design.
+
+### B65. Resonance is one more replaceable piece of the pipeline, inside the existing stage
+
+- **Chosen:** `PipelineDeps.measure_resonance`, called during `measuring_audio` beside
+  loudness and pitch. No new stage in the job's progress.
+- **Why:** it takes about a hundredth of the recording's length (85 times real time), so
+  a stage of its own would flash past. Being a replaceable piece, like the detector and
+  the recogniser, lets the tests script "this voice has a spacing of 990 Hz" and check
+  the placement by hand; the real measurement has tests of its own on built vowels.
+- **Decided against:** *measuring it only when a goal is set*: the user asked for the
+  voice to be shown for every recording, and a result measured differently depending on
+  a coaching choice would break "a goal changes no measurement".
+
+### B66. A reference is measured the same way and never has a goal
+
+- **Chosen:** `voiceGoal` sent with a reference is ignored and stored as `none`. Its
+  voice range is measured and stored like a take's.
+- **Why:** a goal is about the speaker's own voice. A reference is somebody else's
+  performance, gets no coaching (B33), and has nothing to be coached towards. Showing
+  where the original's voice sits is still useful beside a take.
+- **Decided against:** refusing the request with an error: the screen sends one form
+  for both, and an ignored field costs nothing.
+
+### B67. A changed default raises the settings version, with no migration
+
+- **Chosen:** `pitch_voiced_probability` went into `AnalysisSettings` at 0.3 and
+  `version` went from 1 to 2. No stored result was touched.
+- **Why:** every result carries a full copy of its settings (science section 12), so an
+  old one still says how it was measured: no `pitch_voiced_probability` and version 1
+  means the old 0.5. Reading stored settings already tolerates a missing field, which
+  Phase 6 needed for the same reason.
+- **Decided against:** *re-measuring pitch for kept recordings*: it would change figures
+  the user has already read, behind their back (B16).
+
 ### Decisions already made for later phases
 
 None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 10. Tests
 
-Run with the command in the README. Current result: **665 pass**, 1 skipped (the opt-in
-real-speech test, which also passes when run). 19 of them are new in Phase 8.
+Run with the command in the README. Current result: **761 pass**, 1 skipped (the opt-in
+real-speech test, which also passes when run). 96 of them are new in Phase 9.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
 | `test_segmentation.py` | 25 | Segments and pauses from speech regions; threshold edges; long silences; word assignment. Short silences: every gap is either a pause or a short silence, never both; what counts follows the minimum pause in force; settings stored with an older result can still be read |
 | `test_metrics.py` | 23 | WPM with pauses excluded and included; reliability flags; typical pace and faster/slower; pause statistics; no division by zero |
 | `test_audio_and_acoustics.py` | 20 | Decoding, length limit, clipping, loudness in dB, pitch, emphasis candidates, hesitation sounds |
-| `test_pipeline.py` | 24 | The whole pipeline with scripted speech: numbers, warnings, no-speech, garbled transcripts, cancellation |
+| `test_pipeline.py` | 33 | The whole pipeline with scripted speech: numbers, warnings, no-speech, garbled transcripts, cancellation. Since Phase 9: pitch and resonance each placed in a range with a position; every phrase placed and counted; the ranges stored with the result; **the goal recorded and no measurement changed by it**; resonance that could not be measured is unavailable and pitch still decides; a phrase with neither measured counted as unmeasured; no voice range without speech; a loud background makes resonance an estimate and a very loud one withholds it |
+| `test_voice_range.py` | 30 | The ranges as stated, low to high; a pitch and a resonance placed by position, at the far ends, at the edges of the neutral range and in its middle; beyond a far end stays at 100%; ranges that overlap or run backwards are refused; every combination of pitch and resonance gives the right marker, including "mixed" and one of the two missing |
+| `test_resonance.py` | 7 | The spacing of an even ladder is its step, and the higher formants weigh more. **Vowels built with known formants are found**: 1,000 and 1,200 Hz within 20; the note the voice speaks on does not move its resonance; nor does a much quieter copy; only speech is measured; too little sound is unavailable, not a number |
+| `test_coaching_voice.py` | 26 | With no goal the voice is described and nothing is judged; each range named with its edges; only what was measured is stated; an estimate says why. With a goal: a voice that stayed in range is a strength; phrases that left it are named furthest first; the same voice reads the other way round for the other goal; a whole voice outside the range outweighs a few stray phrases; a summary line and a word of caution are added. The correction points the right way and is practised on the furthest phrase. **The model is not shown how a range is typically heard; a remark about the speaker is sent back once, then left out; with nothing left the fixed rules write the coaching**; the same words pass when no goal was chosen and inside a quoted line; an internal phrase label is rewritten |
+| `test_voice_api.py` | 8 | The form is offered the three goals; no goal unless one is chosen; an unknown goal is refused; the result says where the voice sat and keeps the goal; the same recording with no goal is measured the same and not judged; a reference is measured and never has a goal; analysing again and correcting the words keep the goal; a result stored before Phase 9 still reads |
 | `test_job_queue.py` | 25 | Every status change: claim order, duplicates, cancel, fail, retry, expiry, crash recovery, liveness |
 | `test_worker.py` | 31 | Real jobs end to end: success, clean-up, failure messages, cancel mid-job, graceful stop, recovery. Coaching as the last stage; an unavailable model or a crash in coaching never failing the analysis; coaching jobs succeeding, failing, being cancelled, handed back and recovered. A reference measured like a take with no coaching stage and no call to the AI model; the waveform stored beside the measurements, and the measurements identical with and without it |
 | `test_api.py` | 35 | Submitting, polling, cancel, retry, every refusal, the full upload → poll → result journey. Coaching in the result; writing it again; asking twice; the old coaching surviving a failure; health reporting the AI model |
@@ -2307,7 +2450,7 @@ real-speech test, which also passes when run). 19 of them are new in Phase 8.
 | `test_comparison.py` | 26 | Pauses matched, missing, extra and unplaced; a recording against a copy of itself showing no difference even with word times pushed into the pauses; phrase pace over the same words; whole-recording rows; the biggest differences in order and in words; different passages compared only as wholes; neither recording changed |
 | `test_comparison_align.py` | 20 | Word keys, including Hindi spelling variants; dropped, added and misheard words; a repeated line matched to the right repetition; speed on a ten-minute passage |
 | `test_waveform.py` | 6 | The outline's lowest and highest values, its size for long and short recordings, padding, no normalising |
-| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects, `feedback_summary` among them; a database from before Phase 4 upgrades with its rows intact, each result becoming calibration version 1, the first result of its own recording, and a take of no monologue |
+| `test_migrations.py` | 2 | The migrations build exactly the tables the code expects, `feedback_summary` among them; a database from before Phase 4 upgrades with its rows intact, each result becoming calibration version 1, the first result of its own recording, and a take of no monologue; a job queued before Phase 9 has the voice goal `none` |
 | `test_monologues.py` | 19 | A reference is a monologue and a take is not; **a take recorded for a monologue is listed under it and not in the General Practice history**; the monologue is kept in its column and not inside the measured result; an unknown monologue is refused and nothing is stored; a corrected reference is still the same monologue, now compared with by its new revision; a corrected or re-analysed take stays with its monologue and counts as one take; the one practised most recently comes first. Clearing the General Practice history leaves every monologue's take, and one monologue's takes can be cleared alone. **Deleting a monologue removes its references, its takes, their recordings, jobs and feedback, and nothing of any other**; it is refused while a take of it is waiting; a failed take holding its recording goes with it. Takes are freed when the last revision of their reference is deleted, and when the references are cleared; a take whose monologue went while it waited is stored as a take of none |
 | `test_calibration_engine.py` | 37 | The adjustment rules with no database: one or two reports move nothing; three from one recording are not enough; disagreement and ties change nothing; only recent reports count; the minimum pause is steered by the silences reported and never moves more than 100 ms at once; **no setting ever leaves its allowed range**; a report already answered by an earlier change stops counting; moving back needs five reports; the detection threshold is not adjustable. **Reports on references alone move nothing, however many**; one agreeing report on a take lets them count; a take report pointing the other way does not stand in for one |
 | `test_feedback.py` | 26 | What each kind of feedback is taken to mean: labels speak for no setting; a short false pause for raising the minimum pause; a long one for nothing; a missed pause for lowering it only where a silence of 250 ms or more was heard; one silence can be reported only once; **no feedback speaks for more than one setting** |
@@ -2317,7 +2460,7 @@ real-speech test, which also passes when run). 19 of them are new in Phase 8.
 | `test_revisions.py` | 17 | A reference's words can be corrected too: still a reference, still without coaching, both revisions in the library, a take comparable with either. A corrected transcript becomes revision 2 and the corrected result stays exactly as it was; both are in the history; pause labels come along and reports do not; the kept recording is shared and each copy can be deleted alone. Analysing again: a new revision with the settings in force, for takes and references; asking twice; refused without a kept recording; a cancelled one leaves the kept recording alone |
 | `test_wpm_review.py` | 13 | The review of a reference is worded for someone else speaking, and points at the same things. The arithmetic shown; too high points at extra words and speech lost in a pause, too low at dropped words and silences counted as speaking; word timing is always part of it; reviewing changes nothing |
 | `test_coaching_findings.py` | 45 | Every finding: its band, its wording, its role under each profile; what is left out when a measurement is missing; that statements contain no figure that is not a measurement or a band. Pause labels: an accidental pause is not praised as a held silence, an intentional one is never an issue, labels never change a measurement. Priorities move an issue down the list without removing it |
-| `test_coaching_rules.py` | 64 | Template coaching: order, practice phrase, profile sentence, targets; every template under every profile fills in completely and quotes only known figures |
+| `test_coaching_rules.py` | 80 | Template coaching: order, practice phrase, profile sentence, targets; every template under every profile fills in completely and quotes only known figures. 16 more since Phase 9: the four voice templates under each of the four profiles |
 | `test_coaching_prompt.py` | 14 | What the model is shown and forbidden; that its answer can only name findings and phrases that exist; the size estimate staying above the model's real token counts; a long recording losing its timings before any words, then being cut to fit; the model is told which pauses the actor marked |
 | `test_coaching_grounding.py` | 32 | Invented figures, times, segments and quotations are caught; copied ones pass; units in their common spellings |
 | `test_coaching_coach.py` | 26 | A clean answer is used; a bad one is sent back once; what still fails is removed; nothing surviving means templates; every way the model can be unavailable; cancellation |
@@ -2400,7 +2543,7 @@ All 48 checks in the script passed.
 
 | Check | Result |
 | --- | --- |
-| A fresh database | Calibration version 1, "still calibrating", 13 adjustable settings |
+| A fresh database | Calibration version 1, "still calibrating", 13 adjustable settings (15 since Phase 9) |
 | Analyse the two takes and a reference | 49 s (first run, models loading), 21 s and 6 s. Each result records calibration version 1, the 500 ms minimum pause, and its short silences, every one inside the phrase it is listed under |
 | Label one pause accidental and one intentional | The stored result is byte for byte the same; no report is waiting |
 | Write the coaching again with those labels | The AI model answered in 38 s and passed the checks. The 2.7 s pause marked accidental is no longer read as a held silence, and is still counted in every pause figure at full length |
@@ -2494,3 +2637,34 @@ Not checked in Phase 8: a real human voice or a film clip as the original, as in
 phase; a monologue with more takes than the 50 the screen lists; and the user's own
 worker, which was started before this phase and has to be restarted to run the new code
 (until then it stores a take without its monologue).
+
+Also checked at the end of Phase 9, the same way: the real API, worker, speech model and
+AI model, in a complete copy of the project in a temporary folder with its own database,
+on other ports. The recordings were synthesised: a deeper voice, a higher voice, one
+recording with the deeper voice followed by the higher, and the deeper voice with hiss
+added at two levels. All 22 checks in the script passed. The measured figures are in the
+science document ("How Phase 9 has been tested"); what concerns the backend:
+
+| Check | Result |
+| --- | --- |
+| The new migration, on the copy and then on the project's own database | `7d4b2c9a6e15 -> 2f8c5a1e9b36`; existing jobs have `voice_goal` `none` |
+| `GET /api/analysis-options` | The three goals and the note |
+| A take submitted with `voiceGoal=higher` | The job's status carries `voiceGoal`; the result carries `voiceRange.goal`, the placements, the marker, the phrase counts and a copy of the ranges |
+| The same file with no goal, and with `lower` | Every measured figure identical across the three; only the coaching differs |
+| A recording of two phrases in two voices | Each segment carries its own `voice`; `phrases` counts one lower and one higher |
+| A take with hiss, 24 dB between voice and background as the app reads it | Warning `resonance_noisy`; resonance `estimated`; `resonanceNote` says why |
+| The same with 14 dB | `resonance` is `null`, `resonanceNote` says the background is too loud, pitch is still there and decides the marker |
+| A reference submitted with `voiceGoal=lower` | Stored with `none`; measured like a take; no coaching |
+| Coaching written by the real AI model with a goal | 30 to 33 s; `source` `ai`, no notice; no word about the speaker in its wording |
+
+Three of those checks failed the first time and changed the code: the pitch of the deeper
+voice was "unavailable" (the voicing threshold, B67), the model's wording spoke about the
+speaker (the science document, decision S81), and the 14 dB recording returned a resonance
+in the wrong range (the noise limits, S82).
+
+Not checked in Phase 9: a real human voice, as in every phase, which matters more here
+than anywhere, because the resonance ranges were set from synthesised voices; a recording
+near the 10-minute limit (resonance was timed on short clips only, at about 85 times real
+time); and the user's own worker, which has to be restarted to run the new code. Until it
+is, a recording is analysed by the worker as it was started: with no voice range in the
+result, and the goal ignored.

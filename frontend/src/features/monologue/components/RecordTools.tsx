@@ -116,6 +116,7 @@ export function RecordTools({ state, store, monologue, language, take, reference
       language: spoken,
       retainAudio,
       monologueId: monologue.id,
+      voiceGoal: state.voiceGoal,
       previewUrl: audio.url,
     });
   };
@@ -148,6 +149,8 @@ export function RecordTools({ state, store, monologue, language, take, reference
             onLanguageChange={setSpoken}
             retainAudio={retainAudio}
             onRetainAudioChange={setRetainAudio}
+            voiceGoal={state.voiceGoal}
+            onVoiceGoalChange={(goal) => store.setVoiceGoal(goal)}
           />
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="primary" disabled={!audio || busy} onClick={analyse}>

@@ -12,7 +12,8 @@ SAMPLE_RATE = 16_000
 @dataclass(frozen=True)
 class AnalysisSettings:
     # Bumped whenever a default below changes, so results stay traceable.
-    version: int = 1
+    # 2: `pitch_voiced_probability` added, at 0.3. Results of version 1 used 0.5.
+    version: int = 2
     # Which version of the user's calibration supplied the values that feedback can adjust
     # (the minimum pause and the speech detection threshold). 1 means the defaults.
     calibration_version: int = 1
@@ -44,6 +45,13 @@ class AnalysisSettings:
     vad_min_silence_ms: int = 100
     vad_speech_pad_ms: int = 30
 
+    # The pitch tracker says how sure it is that a moment is voiced. Moments it is less sure
+    # of than this are left out. At the 0.5 used at first, a deeper voice kept only 6 to 20%
+    # of its moments and a short recording of one often had no pitch at all, while a higher
+    # voice kept 40 to 55%. At 0.3 a deeper voice keeps about three times as many and its
+    # median pitch moves by 2 Hz or less. See DOCUMENTATION_SCIENCE.md.
+    pitch_voiced_probability: float = 0.3
+
     def __post_init__(self) -> None:
         if not 0 < self.min_pause_ms <= self.medium_pause_ms <= self.long_silence_ms:
             raise ValueError("pause thresholds must satisfy min <= medium <= long")
@@ -53,6 +61,8 @@ class AnalysisSettings:
             raise ValueError("segment reliability thresholds must be positive")
         if not 0 < self.pace_deviation_ratio < 1 or self.min_segments_for_typical_pace < 2:
             raise ValueError("typical-pace thresholds are out of range")
+        if not 0 < self.pitch_voiced_probability < 1:
+            raise ValueError("pitch_voiced_probability must be between 0 and 1")
 
     def to_dict(self) -> dict[str, float | int]:
         return asdict(self)

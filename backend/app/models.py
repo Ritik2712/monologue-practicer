@@ -83,6 +83,10 @@ class Job(Base):
     # For a take recorded while practising a monologue: that monologue's ID, which is the
     # root ID of its reference recording. Null for a reference, and for a free take.
     monologue_id: Mapped[str | None] = mapped_column(String(32))
+    # "none", "lower" or "higher": whether the speaker asked to keep their voice in the
+    # lower or the higher range. It shapes the coaching and nothing else. Once the job has
+    # succeeded, the goal is kept inside the stored result.
+    voice_goal: Mapped[str] = mapped_column(String(16), default="none", server_default="none")
 
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, index=True)
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime)

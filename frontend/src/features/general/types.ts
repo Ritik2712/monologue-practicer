@@ -25,6 +25,15 @@ export type JobKind = "analysis" | "coaching" | "summary";
  */
 export type Role = "take" | "reference";
 export type PauseSignificance = "short" | "medium" | "long";
+/**
+ * Where a voice sits. "lower" is typically heard as a masculine voice and "higher" as a
+ * feminine one; "neutral" could be heard either way. A description of sound, not of a person.
+ */
+export type VoiceBand = "lower" | "neutral" | "higher";
+/** Pitch and resonance together. "mixed": one is in the lower range and the other in the higher. */
+export type VoiceMarker = VoiceBand | "mixed";
+/** What the speaker asked to work towards, if anything. */
+export type VoiceGoal = "none" | "lower" | "higher";
 export type PaceVsTypical = "typical" | "faster" | "slower";
 
 export type MetricValue = {
@@ -33,6 +42,40 @@ export type MetricValue = {
   unit: string;
   quality: Quality;
   note: string | null;
+};
+
+/** One measured value of a voice, and the range it falls in. */
+export type VoicePlacement = {
+  valueHz: number;
+  band: VoiceBand;
+  /**
+   * How far into its range the value lies, 0 to 100. A position, not a probability: in the
+   * lower and higher ranges 0 is the edge of the neutral range and 100 the far end; in the
+   * neutral range 100 is the middle.
+   */
+  percent: number;
+  quality: Quality;
+};
+
+export type SegmentVoice = {
+  pitch: VoicePlacement | null;
+  resonance: VoicePlacement | null;
+  marker: VoiceMarker | null;
+};
+
+/** Where the voice sat over the whole recording, and the ranges it was placed in. */
+export type VoiceRange = {
+  goal: VoiceGoal;
+  pitch: VoicePlacement | null;
+  resonance: VoicePlacement | null;
+  marker: VoiceMarker | null;
+  /** The typical first three formants, in Hz, behind the resonance figure. */
+  formantsHz: number[] | null;
+  phrases: { lower: number; neutral: number; higher: number; mixed: number; unmeasured: number };
+  /** The ranges that were in force: `pitch_neutral_from_hz` and so on. */
+  bands: Record<string, number>;
+  /** Why the resonance is an estimate or is missing, when it is. */
+  resonanceNote: string | null;
 };
 
 export type SpeechSegment = {
@@ -54,6 +97,8 @@ export type SpeechSegment = {
   energyDeltaDb: number | null;
   medianPitchHz: number | null;
   pitchDeltaSemitones: number | null;
+  /** Where the voice sat in this phrase. Missing on results made before it was measured. */
+  voice?: SegmentVoice | null;
 };
 
 export type PauseEvent = {
@@ -238,6 +283,8 @@ export type AnalysisResult = {
     pitchTracker: string;
   };
   warnings: AnalysisWarning[];
+  /** Where the voice sat. Null with no speech, and on results made before it was measured. */
+  voiceRange?: VoiceRange | null;
   /** Null for results stored before coaching existed, or when the coaching step broke. */
   coaching: Coaching | null;
 };
@@ -307,6 +354,7 @@ export type JobStatus = {
   sourceAnalysisId?: string | null;
   /** The monologue the take being analysed was recorded for, if any. */
   monologueId?: string | null;
+  voiceGoal?: VoiceGoal;
   canRetry: boolean;
   canCancel: boolean;
   queuePosition: number | null;
@@ -336,11 +384,16 @@ export type UploadLimits = {
   acceptedExtensions: string[];
 };
 
+export type VoiceGoalOption = { id: VoiceGoal; label: string; note: string | null };
+
 export type AnalysisOptions = {
   profiles: DeliveryProfile[];
   profileNote: string;
   languages: LanguageOption[];
   limits: UploadLimits;
+  /** What the speaker can ask to work towards with their voice. */
+  voiceGoals?: VoiceGoalOption[];
+  voiceGoalNote?: string;
 };
 
 export type Health = {

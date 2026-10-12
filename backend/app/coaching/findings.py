@@ -12,6 +12,11 @@ Each finding also gets a role against the chosen delivery profile:
 - "strength": already fits the profile
 - "context":  worth knowing, but neither
 
+Where the voice sits (its pitch and its resonance) is judged against nothing unless the
+speaker chose a goal: to keep their voice in the lower range, or in the higher one. With a
+goal, the phrases that left that range become something to work on. Without one they are
+stated and left alone. Either way the wording is about the sound, never about the speaker.
+
 The user can label a pause as intentional or accidental. A label changes how a pause is read
 here: an accidental pause is not praised as a held silence, and an intentional one is never
 called a fault. It does not change what was measured. Every pause stays in the pause
@@ -46,6 +51,21 @@ DEFAULT_ROLES: dict[tuple[str, Level], tuple[Role, float]] = {
     ("pitch_variation", "low"): ("issue", 0.6),
     ("pitch_variation", "high"): ("strength", 0.0),
 }
+
+# The two findings about where the voice sits, and the direction a goal moves them in.
+VOICE_KINDS = ("voice_pitch", "voice_resonance")
+VOICE_LEVEL: dict[str, Level] = {"lower": "low", "neutral": "moderate", "higher": "high"}
+VOICE_HEARD = {
+    "lower": "A voice in that range is typically heard as masculine.",
+    "neutral": "A voice in that range could be heard either way.",
+    "higher": "A voice in that range is typically heard as feminine.",
+}
+VOICE_CAVEAT = (
+    "The voice ranges are this app's own rough ranges. They describe how a voice is typically "
+    "heard, not who is speaking, and they are not a judgement of any voice. A voice changes "
+    "through weeks of gentle practice: stop if your throat feels strained, and consider a "
+    "voice coach or a speech therapist for guidance."
+)
 
 ESTIMATE_NOTE = " This rests on the recognised words, so treat it as an estimate."
 # Fewer recognised words than this and "no word stood out" says nothing.
@@ -192,6 +212,8 @@ def build_findings(
     found += [f for f in (pace, variation, pauses, longest) if f]
     found += _labelled_pauses(body, wants, labels)
     found += [f for f in (loudness, pitch) if f]
+    voice = _voice(body)
+    found += voice
     found += _segment_findings(body, settings, wants)
     found += [f for f in (_hesitations(body), _emphasis(body, wants), confidence) if f]
 
@@ -232,6 +254,9 @@ def build_findings(
             "Clarity is not measured, and no words were recognised to judge it by.",
         ),
     ]
+    # Where the voice sits is summed up only for a speaker who chose to work on it.
+    if voice and _voice_goal(body) != "none":
+        summary.insert(3, line("Voice range", list(voice), ""))
     return FindingSet(findings, details, summary, _caveats(body, variation is not None))
 
 
@@ -531,6 +556,112 @@ def _pitch(metrics: schemas.Metrics, settings: CoachingSettings, wants) -> Found
     )
 
 
+def _voice_goal(body: schemas.AnalysisBody) -> str:
+    return body.voice_range.goal if body.voice_range else "none"
+
+
+def _range_text(band: str, edges: tuple[float, float]) -> str:
+    neutral_from, neutral_to = (number(edge) for edge in edges)
+    return {
+        "lower": f"the lower range (under {neutral_from} Hz)",
+        "neutral": f"the neutral range ({neutral_from} to {neutral_to} Hz)",
+        "higher": f"the higher range (over {neutral_to} Hz)",
+    }[band]
+
+
+def _voice(body: schemas.AnalysisBody) -> list[Found]:
+    """Where the voice sat, in pitch and in resonance, and how that stands against the goal."""
+    voice = body.voice_range
+    if voice is None:
+        return []
+    goal = voice.goal
+    scales = (
+        ("pitch", "voice_pitch", voice.pitch, "Your pitch sat at a median of {value} Hz."),
+        (
+            "resonance",
+            "voice_resonance",
+            voice.resonance,
+            (
+                "The resonance of your voice measured {value} Hz: the average spacing of its "
+                "formants, where lower is deeper and higher is brighter."
+            ),
+        ),
+    )
+    found: list[Found] = []
+    for scale, kind, placed, opening in scales:
+        if placed is None:
+            continue
+        edges = (
+            float(voice.bands.get(f"{scale}_neutral_from_hz", 0)),
+            float(voice.bands.get(f"{scale}_neutral_to_hz", 0)),
+        )
+        where = f"That is in {_range_text(placed.band, edges)}"
+        if placed.band != "neutral":
+            where += f", {placed.percent}% of the way into it"
+        statement = f"{opening.format(value=number(placed.value_hz))} {where}. "
+        statement += VOICE_HEARD[placed.band]
+        if placed.quality == "estimated":
+            statement += " " + (
+                voice.resonance_note
+                or "There was little clear sound to measure it from, so treat it as an estimate."
+            )
+
+        role: Role = "context"
+        weight = 0.0
+        evidence = [metric_evidence(f"voiceRange.{scale}", f"Voice range: {scale}")]
+        data: dict[str, str] = {}
+        if goal != "none":
+            phrases = [
+                (segment, getattr(segment.voice, scale))
+                for segment in body.segments
+                if segment.voice and getattr(segment.voice, scale) is not None
+            ]
+            outside = [(segment, part) for segment, part in phrases if part.band != goal]
+            # The phrase furthest from the range the speaker is aiming for comes first.
+            outside.sort(
+                key=lambda item: -item[1].value_hz if goal == "lower" else item[1].value_hz
+            )
+            inside = len(phrases) - len(outside)
+            if phrases:
+                statement += (
+                    f" Your goal is to keep your voice in the {goal} range: "
+                    f"{inside} of {plural(len(phrases), 'phrase')} stayed in it for {scale}."
+                )
+            if outside:
+                listed = ", ".join(
+                    f"segment {segment.index + 1} at {number(part.value_hz)} Hz"
+                    for segment, part in outside[:LISTED_EXAMPLES]
+                )
+                statement += f" Furthest from it: {listed}."
+                evidence += [segment_evidence(segment) for segment, _ in outside[:LISTED_EXAMPLES]]
+                data["segment"] = outside[0][0].id
+            data["direction"] = "lower" if goal == "lower" else "raise"
+            if placed.band == goal and not outside:
+                role = "strength"
+            else:
+                role = "issue"
+                # The whole recording outside the range matters most; a few stray phrases least.
+                weight = (
+                    0.3 + 0.4 * len(outside) / len(phrases)
+                    if placed.band == goal
+                    else 0.7
+                    if placed.band == "neutral"
+                    else 1.0
+                )
+        found.append(
+            Found(
+                kind=kind,
+                level=VOICE_LEVEL[placed.band],
+                role=role,
+                weight=weight,
+                statement=statement,
+                evidence=evidence,
+                data=data,
+            )
+        )
+    return found
+
+
 def _segment_findings(body: schemas.AnalysisBody, settings: CoachingSettings, wants) -> list[Found]:
     """Phrases well away from the speaker's own typical pace, the furthest first."""
     typical = body.metrics.typical_segment_wpm.value
@@ -675,4 +806,6 @@ def _caveats(body: schemas.AnalysisBody, pace_compared: bool) -> list[str]:
         "Breaths are not detected, so nothing here is based on breathing. Emotion and "
         "pronunciation are not measured either."
     )
+    if _voice_goal(body) != "none":
+        caveats.append(VOICE_CAVEAT)
     return caveats

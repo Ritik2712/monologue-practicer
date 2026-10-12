@@ -13,7 +13,14 @@ from dataclasses import dataclass
 
 from app import profiles, schemas
 from app.coaching import rules
-from app.coaching.findings import FindingSet, number, seconds_text, timecode
+from app.coaching.findings import (
+    VOICE_HEARD,
+    VOICE_KINDS,
+    FindingSet,
+    number,
+    seconds_text,
+    timecode,
+)
 from app.coaching.settings import CoachingSettings
 from app.llm import Message
 
@@ -48,7 +55,10 @@ loses the way it was delivered.
 they appear on that one transcript line, say how to speak them, and how many times. Build \
 the drill on the technique given with the issue.
 9. The actor may have marked a pause as intentional or as accidental. Never advise shortening \
-or removing a pause marked intentional, and never praise a pause marked accidental."""
+or removing a pause marked intentional, and never praise a pause marked accidental.
+10. A finding may be about where the actor's voice sits: its pitch or its resonance, against \
+a range the actor chose to aim for. Talk only about the sound and that range. Never say or \
+guess anything about the actor's sex or gender, and never call a voice wrong."""
 
 TASK = """TASK
 Write the coaching for the next take.
@@ -198,6 +208,20 @@ def _profile_text(profile_id: str) -> str:
     return text
 
 
+def _for_model(finding: schemas.Finding) -> str:
+    """A finding as the model is shown it.
+
+    The reader of the screen is told how a voice in each range is typically heard. The
+    model is not: given that sentence it repeats it as a remark about the speaker ("to
+    avoid being perceived as…"), which is exactly what its advice must not contain.
+    """
+    text = finding.statement
+    if finding.kind in VOICE_KINDS:
+        for heard in VOICE_HEARD.values():
+            text = text.replace(f" {heard}", "")
+    return text
+
+
 def _bands_text(settings: CoachingSettings) -> str:
     return (
         "BANDS (this app's rough bands, not targets taken from any actor): pace is unhurried "
@@ -266,12 +290,19 @@ def build_prompt(
     def listed(findings: list[schemas.Finding], *, with_aim: bool = False) -> str:
         rows = []
         for finding in findings:
-            rows.append(f"{finding.id}: {finding.statement}")
+            rows.append(f"{finding.id}: {_for_model(finding)}")
             if with_aim:
                 # The direction and the method come from the templates, so the model cannot
                 # coach the wrong way round; it chooses the line and finds the words.
-                template = rules.template_for(finding_set.details[finding.id], wants)
+                found = finding_set.details[finding.id]
+                template = rules.template_for(found, wants)
                 rows.append(f"    Aim: {template.title}. Technique: {template.technique}.")
+                if found.kind in VOICE_KINDS and found.data.get("segment") in segment_ids:
+                    # Which phrase left the range is a measurement, not a matter of meaning.
+                    rows.append(
+                        f"    Practise it on {found.data['segment']}, the phrase furthest "
+                        "from the range."
+                    )
         return "\n".join(rows) or "(none)"
 
     language = LANGUAGE_NAMES.get(body.language.code, body.language.code)

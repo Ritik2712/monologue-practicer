@@ -11,6 +11,7 @@ import type {
   LanguageHint,
   Profile,
   UploadLimits,
+  VoiceGoal,
 } from "../types";
 import { acceptAttribute } from "../validation";
 import { FOCUS_RING, MUTED, Notice } from "./parts";
@@ -309,6 +310,9 @@ type OptionsRowProps = {
   onLanguageChange: (language: LanguageHint) => void;
   retainAudio: boolean;
   onRetainAudioChange: (retain: boolean) => void;
+  /** What the speaker is working towards with their voice, and how to change it. */
+  voiceGoal: VoiceGoal;
+  onVoiceGoalChange: (goal: VoiceGoal) => void;
 };
 
 export function OptionsRow({
@@ -317,10 +321,38 @@ export function OptionsRow({
   onLanguageChange,
   retainAudio,
   onRetainAudioChange,
+  voiceGoal,
+  onVoiceGoalChange,
 }: OptionsRowProps) {
   const note = options.languages.find((item) => item.id === language)?.note;
+  const goals = options.voiceGoals ?? [];
+  const goalNote = goals.find((item) => item.id === voiceGoal)?.note;
   return (
     <div className="grid gap-4 sm:grid-cols-2">
+      {goals.length > 0 && (
+        // Last in the row, across its full width: it is the one choice that needs explaining.
+        <div className="order-last sm:col-span-2">
+          <label htmlFor="voice-goal" className="block text-sm font-medium">
+            Voice goal <span className={`font-normal ${MUTED}`}>(optional)</span>
+          </label>
+          <select
+            id="voice-goal"
+            value={voiceGoal}
+            onChange={(event) => onVoiceGoalChange(event.target.value as VoiceGoal)}
+            className={`mt-1 block min-h-11 w-full max-w-xl rounded-md border border-zinc-300 bg-white px-3 text-sm dark:border-zinc-700 dark:bg-zinc-900 ${FOCUS_RING}`}
+          >
+            {goals.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <p className={`mt-1 text-sm ${MUTED}`}>
+            {goalNote ? `${goalNote} ` : ""}
+            {options.voiceGoalNote}
+          </p>
+        </div>
+      )}
       <div>
         <label htmlFor="spoken-language" className="block text-sm font-medium">
           Language spoken

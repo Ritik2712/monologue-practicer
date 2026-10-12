@@ -147,6 +147,22 @@ def _is_known(figure: Figure, facts: Facts) -> bool:
     )
 
 
+# Words that say something about who is speaking. Where a voice sits is coached as a sound
+# moving towards a range; the model's wording must not turn that into a remark on the speaker.
+_SPEAKER_WORDS = re.compile(
+    r"\b(man|men|woman|women|male|female|masculine|feminine|boy|girl|boyish|girlish|manly|"
+    r"womanly|ladylike|effeminate|gender|sex)\b",
+    re.IGNORECASE,
+)
+# The speaker's own lines may well contain such words, and may be quoted.
+_QUOTATION = re.compile(r"“[^”]*”|\"[^\"]*\"")
+
+
+def speaker_words(text: str) -> list[str]:
+    """Words about the speaker's sex or gender in `text`, outside anything it quotes."""
+    return [match.group(0) for match in _SPEAKER_WORDS.finditer(_QUOTATION.sub(" ", text))]
+
+
 def problems_in(text: str, facts: Facts) -> list[str]:
     """Everything in `text` that does not match the facts. Empty when the text is clean."""
     problems = [

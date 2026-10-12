@@ -20,6 +20,7 @@ import type {
   Profile,
   Role,
   SegmentCorrection,
+  VoiceGoal,
   Waveform,
 } from "./types";
 
@@ -48,6 +49,8 @@ export type SubmitRequest = {
   title?: string;
   /** The monologue a take is recorded for. Left out for a take that belongs to none. */
   monologueId?: string;
+  /** Whether the speaker wants to keep their voice lower or higher. Left out for no goal. */
+  voiceGoal?: VoiceGoal;
   /** Sent as the Idempotency-Key header: the same key never creates a second job. */
   idempotencyKey: string;
 };
@@ -146,6 +149,7 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
       role,
       title,
       monologueId,
+      voiceGoal,
       idempotencyKey,
     }) => {
       const form = new FormData();
@@ -156,6 +160,7 @@ export function createApi(fetchImpl: FetchLike = (input, init) => fetch(input, i
       if (role) form.append("role", role);
       if (title) form.append("title", title);
       if (monologueId) form.append("monologueId", monologueId);
+      if (voiceGoal && voiceGoal !== "none") form.append("voiceGoal", voiceGoal);
       return request("/api/analyses", {
         method: "POST",
         body: form,

@@ -21,7 +21,7 @@ from app.db import Base, get_session, make_engine
 from app.dependencies import get_data_dir, get_now
 from app.llm import LlmError, Message, Reply
 from app.main import app
-from app.pipeline import acoustics
+from app.pipeline import acoustics, resonance
 from app.pipeline.runner import PipelineDeps
 from app.pipeline.segmentation import SpeechRegion, Word
 from app.pipeline.transcribe import Transcription
@@ -201,11 +201,12 @@ def make_body(profile: str = "custom", **overrides) -> schemas.AnalysisBody:
 
     Keyword arguments named after a metric (snake_case) replace that metric's value; `None`
     makes it unavailable. `segments`, `pauses`, `words`, `warnings`, `hesitations`,
-    `emphasis_candidates` and `short_silences` replace those lists, and `settings` adds to
-    the settings the result says it was made with.
+    `emphasis_candidates` and `short_silences` replace those lists, `settings` adds to the
+    settings the result says it was made with, and `voice_range` says where the voice sat.
     """
     duration_seconds = overrides.pop("duration_seconds", 17.3)
     short_silences = overrides.pop("short_silences", None)
+    voice_range = overrides.pop("voice_range", None)
     settings = {"version": 1, "min_pause_ms": 500, **overrides.pop("settings", {})}
     segments = overrides.pop("segments", None)
     if segments is None:
@@ -284,6 +285,7 @@ def make_body(profile: str = "custom", **overrides) -> schemas.AnalysisBody:
         pipeline=schemas.PipelineInfo(
             speech_model="fake-model", voice_activity_detector="silero-vad", pitch_tracker="pyin"
         ),
+        voice_range=voice_range,
         **lists,
     )
 
@@ -334,6 +336,23 @@ def fake_vad(regions: list[tuple[float, float]]):
 
 def no_pitch(samples, segments) -> acoustics.PitchTrack:
     return acoustics.PitchTrack(np.array([]), np.array([]))
+
+
+def no_resonance(samples, segments) -> resonance.ResonanceTrack:
+    return resonance.EMPTY
+
+
+def steady_resonance(spacing_hz: float = 1000.0):
+    """A voice whose formants are an evenly spaced ladder, in every 10 ms of every segment."""
+    ladder = spacing_hz * (np.arange(1, resonance.FORMANT_COUNT + 1) - 0.5)
+
+    def measure(samples, segments) -> resonance.ResonanceTrack:
+        times = np.concatenate(
+            [np.arange(s.start, s.end, 0.01) for s in segments] or [np.array([])]
+        )
+        return resonance.ResonanceTrack(times, np.tile(ladder, (times.shape[0], 1)))
+
+    return measure
 
 
 def steady_pitch(samples, segments) -> acoustics.PitchTrack:
@@ -428,6 +447,7 @@ def make_worker(session_factory, data_dir: Path, clock: FakeClock, transcriber: 
             transcriber=transcriber,
             detect_speech=fake_vad([(0.5, 4.5), (6.0, 8.0)]),
             measure_pitch=no_pitch,
+            measure_resonance=no_resonance,
         )
         # Without a language model, coaching comes from the templates.
         overrides.setdefault("coach", Coach(llm))

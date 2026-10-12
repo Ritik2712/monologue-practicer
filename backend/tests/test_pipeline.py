@@ -3,6 +3,7 @@ numbers can be worked out by hand."""
 
 import json
 
+import numpy as np
 import pytest
 
 from app.pipeline.errors import JobCancelled, PipelineError
@@ -16,7 +17,9 @@ from tests.conftest import (
     fake_vad,
     make_words,
     no_pitch,
+    no_resonance,
     steady_pitch,
+    steady_resonance,
     wav_bytes,
 )
 
@@ -39,6 +42,7 @@ def run(tmp_path, *, regions, words, seconds=10.0, language="auto", transcriber=
             transcriber=transcriber,
             detect_speech=fake_vad(regions),
             measure_pitch=options.pop("pitch", steady_pitch),
+            measure_resonance=options.pop("resonance", no_resonance),
         ),
         on_stage=stages.append,
         **options,
@@ -105,7 +109,9 @@ def test_every_word_is_listed_with_the_segment_it_belongs_to(tmp_path):
 def test_the_result_records_which_settings_and_tools_produced_it(tmp_path):
     body, _, _ = run(tmp_path, regions=[(1.0, 5.0)], words=make_words(1.0, 5.0, 8))
     assert body.settings == DEFAULT_SETTINGS.to_dict()
-    assert body.settings["version"] == 1
+    assert body.settings["version"] == 2
+    # How sure the pitch tracker must be that a moment is voiced: lowered once, on evidence.
+    assert body.settings["pitch_voiced_probability"] == 0.3
     assert body.settings["min_pause_ms"] == 500
     assert body.settings["long_silence_ms"] == 5000
     assert body.pipeline.speech_model == "fake-model"
@@ -259,6 +265,7 @@ def test_cancellation_stops_the_run_at_the_next_safe_point(tmp_path):
                 transcriber=FakeTranscriber(make_words(1.0, 5.0, 8)),
                 detect_speech=fake_vad([(1.0, 5.0)]),
                 measure_pitch=no_pitch,
+                measure_resonance=no_resonance,
             ),
             on_stage=reached.append,
             check=check,
@@ -344,3 +351,151 @@ def test_garbled_transcription_is_flagged_and_downgrades_word_numbers(tmp_path):
     assert body.segments[0].quality == "estimated"
     # Pauses and timing come from the sound and are unaffected.
     assert metric(body, "speech_active_seconds").quality == "measured"
+
+
+# --- Where the voice sits ----------------------------------------------------------------
+
+
+def voiced(tmp_path, **options):
+    """Two phrases, 1-5 s and 6.5-8.5 s, at a steady 200 Hz with formants 1000 Hz apart."""
+    options.setdefault("resonance", steady_resonance(1000.0))
+    body, _, _ = run(
+        tmp_path,
+        regions=[(1.0, 5.0), (6.5, 8.5)],
+        words=make_words(1.0, 5.0, 12) + make_words(6.5, 8.5, 4),
+        **options,
+    )
+    return body
+
+
+def test_pitch_and_resonance_are_each_placed_in_a_range_with_a_position(tmp_path):
+    voice = voiced(tmp_path).voice_range
+
+    # 200 Hz is (200 - 175) / (255 - 175) = 31% of the way into the higher range.
+    assert voice.pitch.model_dump() == {
+        "value_hz": 200.0,
+        "band": "higher",
+        "percent": 31,
+        "quality": "measured",
+    }
+    # 1000 Hz of formant spacing is (1040 - 1000) / (1040 - 940) = 40% into the lower range.
+    assert voice.resonance.model_dump() == {
+        "value_hz": 1000.0,
+        "band": "lower",
+        "percent": 40,
+        "quality": "measured",
+    }
+    assert voice.formants_hz == [500, 1500, 2500]
+    # A higher pitch with a deeper resonance gives a listener two different cues.
+    assert voice.marker == "mixed"
+    assert voice.resonance_note is None
+
+
+def test_every_phrase_is_placed_too_and_the_recording_counts_them(tmp_path):
+    body = voiced(tmp_path)
+
+    first, second = body.segments
+    assert (first.voice.pitch.band, first.voice.resonance.band, first.voice.marker) == (
+        "higher",
+        "lower",
+        "mixed",
+    )
+    assert first.voice.resonance.quality == second.voice.resonance.quality == "measured"
+    assert body.voice_range.phrases.model_dump() == {
+        "lower": 0,
+        "neutral": 0,
+        "higher": 0,
+        "mixed": 2,
+        "unmeasured": 0,
+    }
+
+
+def test_the_ranges_used_are_stored_with_the_result(tmp_path):
+    bands = voiced(tmp_path).voice_range.bands
+    assert bands["version"] == 1
+    assert (bands["pitch_neutral_from_hz"], bands["pitch_neutral_to_hz"]) == (145.0, 175.0)
+    assert (bands["resonance_neutral_from_hz"], bands["resonance_neutral_to_hz"]) == (
+        1040.0,
+        1100.0,
+    )
+
+
+def test_the_goal_is_recorded_and_changes_no_measurement(tmp_path):
+    plain = voiced(tmp_path)
+    aimed = voiced(tmp_path, voice_goal="lower")
+
+    assert (plain.voice_range.goal, aimed.voice_range.goal) == ("none", "lower")
+    assert aimed.voice_range.model_copy(update={"goal": "none"}) == plain.voice_range
+    assert aimed.segments == plain.segments
+    assert aimed.metrics == plain.metrics
+
+
+def test_a_voice_in_one_range_for_both_gets_that_marker(tmp_path):
+    body = voiced(tmp_path, resonance=steady_resonance(1200.0))
+    assert body.voice_range.marker == "higher"
+    assert body.voice_range.resonance.percent == 50  # (1200 - 1100) / (1300 - 1100)
+    assert body.voice_range.phrases.higher == 2
+
+
+def test_resonance_that_could_not_be_measured_is_unavailable_and_pitch_still_decides(tmp_path):
+    body = voiced(tmp_path, resonance=no_resonance)
+
+    voice = body.voice_range
+    assert voice.resonance is None and voice.formants_hz is None
+    assert voice.resonance_note == "There was too little clear, voiced sound to measure resonance."
+    assert (voice.pitch.band, voice.marker) == ("higher", "higher")
+    assert body.segments[0].voice.resonance is None
+    assert body.segments[0].voice.marker == "higher"
+
+
+def test_a_phrase_with_neither_measured_has_no_voice_and_is_counted_as_unmeasured(tmp_path):
+    body = voiced(tmp_path, pitch=no_pitch, resonance=no_resonance)
+
+    assert body.segments[0].voice is None
+    assert body.voice_range.marker is None
+    assert body.voice_range.phrases.unmeasured == 2
+
+
+def test_a_recording_with_no_speech_has_no_voice_range(tmp_path):
+    body, _, _ = run(tmp_path, regions=[], words=[])
+    assert body.voice_range is None
+
+
+def test_a_loud_background_makes_resonance_an_estimate_and_a_very_loud_one_withholds_it():
+    from app.pipeline.resonance import ResonanceTrack
+    from app.pipeline.runner import WARNINGS, _VoiceReader
+    from app.pipeline.segmentation import Segment
+    from app.pipeline.voice_range import DEFAULT_VOICE_RANGES
+
+    times = np.arange(0.0, 4.0, 0.01)
+    track = ResonanceTrack(times, np.tile([500.0, 1500.0, 2500.0], (times.shape[0], 1)))
+    phrase = Segment(index=0, start=0.0, end=4.0)
+
+    def read(snr_db):
+        reader = _VoiceReader(track, snr_db, DEFAULT_VOICE_RANGES)
+        return reader.of_segment(phrase, 120.0), reader.of_recording(120.0, [], "none")
+
+    # A phrase with under a second and a half of usable sound is placed, as an estimate.
+    short = _VoiceReader(track, 40.0, DEFAULT_VOICE_RANGES).of_segment(
+        Segment(index=1, start=1.0, end=2.0), 120.0
+    )
+    assert (short.resonance.band, short.resonance.quality) == ("lower", "estimated")
+
+    # Quiet background, or none to judge by: measured.
+    for snr_db in (40.0, None):
+        segment, recording = read(snr_db)
+        assert segment.resonance.quality == recording.resonance.quality == "measured"
+        assert recording.resonance_note is None
+
+    # Under 30 dB the figure reads brighter than the voice is: an estimate, and it says why.
+    segment, recording = read(25.0)
+    assert segment.resonance.quality == recording.resonance.quality == "estimated"
+    assert recording.resonance_note == WARNINGS["resonance_noisy"]
+    # Pitch does not suffer the same way.
+    assert segment.pitch.quality == "measured"
+
+    # Under 20 dB it can land in the wrong range altogether: not given at all.
+    segment, recording = read(15.0)
+    assert segment.resonance is None and recording.resonance is None
+    assert "too loud" in recording.resonance_note
+    assert segment.marker == "lower"  # from the pitch alone

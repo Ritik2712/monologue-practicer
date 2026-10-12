@@ -54,6 +54,7 @@ import {
   Tile,
 } from "./parts";
 import { TimelineChart } from "./TimelineChart";
+import { VoiceRangeSection } from "./VoiceRangeSection";
 
 type ResultsProps = {
   analysis: AnalysisResult;
@@ -114,6 +115,7 @@ const SETTING_LABELS: Record<string, [label: string, unit: string]> = {
   vad_min_speech_ms: ["Shorter bursts of speech are ignored", "ms"],
   vad_min_silence_ms: ["Shorter gaps do not split speech", "ms"],
   vad_speech_pad_ms: ["Each speech region is widened by", "ms"],
+  pitch_voiced_probability: ["How sure the pitch tracker must be that a moment is voiced (0 to 1)", ""],
 };
 
 export function Results({
@@ -576,7 +578,7 @@ export function Results({
       <Section
         id="voice-heading"
         title="Voice"
-        description="Loudness is relative to this recording only: it depends on the microphone and how close you were, so it cannot be compared between recordings. Pitch is given relative to your own voice; there is no target pitch."
+        description="Loudness is relative to this recording only: it depends on the microphone and how close you were, so it cannot be compared between recordings. Pitch movement is given relative to your own voice. Where the voice sits, in pitch and resonance, is in the next section."
       >
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <Tile
@@ -662,6 +664,8 @@ export function Results({
       </Section>
 
       {/* --- Feedback ------------------------------------------------------------------ */}
+      <VoiceRangeSection analysis={analysis} reference={isReference} playButton={playButton} />
+
       {feedback && <FeedbackSection analysis={analysis} tools={feedback} reference={isReference} />}
 
       {/* --- Compare ------------------------------------------------------------------- */}

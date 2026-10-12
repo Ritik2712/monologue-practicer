@@ -100,6 +100,7 @@ def create_job(
     title: str | None = None,
     source_analysis_id: str | None = None,
     monologue_id: str | None = None,
+    voice_goal: str = "none",
 ) -> Job:
     job = Job(
         id=job_id,
@@ -108,6 +109,7 @@ def create_job(
         title=title,
         source_analysis_id=source_analysis_id,
         monologue_id=monologue_id,
+        voice_goal=voice_goal,
         profile=profile,
         language_hint=language_hint,
         retain_audio=retain_audio,
@@ -748,6 +750,7 @@ def to_status(
         analysis_id=job.analysis_id,
         source_analysis_id=job.source_analysis_id,
         monologue_id=job.monologue_id,
+        voice_goal=job.voice_goal,
         can_retry=(
             job.status == FAILED
             and job.error_retryable

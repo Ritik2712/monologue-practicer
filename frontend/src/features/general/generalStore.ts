@@ -20,6 +20,7 @@ import type {
   Profile,
   Role,
   SegmentCorrection,
+  VoiceGoal,
   Waveform,
 } from "./types";
 
@@ -30,6 +31,8 @@ export const ACTIVE_JOB_KEY = "monologue-coach.general.active-job";
  * monologue being practised now says which reference is meant, so the key is cleared.
  */
 export const LEGACY_SELECTED_REFERENCE_KEY = "monologue-coach.reference.selected";
+/** Remembers the voice goal chosen last, so it need not be chosen again for every take. */
+export const VOICE_GOAL_KEY = "monologue-coach.voice-goal";
 
 /** How often a job in progress is checked. Slow enough not to hammer the backend. */
 export const POLL_MS = 1000;
@@ -53,6 +56,8 @@ export type Submission = {
   title?: string;
   /** The monologue a take is recorded for. Left out in General Practice. */
   monologueId?: string;
+  /** Whether the speaker wants to keep their voice lower or higher. */
+  voiceGoal?: VoiceGoal;
   /** An object URL for the same audio, so the result can be played back in this session. */
   previewUrl: string | null;
 };
@@ -154,6 +159,11 @@ export type GeneralState = {
   comparison: ComparisonState;
   /** Sound-wave outlines by analysis ID. Only what has been asked for. */
   waveforms: Record<string, WaveformState>;
+  /**
+   * What the speaker is working towards with their voice. Chosen in the form and sent with
+   * each take; remembered between visits.
+   */
+  voiceGoal: VoiceGoal;
   notice: { kind: "info" | "error"; text: string } | null;
   /** Recordings held in this page's memory, by analysis ID. Gone after a refresh. */
   localAudio: Record<string, string>;
@@ -205,6 +215,8 @@ export type GeneralStore = {
   deleteMonologue: (monologueId: string) => void;
   /** Fetches a recording's sound-wave outline, once. Does nothing if it is already here. */
   loadWaveform: (analysisId: string) => void;
+  /** Chooses what to work towards with the voice, for the takes submitted from now on. */
+  setVoiceGoal: (goal: VoiceGoal) => void;
   deleteAnalysis: (analysisId: string) => void;
   deleteAudio: (analysisId: string) => void;
   clearHistory: () => void;
@@ -249,6 +261,7 @@ const INITIAL: GeneralState = {
   referenceDetail: { status: "none" },
   comparison: { status: "none" },
   waveforms: {},
+  voiceGoal: "none",
   notice: null,
   localAudio: {},
 };
@@ -597,6 +610,7 @@ export function createGeneralStore({
         role: submission.role,
         title: submission.title,
         monologueId: submission.monologueId,
+        voiceGoal: submission.voiceGoal,
         idempotencyKey: key,
       });
       if (token !== runToken) return;
@@ -670,6 +684,8 @@ export function createGeneralStore({
         const storage = getStorage();
         jobId = storage?.getItem(ACTIVE_JOB_KEY) ?? null;
         storage?.removeItem(LEGACY_SELECTED_REFERENCE_KEY);
+        const goal = storage?.getItem(VOICE_GOAL_KEY);
+        if (goal === "lower" || goal === "higher") apply({ voiceGoal: goal });
       } catch {
         jobId = null;
       }
@@ -739,6 +755,18 @@ export function createGeneralStore({
         },
         (error) => set({ notice: { kind: "error", text: describeError(error).message } }),
       );
+    },
+
+    setVoiceGoal(goal) {
+      if (goal === state.voiceGoal) return;
+      try {
+        const storage = getStorage();
+        if (goal === "none") storage?.removeItem(VOICE_GOAL_KEY);
+        else storage?.setItem(VOICE_GOAL_KEY, goal);
+      } catch {
+        // A convenience only: the choice still holds for this visit.
+      }
+      apply({ voiceGoal: goal });
     },
 
     loadWaveform(analysisId) {

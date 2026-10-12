@@ -11,6 +11,7 @@ from app.dependencies import DataDirDep, NowDep, SessionDep
 from app.models import Analysis
 from app.pipeline.audio import probe_audio
 from app.pipeline.errors import PipelineError
+from app.pipeline.voice_range import GOAL_NOTE, GOALS
 
 router = APIRouter(prefix="/api", tags=["analyses"])
 
@@ -71,6 +72,7 @@ def submit_analysis(
     role: Annotated[schemas.Role, Form()] = "take",
     title: Annotated[str | None, Form(max_length=300)] = None,
     monologue_id: Annotated[str | None, Form(alias="monologueId", max_length=64)] = None,
+    voice_goal: Annotated[schemas.VoiceGoal, Form(alias="voiceGoal")] = "none",
     idempotency_key: Annotated[str | None, Header(max_length=128)] = None,
 ) -> schemas.JobStatus:
     """Accepts a recording, queues it for analysis and returns at once with a job to poll.
@@ -86,6 +88,10 @@ def submit_analysis(
     `monologueId` says which monologue a take was recorded for: the ID of that monologue,
     or of its reference recording in any revision. The take is then listed under that
     monologue and not in the General Practice history. It is ignored for a reference.
+
+    `voiceGoal` is `lower` or `higher` when the speaker wants to keep their voice in that
+    range. Where the voice sat is measured either way; the goal only decides whether the
+    coaching treats it as something to work on. It is ignored for a reference.
     """
     existing = job_queue.find_by_idempotency_key(session, idempotency_key)
     if existing is not None:
@@ -153,6 +159,7 @@ def submit_analysis(
                 else None
             ),
             monologue_id=monologue,
+            voice_goal=voice_goal if role == job_queue.TAKE else "none",
         )
     except job_queue.DuplicateJob as duplicate:
         uploads.delete_audio(audio_path, data_dir)
@@ -341,6 +348,10 @@ def get_analysis_options() -> schemas.AnalysisOptions:
             max_audio_seconds=settings.max_audio_seconds,
             accepted_extensions=sorted(uploads.ALLOWED_EXTENSIONS),
         ),
+        voice_goals=[
+            schemas.VoiceGoalOption(id=goal, label=label, note=note) for goal, label, note in GOALS
+        ],
+        voice_goal_note=GOAL_NOTE,
     )
 
 

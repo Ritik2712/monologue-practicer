@@ -10,6 +10,7 @@ here, a result still gets saved: at worst with template coaching and a note sayi
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,7 +24,7 @@ from app.coaching.findings import (
     profile_wants,
     segment_evidence,
 )
-from app.coaching.grounding import Facts, collect_facts, problems_in
+from app.coaching.grounding import Facts, collect_facts, problems_in, speaker_words
 from app.coaching.prompt import MAX_ANSWER_TOKENS, Prompt, build_prompt
 from app.coaching.settings import DEFAULT_COACHING_SETTINGS, CoachingSettings
 from app.llm import STATUS_MESSAGES, ChatModel, LlmError, Message
@@ -273,16 +274,32 @@ def _parse(text: str) -> dict | None:
     return answer if isinstance(answer, dict) else None
 
 
+# The transcript lines the model is shown are labelled "seg-3", and it sometimes writes that
+# label into its advice. The reader knows the phrases as "segment 3".
+_SEGMENT_LABEL = re.compile(r"\bseg-(\d+)\b", re.IGNORECASE)
+
+
 def _clean(value: object) -> str:
-    return " ".join(str(value).split()) if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        return ""
+    return _SEGMENT_LABEL.sub(r"segment \1", " ".join(value.split()))
 
 
-def _text_problems(text: str, facts: Facts, limit: int) -> list[str]:
+def _text_problems(text: str, facts: Facts, limit: int, *, voice_goal: bool = False) -> list[str]:
     if not text:
         return ["a part of the answer was left empty"]
     if len(text) > limit:
         return ["a part of the answer was far too long"]
-    return problems_in(text, facts)
+    problems = problems_in(text, facts)
+    if voice_goal:
+        # The speaker asked to move their voice towards a range. Advice about that is about
+        # a sound; a sentence about what the speaker is, or is taken for, is not advice.
+        problems += [
+            f"“{word}” says something about who is speaking; talk only about the sound of "
+            "the voice and the range"
+            for word in speaker_words(text)
+        ]
+    return problems
 
 
 def _check_answer(
@@ -297,6 +314,7 @@ def _check_answer(
     anchor = rules.anchor_segment(body)
     problems: list[str] = []
     removed = 0
+    voice_goal = body.voice_range is not None and body.voice_range.goal != "none"
 
     corrections: list[schemas.Correction] = []
     used: set[str] = set()
@@ -304,9 +322,9 @@ def _check_answer(
         finding_id = item.get("finding")
         title, why, drill = (_clean(item.get(key)) for key in ("title", "why", "drill"))
         found_problems = (
-            _text_problems(title, facts, MAX_TITLE_CHARACTERS)
-            + _text_problems(why, facts, MAX_TEXT_CHARACTERS)
-            + _text_problems(drill, facts, MAX_TEXT_CHARACTERS)
+            _text_problems(title, facts, MAX_TITLE_CHARACTERS, voice_goal=voice_goal)
+            + _text_problems(why, facts, MAX_TEXT_CHARACTERS, voice_goal=voice_goal)
+            + _text_problems(drill, facts, MAX_TEXT_CHARACTERS, voice_goal=voice_goal)
         )
         if finding_id not in prompt.issue_ids:
             found_problems.append("a correction named a finding that is not one of the issues")
@@ -333,7 +351,7 @@ def _check_answer(
     working: list[schemas.Strength] = []
     for item in _items(answer.get("working"))[: rules.MAX_WORKING]:
         finding_id, note = item.get("finding"), _clean(item.get("note"))
-        found_problems = _text_problems(note, facts, MAX_TEXT_CHARACTERS)
+        found_problems = _text_problems(note, facts, MAX_TEXT_CHARACTERS, voice_goal=voice_goal)
         if finding_id not in prompt.strength_ids or finding_id in {w.finding_id for w in working}:
             found_problems.append("“working” named a finding that is not one of the strengths")
         if found_problems:

@@ -12,6 +12,13 @@ adjusts a few settings.
 
 Everything described here is built.
 
+**Phase 9 added two things to measure and changed one.** New: the voice's **resonance**
+(section 9a), and where the voice **sits**, in pitch and in resonance, against three stated
+ranges (section 9b). Changed: the pitch tracker is less strict about what it counts as
+voiced, because the old strictness left deeper voices with too little to measure (section
+9). A speaker can also choose a **goal**, to keep their voice lower or higher, which the
+coaching then follows (section 13).
+
 **Phase 8 changed no measurement.** It joined the Monologue screen and Daily Practice into
 one flow, which is a matter of screens and storage (frontend and backend documents). What
 it means for this document is small and is marked where it applies: a take is now
@@ -19,7 +26,7 @@ compared only with the original it was recorded for (section 14, decision S73), 
 original is shown as a script built only from what was measured (section 14, decision
 S74).
 
-**Last updated:** end of Phase 8, for those two points. Before that, the end of Phase 7. The measurements, the coaching (section 13), the
+**Last updated:** end of Phase 9. The measurements, the coaching (section 13), the
 comparison of a take with a reference recording (section 14) and feedback with calibration
 (section 15) are all built. Phase 7 added to section 15: pointing at a missed pause by a
 word, feedback on a reference recording, and what the feedback adds up to, including three
@@ -36,6 +43,8 @@ ways of using the AI model for it that were measured and only one of which was k
 7. [Pause statistics](#7-pause-statistics)
 8. [Loudness](#8-loudness)
 9. [Pitch](#9-pitch)
+   - [9a. Resonance](#9a-resonance)
+   - [9b. Where a voice sits: the three ranges](#9b-where-a-voice-sits-the-three-ranges)
 10. [Emphasis candidates, hesitation sounds, breaths](#10-emphasis-candidates-hesitation-sounds-breaths)
 11. [How much to trust a number](#11-how-much-to-trust-a-number)
 12. [The settings](#12-the-settings)
@@ -79,6 +88,8 @@ feedback into adjusted settings is in `backend/app/feedback.py` and
         ▼
  ┌──────────────┐  metrics.py       words per minute, pause statistics
  │ 5. Measure   │  acoustics.py     loudness, pitch, emphasis candidates
+ │              │  resonance.py     resonance (how deep or bright the voice sounds)
+ │              │  voice_range.py   pitch and resonance placed in three ranges
  │              │  fillers.py       hesitation sounds
  └──────┬───────┘
         ▼
@@ -436,7 +447,32 @@ and "t" are noise and have none. So pitch exists for part of the speech only.
 
 The pipeline uses the **pYIN** algorithm (from the librosa library) on the speech segments
 only. For each 16 ms step it gives a pitch and a probability that the step is voiced. Steps
-with probability below 0.5 are thrown away. The search range is 65–500 Hz.
+with probability below 0.3 are thrown away. The search range is 65–500 Hz.
+
+**The 0.3 was 0.5 until Phase 9, and the change was measured.** Phase 9 is about where a
+voice sits, and the first run on a deeper voice came back with "pitch unavailable": a
+7-second recording had kept fewer than the 30 voiced steps a pitch needs. The tracker is
+simply less sure of itself on a deep voice, where a step holds fewer cycles of the sound.
+Counted on fourteen synthesised voices, two sentences each:
+
+| Voice | Steps in all | Kept at 0.5 | Kept at 0.3 | Median pitch at 0.5 | at 0.3 |
+| --- | --- | --- | --- | --- | --- |
+| Daniel (deeper) | 771 | 50 (6%) | 143 (19%) | 121 Hz | 119 Hz |
+| Reed (deeper) | 857 | 52 (6%) | 148 (17%) | 107 Hz | 108 Hz |
+| Fred (deeper) | 913 | 106 (12%) | 305 (33%) | 103 Hz | 100 Hz |
+| Rishi (deeper) | 865 | 172 (20%) | 336 (39%) | 116 Hz | 115 Hz |
+| Samantha (higher) | 776 | 340 (44%) | 435 (56%) | 182 Hz | 181 Hz |
+| Karen (higher) | 783 | 459 (59%) | 534 (68%) | 188 Hz | 189 Hz |
+| Lekha (higher, Hindi) | 769 | 308 (40%) | 436 (57%) | 230 Hz | 224 Hz |
+
+At 0.3 a deeper voice keeps two to three times as many steps, and across all fourteen the
+median pitch moved by 6 Hz at most and by 3 Hz or less for thirteen of them. Dropping the
+test altogether kept more steps still, but the spread of pitch then grew for some voices
+(Daniel from 2.4 to 3.1 semitones, Samantha from 2.5 to 3.2), which is the stray,
+badly tracked steps coming in. The value is recorded with every result as the setting
+`pitch_voiced_probability`, and the settings version went from 1 to 2 with it. A result
+made before the change is not recalculated; analysing a kept recording again uses the new
+value.
 
 ### The pitch numbers
 
@@ -468,11 +504,15 @@ from 200 to 300 Hz both moved 7 semitones — the same amount of expression — 
 moved 50 Hz and the other 100 Hz. One of the tests checks this with an octave: the same
 shape of movement at two registers gives the same number of semitones.
 
-### No target pitch
+### No target pitch, unless the speaker sets one
 
-The app never says a pitch is too high or too low, and no delivery profile has a target
-pitch. A voice's register is a property of the person. Only movement relative to the
-speaker's own median is reported.
+The app never says of its own accord that a pitch is too high or too low, and no delivery
+profile has a target pitch. A voice's register is a property of the person.
+
+Since Phase 9 there is one exception, and it is the speaker's: they may choose a goal, to
+keep their voice in the lower range or in the higher one (section 9b). With a goal, the
+coaching points at the phrases that left that range. With none, where the voice sits is
+measured and stated, and nothing is made of it.
 
 ### When pitch is unavailable
 
@@ -481,6 +521,226 @@ voice. Pitch is then "unavailable" with the warning `pitch_unavailable`, rather 
 number computed from almost nothing.
 
 Code: `acoustics.py` (`measure_pitch`, `summarize_pitch`, `semitones`).
+
+## 9a. Resonance
+
+### What it is
+
+Pitch is the note a voice speaks on. **Resonance** is how deep or bright the voice sounds
+on that note. Two people can say the same vowel on the same note and still sound
+different, the way a cello and a violin do. That difference is resonance, and listeners
+use it, together with pitch, when they hear a voice as deeper or lighter.
+
+It comes from the shape of the throat and mouth. The space above the vocal folds
+strengthens some bands of frequency and weakens others. The strengthened bands are called
+**formants**, numbered from the lowest: F1, F2, F3… A longer vocal tract puts its formants
+lower and closer together, and the voice sounds deeper; a shorter one puts them higher and
+further apart, and the voice sounds brighter. For a plain tube 17.5 cm long, closed at one
+end, they fall at 500, 1,500 and 2,500 Hz: 1,000 Hz apart.
+
+```
+ strength
+    │   F1        F2          F3
+    │   ▲         ▲           ▲            a deeper voice: formants closer together
+    │  ╱ ╲       ╱ ╲         ╱ ╲
+    │ ╱   ╲     ╱   ╲       ╱   ╲
+    └─┴────┴───┴─────┴─────┴─────┴──────▶ frequency
+     500      1500        2500 Hz        spacing ≈ 1000 Hz
+
+    │     F1          F2            F3
+    │     ▲           ▲             ▲      a brighter voice: formants further apart
+    │    ╱ ╲         ╱ ╲           ╱ ╲
+    └────┴──┴───────┴───┴─────────┴───┴─▶ frequency
+       600        1800          3000 Hz  spacing ≈ 1200 Hz
+```
+
+### The figure reported: formant spacing
+
+The app reports one number for resonance: the **average spacing of the first three
+formants**, in Hz. Lower is deeper, higher is brighter.
+
+It is found like this:
+
+1. The recording is reduced to the part of the sound below 4,000 Hz.
+2. Every hundredth of a second, a 25 ms slice is taken, but only inside speech, and only
+   where the sound is within 20 dB of the loud parts of the speech. Those are the vowels;
+   quiet consonants, breaths and background have no clear resonance to measure.
+3. For each slice, **linear prediction (LPC)** finds the resonances. LPC fits a small
+   filter to the slice, and the peaks of that filter are the formants. A peak wider than
+   500 Hz, or lower than 90 Hz, is not counted as one. A slice in which three formants
+   cannot be found is left out.
+4. Over a phrase, or the whole recording, the **median** of each formant is taken, so the
+   odd badly tracked slice does not move the answer.
+5. The spacing is the step of the evenly spaced ladder that fits those three medians best:
+
+```
+ spacing = (0.5 × F1 + 1.5 × F2 + 2.5 × F3) ÷ 8.75
+```
+
+   A ladder at 500, 1,500, 2,500 gives (250 + 2,250 + 6,250) ÷ 8.75 = 1,000. F3 weighs
+   five times as much as F1 in this, on purpose: F1 and F2 change a great deal from one
+   vowel to the next ("ee" against "aw"), and F3 much less, so the figure describes the
+   voice more than the words being said.
+
+One of the tests builds a crude vowel with exactly known formants, a buzz passed through
+three resonators, and checks that the real analysis finds them: formants at 500, 1,500 and
+2,500 Hz come back as a spacing of 1,000 Hz within 20, and 600, 1,800 and 3,000 as 1,200.
+The same vowel on a 100 Hz note and on a 220 Hz note gives the same resonance within 30 Hz,
+which is the point of measuring it apart from pitch.
+
+### Why three formants under 4,000 Hz, and not more
+
+The usual recipe for formants looks up to 5,000 or 5,500 Hz and finds four or five. That
+was built first, and measured against the alternative on fourteen synthesised voices (six
+deeper, eight higher; two sentences each), clean and with hiss added:
+
+| Method | Clean: deeper voices | Clean: higher voices | Gap between them | Worst shift with pink noise 30 dB below the voice | 20 dB below |
+| --- | --- | --- | --- | --- | --- |
+| 4 formants under 5,500 Hz | 903 to 998 Hz | 1,117 to 1,289 Hz | 119 Hz | +277 Hz | +320 Hz |
+| **3 formants under 4,000 Hz** | 943 to 1,017 Hz | 1,103 to 1,298 Hz | 86 Hz | 25 Hz | 34 Hz |
+| 3 formants under 4,200 Hz | 947 to 1,087 Hz | 1,105 to 1,319 Hz | 18 Hz | 56 Hz | 98 Hz |
+| 3 formants under 3,800 Hz | 950 to 1,025 Hz | 1,104 to 1,247 Hz | 79 Hz | 21 Hz | 43 Hz |
+| 3 formants under 4,000 Hz, peaks up to 700 Hz wide | 939 to 994 Hz | 1,104 to 1,252 Hz | 110 Hz | 37 Hz | 77 Hz |
+
+The first row separates the clean voices best and falls apart with the faintest hiss: one
+deeper voice moved by 277 Hz, more than twice the gap. Above 4,000 Hz a voice has little
+energy, so a "formant" found there is as likely to be the background. The second row gives
+up a little separation on clean recordings and barely moves in noise. It is the one used.
+
+The same settings are used for every voice. The usual recipe also changes its upper limit
+by the sex of the speaker; here that would be deciding the answer before measuring it.
+
+### How far it can be trusted
+
+**A whole recording.** With the method above, every one of 28 clean clips (5 to 8 seconds
+each) landed in the range of its voice: the deeper voices measured 944 to 1,033 Hz, the
+higher ones 1,103 to 1,304 Hz.
+
+**A short phrase** is harder, because a few seconds hold only a few vowels and the mix of
+vowels moves the figure. The same recordings cut into short stretches:
+
+| Length of stretch | Deeper voices placed lower / neutral / higher | Higher voices placed lower / neutral / higher |
+| --- | --- | --- |
+| 1.0 s | 92% / 4% / 4% | 1% / 16% / 83% |
+| 1.5 s | 88% / 10% / 2% | 2% / 15% / 84% |
+| 2.5 s | 89% / 11% / 0% | 0% / 11% / 89% |
+
+So a phrase lands in the *opposite* range a few times in a hundred when it is short and
+not at all at 2.5 seconds, and in the neutral range about one time in seven. A phrase with
+under about a second and a half of usable sound (roughly two and a half seconds of speech)
+is therefore labelled an **estimate**. Under a fifth of a second of usable sound, no
+figure is given.
+
+**Background hiss** pushes the figure up, towards "brighter", because it is read as
+resonance that is not there. White noise added to the clean clips:
+
+| Voice above background | Typical shift | Worst shift | What the app does |
+| --- | --- | --- | --- |
+| 30 dB | +12 Hz | +54 Hz | Measured |
+| 20 dB | +30 Hz | +74 Hz | **Estimate**, with a warning, under 30 dB |
+| about 15 dB | — | +175 Hz (one deeper voice read as "higher") | **Not given**, under 20 dB |
+| 10 dB | +97 Hz | +272 Hz | Not given |
+
+The lower range is only 100 Hz wide, so the limits are set where a shift can cross it. They
+were first set at 20 and 10 dB. The end-to-end run then put a deeper voice with hiss 14 dB
+below it through the real pipeline, and its resonance came back as 1,192 Hz, "higher",
+labelled an estimate. An estimate in the wrong range is still a wrong answer, and here it
+would tell a speaker their voice is brighter than it is, so both limits were raised. A
+low rumble, by contrast, hardly matters: noise weighted towards low frequencies moved the
+figure by 15 Hz at most, even at 10 dB.
+
+**Other things tried:** saving the clips as compressed AAC moved the figure by 18 Hz at
+most; making the recording 20 or 35 dB quieter, by 6 Hz at most. The analysis runs at
+about 85 times real time on this machine.
+
+**What has not been tried: a person.** All of this is from synthesised voices. They are
+built from real recordings and have real formants, but a human voice recorded on a laptop
+microphone in a room may sit differently in these figures, and nothing here has been
+checked against one. See "Accuracy and limits".
+
+Code: `resonance.py` (`measure_resonance`, `formant_spacing`, `ResonanceTrack`).
+
+## 9b. Where a voice sits: the three ranges
+
+Pitch and resonance are each placed in one of three ranges:
+
+| Range | Typically heard as | Pitch (median, Hz) | Resonance (formant spacing, Hz) |
+| --- | --- | --- | --- |
+| **Lower** | a masculine voice | under 145 | under 1,040 |
+| **Neutral** | either | 145 to 175 | 1,040 to 1,100 |
+| **Higher** | a feminine voice | over 175 | over 1,100 |
+
+**What a range says, and what it does not.** It says how a voice with that pitch or that
+resonance is *typically heard*. It does not say who is speaking, and the app never states
+or guesses that. Plenty of men speak above 145 Hz and plenty of women below 175; a range
+is a description of a sound.
+
+**Where the numbers come from.**
+
+- *Pitch.* The speaking pitch usually given for adult men is roughly 85 to 155 Hz and for
+  adult women roughly 165 to 255 Hz, with a stretch in between, around 145 to 175 Hz, in
+  which listeners do not agree. These are round figures from voice science and voice
+  training, used here as this app's ranges. They were not measured by this project.
+- *Resonance.* There is no such well-known table for formant spacing measured this
+  particular way, so the ranges were set from this app's own measurements above: the
+  deeper synthesised voices fell between 944 and 1,033 Hz and the higher ones between
+  1,103 and 1,304 Hz, with nothing in between. The neutral range, 1,040 to 1,100 Hz, is
+  that gap. This is a much thinner basis than the pitch ranges have, and it is fourteen
+  synthesised voices, not people.
+
+### The percentage
+
+Each placement also has a percentage. It is a **position inside the range**, not a
+probability and not a score:
+
+```
+            LOWER RANGE              NEUTRAL            HIGHER RANGE
+  ├──────────────────────────┼──────────────┼────────────────────────────────┤
+  85 Hz                    145 Hz         175 Hz                          255 Hz
+  100%  ◀───────────────── 0%   0% ─▶100%◀─ 0%   0% ──────────────────────▶ 100%
+  the deep end        the edge     the middle      the edge            the high end
+```
+
+| In the… | 0% is | 100% is | Formula |
+| --- | --- | --- | --- |
+| Lower range | the edge next to the neutral range | the deep end, and anything beyond it | (edge − value) ÷ (edge − deep end) |
+| Higher range | the edge next to the neutral range | the high end, and anything beyond it | (value − edge) ÷ (high end − edge) |
+| Neutral range | either edge | the middle | 1 − distance from the middle ÷ half the width |
+
+Worked examples for pitch: 118 Hz is (145 − 118) ÷ (145 − 85) = **45%** of the way into
+the lower range. 200 Hz is (200 − 175) ÷ (255 − 175) = **31%** into the higher range.
+160 Hz is the middle of the neutral range: **100%**. For resonance the ends are 940 and
+1,300 Hz: 990 Hz is (1,040 − 990) ÷ 100 = **50%** into the lower range.
+
+"45% of the way into the lower range" means exactly that and no more. It does not mean
+"45% likely to be heard as masculine". Nothing here measures how listeners hear a voice.
+
+### Pitch and resonance together: one marker
+
+Each phrase, and the recording as a whole, also gets one word:
+
+| Pitch | Resonance | Together | Why |
+| --- | --- | --- | --- |
+| lower | lower | **lower** | |
+| higher | higher | **higher** | |
+| neutral | neutral | **neutral** | |
+| neutral | lower | **lower** | One has no lean, so the other decides |
+| lower | higher | **mixed** | A listener is given two different cues |
+| lower | not measured | **lower** | Only one was measured; it decides |
+
+"Mixed" matters for anyone working on their voice. A lower pitch with a bright resonance
+can still be heard as a lighter voice, and pitch alone would never show it.
+
+### What is stored
+
+Every result carries, for the whole recording and for each phrase: the value in Hz, the
+range, the percentage, and whether it is measured or an estimate. It also carries the
+ranges themselves, with a version number, so a result can always be explained by the
+ranges that placed it. The goal, if the speaker chose one, is stored beside them; it
+changes how the result is *read* and changes no number in it.
+
+Code: `voice_range.py` (`VoiceRangeSettings`, `place`, `overall_marker`); `runner.py`
+(`_VoiceReader`).
 
 ## 10. Emphasis candidates, hesitation sounds, breaths
 
@@ -572,7 +832,8 @@ All thresholds are in one place, `settings.py`, as `AnalysisSettings`.
 | `vad_min_speech_ms` | 100 | Shorter bursts of "speech" are ignored |
 | `vad_min_silence_ms` | 100 | Shorter gaps do not split a speech region |
 | `vad_speech_pad_ms` | 30 | Widening of each speech region |
-| `version` | 1 | Goes up whenever a default changes |
+| `pitch_voiced_probability` | 0.3 | How sure the pitch tracker must be that a step is voiced before its pitch is used (section 9). 0.5 until Phase 9 |
+| `version` | 2 | Goes up whenever a default changes. 1 until Phase 9 |
 | `calibration_version` | 1 | Which version of the user's calibration supplied `min_pause_ms`. 1 means the default |
 
 **Every result stores a full copy of the settings that produced it.** Months later it is
@@ -585,6 +846,17 @@ record.
 
 Settings that contradict each other are refused when created; for example, a minimum pause
 longer than the long-silence boundary.
+
+**The voice ranges are a second, separate group**, `VoiceRangeSettings` in `voice_range.py`,
+with a version number of their own (1). They are the eight values of section 9b: for pitch
+85, 145, 175 and 255 Hz, and for resonance 940, 1,040, 1,100 and 1,300 Hz. They are kept
+apart because they do not change what is measured, only how a measurement is described, and
+a copy is stored with every result in the same way. Feedback cannot adjust them.
+
+The constants of the resonance measurement itself (4,000 Hz, three formants, the 500 Hz
+width, the 20 and 30 dB noise limits) are fixed in `resonance.py`, each with the reason
+beside it. They are part of the method, like the 16 ms pitch step, and are not copied into
+each result; changing one would mean raising the settings version.
 
 ## 13. Coaching and the AI model
 
@@ -667,6 +939,8 @@ The full list of findings the code can produce:
 | `emphasis` | At least one emphasis candidate (section 10) | — |
 | `no_emphasis` | No candidate, in a recording of 20 words or more | — |
 | `recognition_confidence` | Words were recognised | — (always "context") |
+| `voice_pitch` | Pitch was measured | The three ranges of section 9b: lower under 145 Hz, higher over 175 Hz |
+| `voice_resonance` | Resonance was measured | Lower under 1,040 Hz, higher over 1,100 Hz |
 
 If a measurement is unavailable, its finding is simply not produced. A missing number never
 becomes a statement.
@@ -754,7 +1028,8 @@ the relevant band). For example, for a fast overall pace:
 > stretching the vowels. Then say it once more at a speed between that and normal. Do both 3
 > times. *Target:* Bring your speaking pace down towards 200 WPM or below.
 
-There are thirteen such templates (`rules.py`). They are what the user gets, labelled
+There are seventeen such templates (`rules.py`); four of them, added in Phase 9, are for
+a voice goal and are described under "A voice goal" below. They are what the user gets, labelled
 "Written from fixed rules", whenever the AI model cannot be used. They are also the reason
 an analysis never has to fail because of the model.
 
@@ -903,6 +1178,83 @@ useful) can move a kind of issue down the order in which issues are offered. Nei
 changes a measurement, and the checks on the model's answer are exactly as described
 above. Both are explained in section 15.
 
+### A voice goal
+
+Phase 9 added the two findings about where the voice sits, and one choice the speaker
+makes when recording: **no goal**, **keep my voice lower**, or **keep my voice higher**.
+
+**With no goal**, the two findings are context. They say where the voice sat, and are
+never an issue, a strength or a correction:
+
+```
+Your pitch sat at a median of 118 Hz. That is in the lower range (under 145 Hz), 45% of the
+way into it. A voice in that range is typically heard as masculine.
+```
+
+**With a goal**, code adds how the phrases stood against it, and the finding gets a role:
+
+```
+Your pitch sat at a median of 152 Hz. That is in the neutral range (145 to 175 Hz). A voice
+in that range could be heard either way. Your goal is to keep your voice in the lower
+range: 2 of 4 phrases stayed in it for pitch. Furthest from it: segment 3 at 190 Hz,
+segment 2 at 150 Hz.
+```
+
+| Where the recording sat | Its phrases | Role | Weight |
+| --- | --- | --- | --- |
+| In the goal's range | All in it | **Strength** | — |
+| In the goal's range | Some left it | Issue | 0.3 to 0.7, growing with the share that left |
+| In the neutral range | — | Issue | 0.7 |
+| In the opposite range | — | Issue | 1.0 |
+
+The weight decides the order of the corrections, as for every issue. A whole recording
+outside the range matters most; a few stray phrases least.
+
+The correction is practised on **the phrase furthest from the range**, which code chooses,
+and the screen puts a Play button beside it. There are four templates, by what is to move
+and which way:
+
+| Finding and goal | Title | The technique the drill is built on |
+| --- | --- | --- |
+| Pitch, lower | Keep your pitch in the lower range | A comfortable low hum that slides straight into the line, with the end of the phrase falling |
+| Pitch, higher | Keep your pitch in the higher range | A comfortable higher hum that slides into the line, with the end of the phrase kept up |
+| Resonance, lower | Deepen your resonance | The open throat of a beginning yawn, kept while the line is said slowly on a relaxed "aw" |
+| Resonance, higher | Brighten your resonance | A slight smile and a forward tongue, as for "ee", with the sound placed at the front of the mouth |
+
+These are ordinary exercises from voice training, chosen to be gentle. They are not
+medical advice, every one of them ends "stop if your throat feels strained", and a
+coaching with a goal adds this to its "uncertain or not measured" list:
+
+> The voice ranges are this app's own rough ranges. They describe how a voice is typically
+> heard, not who is speaking, and they are not a judgement of any voice. A voice changes
+> through weeks of gentle practice: stop if your throat feels strained, and consider a voice
+> coach or a speech therapist for guidance.
+
+With a goal the delivery summary also gains a fifth line, "Voice range".
+
+**What the AI model is and is not shown.** It is shown the measurements, the range and the
+goal, and the technique. It is **not** shown the sentence "A voice in that range is
+typically heard as masculine" (or "feminine"). In the first real run, with that sentence in
+front of it, the model wrote that the actor should lower their pitch "to avoid being
+perceived as feminine". Nothing measured says that, and it turns a description of a sound
+into a remark about a person. Two things were done:
+
+1. The sentence is taken out of what the model reads. The user still sees it, written by
+   code, beside the measurement.
+2. The model's wording is checked for words about the speaker (man, woman, male, female,
+   masculine, feminine, boy, girl, gender, sex and the like) whenever a goal is set. A hit
+   is sent back with the reason and, if it comes back again, that correction is removed,
+   exactly like an unmeasured figure. Words inside quotation marks are not counted: the
+   actor's own lines may well contain them.
+
+The system prompt also gained a rule: talk only about the sound and the range, never say
+or guess anything about the actor's sex or gender, and never call a voice wrong. As the
+table below says of another rule, an instruction lowers how often something happens; it
+is the two steps above that prevent it.
+
+The same run showed the model writing "On seg-2, start with a low hum…", the internal name
+of a phrase. Code now rewrites `seg-2` as "segment 2" in everything the model writes.
+
 ### When the model is not available
 
 | Situation | What the user gets |
@@ -955,6 +1307,9 @@ a speaking coach. With that said:
 | Its reasons are often generic ("this undermines the character's authority") | Left as it is; the measured line beside each reason carries the specifics |
 | Hindi lines were quoted back in Devanagari, exactly as transcribed | — |
 | Told not to mention emotion, it still once ended a drill with "focusing on the different pitches and emotions" | Left as it is, and not checked by code: it is an instruction to the actor, not a claim that emotion was measured. It shows that an instruction to the model lowers how often something happens; it does not prevent it |
+| With a voice goal (Phase 9): shown "typically heard as feminine", it advised lowering the pitch "to avoid being perceived as feminine" | That sentence is no longer shown to the model, and its wording is checked for words about the speaker ("A voice goal", above). The two coaching runs of the final end-to-end check had none |
+| With a voice goal, its "why" still reaches for character ("a lower pitch can undermine a confident tone") | Left as it is: the same generic reasoning as elsewhere, and it is about the delivery. Not checked by code |
+| It named a phrase by its internal label, "On seg-2…" | Code rewrites the label as "segment 2" |
 | Time for the model, per coaching | 20.9 to 51.8 seconds on an Apple M2 with 16 GB, for recordings up to 133 seconds. The first answer after Ollama has been idle includes about 7.5 seconds to load the model. For the 10-minute stand-in, 66 seconds, most of it spent reading the prompt |
 | Speed | About 15 tokens of answer per second; about 116 tokens of prompt read per second |
 | Memory while loaded | 5.8 GB, as reported by Ollama. It stays loaded for about five minutes after its last use, which is Ollama's default |
@@ -1456,7 +1811,7 @@ Code: `calibration/engine.py` (`next_value`).
 | Setting | Default | Allowed range | One move | Moved by |
 | --- | --- | --- | --- | --- |
 | **Minimum pause** | 500 ms | 250 to 800 ms | 50 or 100 ms | Missed pauses (down); false pauses and wrong splits (up) |
-| **Priority of a kind of correction** (twelve of them: overall pace, pause length, pitch, a rushed phrase, …) | 1.0 | 0.4 to 1.0 | 0.2 | "Not useful" (down); "Useful" (back up) |
+| **Priority of a kind of correction** (fourteen of them: overall pace, pause length, pitch, a rushed phrase, and since Phase 9 the range the pitch sits in and the resonance, …) | 1.0 | 0.4 to 1.0 | 0.2 | "Not useful" (down); "Useful" (back up) |
 
 - **250 ms** is the floor because a shorter silence is usually part of pronouncing a word
   (the closure before a "p" or a "t"), not a pause between words.
@@ -1852,7 +2207,17 @@ What is known, stated plainly.
 | Audio quality | Heavily compressed audio makes recognition worse. A clean recording matters more than its format. |
 | Hinglish | Best effort only, as explained in section 5. |
 | Word times | From the recogniser's internal attention, not from a dedicated alignment tool. Fine for deciding which segment a word is in; not precise enough to measure the length of a single word. |
-| Pitch | Occasional octave errors; unreliable on creaky or breathy voice and in noise. |
+| Pitch | Occasional octave errors; unreliable on creaky or breathy voice and in noise. Since Phase 9 a step counts as voiced at a lower certainty (0.3, was 0.5), which gives deeper voices enough to measure and lets in slightly more doubtful steps; the median moved by 3 Hz or less for thirteen of fourteen test voices and by 6 Hz for one. |
+| Voice range: what it is | A description of two measurements against stated ranges. It is not a statement about the speaker, and not a measure of how any listener hears them: perception also depends on intonation, the way words are shaped, loudness, and the listener. No one's ears were part of this. |
+| Voice range: the ranges | This app's own. The pitch ranges follow round figures usually given for adult speaking voices; the resonance ranges were set from fourteen synthesised voices and nothing else. A real voice may sit differently in them, and the neutral range for resonance (1,040 to 1,100 Hz) in particular is only the gap those voices left. |
+| Voice range: the percentage | A position between two stated numbers, drawn as a straight line. It is not a probability, and "40%" is not "40% masculine". Past the far end of a range it stays at 100%. |
+| Resonance: tested on | Synthesised voices only (fourteen macOS voices, English and Hindi). **Not on a person**, not on a laptop microphone in a room, not on a singer or a trained voice. |
+| Resonance: a short phrase | Depends on which vowels the phrase happens to hold. Of stretches 1 to 1.5 seconds long, 2 to 4 in a hundred landed in the opposite range and 10 to 16 in the neutral one. A phrase with little usable sound is labelled an estimate; the figure for the whole recording is much steadier. |
+| Resonance: background noise | Hiss makes a voice read brighter. The figure is labelled an estimate when the voice is less than 30 dB above the background and not given under 20 dB. In between it can still be off by tens of Hz: in the test at 24 dB, a voice that measures 1,017 Hz clean read 1,050 Hz, which is in the neutral range instead of the lower one. |
+| Resonance: music, other voices, a phone line | Not tried. Music or a second voice will be measured as if it were the speaker. A telephone or a heavily filtered recording that removes sound above 3,400 Hz takes away part of what is measured. |
+| Resonance: the words spoken | The figure leans on the third formant to depend less on the vowels, and it still depends on them a little. Compare takes of the same lines, as the monologue screens do, in preference to different texts. |
+| Voice goal: the drills | Ordinary, gentle voice exercises, written as templates. They are not medical advice and not a programme. Changing where a voice sits takes weeks of practice and is best guided by a voice coach or a speech therapist; the app says so whenever a goal is set. |
+| Voice goal: one recording | Each analysis stands alone. The app does not yet show how pitch or resonance moved across days of practice. |
 | Loudness | Relative to the recording only (section 8). |
 | Emphasis | Detects louder and higher. Misses emphasis by slowing down or pausing. |
 | Hesitation sounds | A lower bound. |
@@ -1965,6 +2330,41 @@ script is covered by tests of its own (one line per phrase, the pause after each
 repeated word marked only where it stood out) and was read in the browser for an English
 and a Hindi recording. It has **not** been tried on a real performance; both originals
 were synthesised speech.
+
+**How Phase 9 has been tested.** The arithmetic (which range a value falls in, the
+percentage, the one-word marker) is covered by tests worked out by hand, including the
+edges of every range. The resonance measurement is tested on vowels built with exactly
+known formants, so the right answer is known: a spacing of 1,000 and of 1,200 Hz, each
+found within 20 Hz, the same answer on a low note and a high one and on a much quieter
+copy, and nothing reported for silence or for a sound too short. The choice of method, the ranges
+and the noise limits rest on the measurements in section 9a: fourteen synthesised voices,
+two sentences each, clean, with white, pink and low-weighted noise at three levels, as
+compressed audio, and at lower volume.
+
+The complete path was then run through the real API, worker, speech model and AI model
+on five recordings: 22 checks, all passed.
+
+| Check | Result |
+| --- | --- |
+| A deeper voice | Pitch 125 Hz, lower range, 34% into it. Resonance 1,017 Hz, lower range, 23%. Together: lower |
+| A higher voice | Pitch 181 Hz, higher range, 7%. Resonance 1,198 Hz, higher range, 49%. Together: higher |
+| The same recording with and without a goal | Every measurement identical; only the coaching differs |
+| The deeper voice with the goal "higher" | Both findings are issues; corrections "Keep your pitch in the higher range" and "Brighten your resonance", targets pointing up, the word of caution added |
+| The deeper voice with the goal "lower" | Both findings are strengths; no correction about the voice |
+| One recording with the deeper voice, a pause, then the higher voice | Phrase 1: 125 Hz and 1,019 Hz, lower. Phrase 2: 182 Hz and 1,197 Hz, higher. Pitch within 1 Hz and resonance within 2 Hz of each voice measured alone |
+| That recording with the goal "lower" | "1 of 2 phrases stayed in it for pitch. Furthest from it: segment 2 at 182 Hz." Both drills are set on phrase 2 |
+| The AI model's wording, with a goal | No word about the speaker's sex or gender in either run, after the two changes described in section 13 |
+| Hiss about 25 dB below the deeper voice | The app reads 24 dB. Resonance 1,050 Hz, neutral, labelled an estimate, with a warning. Pitch unchanged in range (126 Hz) |
+| Hiss about 15 dB below it | The app reads 14 dB. Resonance not given, with the reason; pitch alone decides the marker |
+| A reference recording | Measured the same way; never has a goal |
+
+Three of those checks first failed and changed the app: the pitch of the deeper voice came
+back as unavailable (section 9, the 0.3), the model's wording spoke about the speaker
+(section 13), and at 14 dB the resonance came back in the wrong range labelled as an
+estimate (section 9a, the 30 and 20 dB limits). It has **not** been tried on a human
+voice, on someone actually working on their voice over weeks, or against the judgement of
+a voice coach or of listeners. Until it has, the ranges and the figures above are
+indications of how the app behaves, not evidence of how a voice is heard.
 
 **How the coaching has been tested.** Its logic is covered by automated tests that replace
 the AI model with a scripted stand-in, including one that invents figures, misquotes, names
@@ -2540,7 +2940,8 @@ worth understanding.
 
 ### S48. Two things are adjustable: the minimum pause, and the order of corrections
 
-- **Chosen:** `min_pause_ms`, and a priority for each of twelve kinds of correction.
+- **Chosen:** `min_pause_ms`, and a priority for each kind of correction: twelve when
+  this was decided, fourteen since Phase 9 added the two about where the voice sits.
 - **Why these:** each has a kind of feedback that is direct evidence about it, and a
   change the user can see and check. The minimum pause decides what counts as a pause, and
   a missed or false pause is evidence about exactly that. A priority decides what the
@@ -2895,6 +3296,142 @@ worth understanding.
   app's opinion printed in the same ink as a measurement; *having the AI model annotate
   the script*, for the same reason and because nothing could check it.
 
+### S75. Resonance is the average spacing of the first three formants, found by LPC
+
+- **Chosen:** one figure in Hz, the step of the evenly spaced ladder that best fits the
+  median F1, F2 and F3 (section 9a), with the formants found by linear prediction on
+  25 ms slices of the louder, voiced part of the speech.
+- **Why:** it is one number with a physical meaning (it follows the length of the vocal
+  tract), it needs no new dependency (`librosa.lpc` is already installed for pitch), and
+  it runs at about 85 times real time.
+- **Considered:** *F1, F2 and F3 shown separately*: three numbers a reader has to
+  combine, and F1 and F2 move with every vowel. *The plain average of the formants*, or
+  *F3 alone*: either works roughly; the fitted spacing uses all three and weighs the
+  steadiest most. *Spectral centroid or tilt* ("brightness" of the whole sound): cheap,
+  and it changes with the microphone, the room and how loudly one speaks. *Praat through
+  the `parselmouth` package*: the standard tool for formants, and a good one; it would
+  add a large dependency for one figure, and its usual settings differ by the sex of the
+  speaker, which is the thing this app must not assume.
+- **Honest limit:** validated on synthesised voices only.
+
+### S76. Three formants under 4,000 Hz, the same for every voice
+
+- **Chosen:** look below 4,000 Hz, for three formants, with a filter of order 8, whoever
+  is speaking.
+- **Why:** measured (section 9a). Four formants under 5,500 Hz separated clean voices
+  better (a gap of 119 Hz against 86) and moved by up to 277 Hz with hiss 30 dB below
+  the voice. Three under 4,000 Hz moved by 25 Hz. A figure that depends on the
+  microphone's hiss more than on the voice is of no use for practice at home.
+- **Decided against:** *a higher limit for higher voices*, as formant tools usually do. It
+  measures each kind of voice better and needs to be told which kind it is. Here that
+  would settle the answer before the measurement.
+- **Also tried:** limits of 3,800 and 4,200 Hz, formant widths of 350 and 700 Hz, and a
+  filter of order 10; each was worse in separation or in noise (the table in section 9a).
+
+### S77. Three stated ranges on each scale, and a percentage that is a position
+
+- **Chosen:** lower, neutral and higher ranges for pitch and for resonance, and a
+  percentage saying how far into its range a value lies: from the neutral edge to the far
+  end in the outer ranges, and from the edges to the middle in the neutral one.
+- **Why:** the user asked for ranges with a percentage, and a position is the one
+  percentage this app can stand behind. It is arithmetic on a measured value and two
+  stated numbers, so it can be checked by hand and explained in a sentence.
+- **Decided against:** *"72% feminine"*, a single likelihood. It reads as a probability
+  that a listener hears the voice that way, and nothing here measures listeners. It
+  would need a model trained on labelled voices, which could not be explained or
+  checked, and would be a classifier of people, which this app is not. *A curve instead
+  of a straight line* (so that the middle of a range counts for more): no measurement
+  says what curve. *No neutral range*: a voice at 150 Hz would flip between two words on
+  a difference no one can hear.
+
+### S78. The ranges describe how a voice is typically heard, and are stored with the result
+
+- **Chosen:** the words on screen are "lower range", "neutral range" and "higher range",
+  each with one explanatory line ("typically heard as a masculine voice", "could be heard
+  either way", "typically heard as a feminine voice"). The eight numbers are in
+  `VoiceRangeSettings`, with a version, and a copy travels with every result.
+- **Why:** the feature exists because listeners do hear pitch and resonance that way, so
+  hiding the words would hide its purpose. Naming the *range* and saying how it is
+  *heard* keeps the statement about a sound. The speaker is never called anything.
+- **Where the numbers come from:** pitch, from the figures usually given for adult
+  speaking voices; resonance, from this app's own fourteen voices (section 9b). Both are
+  stated as rough.
+- **Decided against:** *labelling the speaker* ("male voice", "female voice"): it is a
+  guess about a person from two numbers, wrong for many people, and unkind when wrong.
+  *Letting feedback adjust the ranges*: there is nothing for a report to be right about;
+  how a voice is heard is not something one user's recordings can calibrate.
+
+### S79. One marker from two scales, with "mixed" when they disagree
+
+- **Chosen:** lower, neutral, higher or mixed (the table in section 9b). A neutral scale
+  lets the other decide; opposite scales give "mixed"; a missing one is left out.
+- **Why:** a speaker working on their voice needs to know when pitch and resonance point
+  different ways. That is common, and it is exactly what a pitch-only tool cannot show.
+- **Decided against:** *averaging the two percentages into one score*: Hz of pitch and Hz
+  of formant spacing are different things, and any weighting between them would be
+  invented. *Letting pitch decide alone*: simpler, and it would hide the case above.
+
+### S80. A goal is the speaker's choice, and without one nothing is judged
+
+- **Chosen:** no goal by default. A speaker may choose "keep my voice lower" or "keep my
+  voice higher". Only then do the two voice findings become issues or strengths, and only
+  then is anything about them coached.
+- **Why:** "No target pitch" (section 9) still holds as the app's own position: a
+  register is a property of the person. A goal is the person saying what they are
+  working towards, in either direction, for any reason. The goal changes how the result
+  is read and never what is measured, which the end-to-end run confirmed.
+- **Decided against:** *a goal named for a kind of person* ("sound more masculine"): the
+  request was to keep it general, and a direction on a scale is all the app can act on.
+  *A numeric target* ("reach 120 Hz"): it invites pushing the voice to a number;
+  "stay in this range, phrase by phrase" is the gentler instruction and the one a drill
+  can serve. *Storing the goal with the monologue*: it belongs to the speaker, so the
+  browser remembers it and each recording records the one it was made with.
+
+### S81. With a goal, the model is not shown how a range is heard, and its words are checked
+
+- **Chosen:** the sentence "typically heard as…" is written by code for the user and
+  removed from what the AI model reads. With a goal set, the model's wording is checked
+  for words about the speaker's sex or gender; a hit is sent back once, then removed.
+- **Why:** observed, not supposed. Shown the sentence, the model wrote "to avoid being
+  perceived as feminine". An instruction in the prompt was added too, and S29's lesson
+  applies: an instruction makes a thing rarer, a check makes it not appear.
+- **Decided against:** *checking only when the sentence slips through*: the model can
+  bring the idea from its own training without being shown it. *Checking every
+  coaching, goal or not*: with no goal the voice findings are not offered to the model
+  as anything to write about, and a monologue may well be about a man or a woman.
+- **Honest limit:** the check is a list of words. It does not catch the same thought said
+  without them.
+
+### S82. Resonance is an estimate under 30 dB of signal-to-noise, and not given under 20
+
+- **Chosen:** those two limits, plus "estimate" for a phrase with under about a second
+  and a half of usable sound, and no figure under a fifth of a second.
+- **Why:** hiss moves the figure one way only, towards brighter, and the lower range is
+  100 Hz wide. At 15 dB one deeper voice moved by 175 Hz into the higher range.
+- **What was tried first:** 20 and 10 dB, from the table of typical shifts. The
+  end-to-end run then returned exactly that wrong reading, labelled "estimate". A label
+  does not make a wrong range right, and for someone practising towards a lower voice it
+  is a discouraging error. The limits moved so that a figure given as measured shifted by
+  about half a range at worst in testing, and one that can cross a whole range is not
+  given.
+- **Cost:** in a noisy room there is no resonance figure at all, and the app says why.
+  Pitch, which is far less affected, is still given and decides the marker alone.
+
+### S83. A step counts as voiced at 0.3, not 0.5
+
+- **Chosen:** `pitch_voiced_probability` 0.3, as a recorded setting, with the settings
+  version raised to 2.
+- **Why:** measured (section 9). At 0.5 a deeper voice kept 6 to 20% of its steps and a
+  short recording fell under the 30 a pitch needs; at 0.3 it kept two to three times as
+  many and the median moved by 3 Hz or less for thirteen voices of fourteen.
+- **Decided against:** *no probability test, only the tracker's voiced flag*: most steps
+  of all, and the spread of pitch grew by up to 0.7 semitones for two voices, which
+  would feed straight into "pitch variation". *Lowering the 30-step minimum instead*: it
+  treats the symptom, and a median of 15 steps is a poor median.
+- **What it changes for older results:** nothing. They keep settings version 1 and their
+  own figures. Pitch variation and emphasis candidates in new results rest on more
+  steps, so a recording analysed again can show slightly different figures for both.
+
 ## 18. Glossary
 
 | Term | Meaning |
@@ -2923,6 +3460,16 @@ worth understanding.
 | **Voiced** | Sounds made with the vocal folds vibrating, such as vowels. Only these have pitch. |
 | **pYIN** | The pitch-tracking algorithm used. |
 | **Semitone** | One piano key step. Twelve semitones double the frequency. |
+| **Resonance** | How deep or bright a voice sounds, apart from the note it speaks on. Set by the shape of the throat and mouth. |
+| **Formant** | A band of frequency that the throat and mouth strengthen. Numbered from the lowest: F1, F2, F3. |
+| **Formant spacing** | The average distance between neighbouring formants, in Hz. The app's figure for resonance: lower is deeper. |
+| **Vocal tract** | The tube from the vocal folds to the lips. A longer one puts the formants closer together. |
+| **LPC (linear prediction)** | A way of fitting a small filter to a slice of sound. The peaks of the filter are the formants. |
+| **Pre-emphasis** | Boosting the higher frequencies slightly before analysis, so the weaker upper formants can be found. |
+| **Voice range** | Where a voice sits: its pitch and its resonance, each placed in the lower, neutral or higher range. |
+| **Marker** | One word for pitch and resonance together: lower, neutral, higher, or mixed when they disagree. |
+| **Voice goal** | The speaker's own choice to keep their voice lower or higher. Optional. Changes the coaching, never a measurement. |
+| **White / pink noise** | Hiss with equal energy at every frequency, or with more at the low end. Used to test how noise moves a measurement. |
 | **Percentile** | The value below which a given share of measurements fall. |
 | **Median** | The middle value when sorted. Less affected by extremes than the average. |
 | **Standard deviation** | A measure of how spread out values are around their average. |

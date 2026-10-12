@@ -141,6 +141,12 @@ def language_hint(result: dict) -> str:
     )
 
 
+def voice_goal(result: dict) -> str:
+    """The voice goal a stored result was analysed with, or "none"."""
+    goal = (result.get("voiceRange") or {}).get("goal")
+    return goal if goal in ("lower", "higher") else "none"
+
+
 def create_reanalysis_job(
     session: Session, analysis: Analysis, now: datetime, data_dir: Path | None = None
 ) -> tuple[job_queue.Job, bool]:
@@ -180,6 +186,7 @@ def create_reanalysis_job(
             title=analysis.title,
             source_analysis_id=analysis.id,
             monologue_id=analysis.monologue_id,
+            voice_goal=voice_goal(analysis.result),
         )
     except Exception:
         uploads.delete_audio(audio_path, data_dir)

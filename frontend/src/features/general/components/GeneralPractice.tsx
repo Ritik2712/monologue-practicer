@@ -135,6 +135,7 @@ export function GeneralPractice() {
       profile,
       language,
       retainAudio,
+      voiceGoal: state.voiceGoal,
       previewUrl: audio.url,
     });
   };
@@ -228,6 +229,8 @@ export function GeneralPractice() {
             onLanguageChange={setLanguage}
             retainAudio={retainAudio}
             onRetainAudioChange={setRetainAudio}
+            voiceGoal={state.voiceGoal}
+            onVoiceGoalChange={(goal) => store.setVoiceGoal(goal)}
           />
           <div className="flex flex-wrap items-center gap-3">
             <Button variant="primary" disabled={!audio || busy} onClick={analyse}>

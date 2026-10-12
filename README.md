@@ -7,6 +7,8 @@ device: no paid APIs, no cloud services, no accounts.
 > each with its original recording), **Daily Speaking Practice** (a timed routine on one
 > monologue: listen, mark, perform, record your take and compare it with the original),
 > **General Practice** (record or upload any speaking, see it measured, and get coaching),
+> **where your voice sits** (its pitch and its resonance, in a lower, neutral or higher
+> range, with an optional goal to keep it lower or higher),
 > and **feedback with calibration** (tell the app where it was wrong; it adjusts, slowly
 > and visibly). Start all of it with one command: `./run.sh`.
 
@@ -56,6 +58,28 @@ How the project works, file by file, and why each design decision was made:
   [Ollama](https://ollama.com), and every figure in it is checked against the measurements.
   If Ollama is not running, the analysis still works and the coaching is written from fixed
   rules instead; you can ask the model again later without re-recording.
+- **Where your voice sits**, in every result. Two things decide how a voice is heard: its
+  pitch (the note it speaks on) and its resonance (how deep or bright it sounds). The app
+  measures both and places each in one of three ranges, with how far into the range it
+  lies, for the whole recording and for every phrase:
+
+  | Range | Typically heard as | Pitch | Resonance (formant spacing) |
+  | --- | --- | --- | --- |
+  | Lower | a masculine voice | under 145 Hz | under 1,040 Hz |
+  | Neutral | either | 145 to 175 Hz | 1,040 to 1,100 Hz |
+  | Higher | a feminine voice | over 175 Hz | over 1,100 Hz |
+
+  The percentage is a position inside the range, not a probability. The ranges describe
+  how a voice is typically heard; the app never says who is speaking. They are rough, and
+  the resonance ranges were set from synthesised voices, not from recordings of people.
+  Resonance needs a quiet room: with a noisy background it is labelled an estimate or
+  left out.
+- **A voice goal** (optional), on the recording form: *Keep my voice lower* or *Keep my
+  voice higher*. The coaching then points at the phrases where your pitch or resonance
+  left that range, with a drill to do on the phrase furthest from it. With no goal,
+  nothing about where your voice sits is judged. The choice is remembered in this browser.
+  The drills are gentle voice exercises, not medical advice: stop if your throat feels
+  strained, and consider a voice coach or a speech therapist for guidance.
 - **Feedback** on every result of your own, next to the thing it is about. On a pause:
   intentional, accidental, "not a pause: I was still speaking", or "too short to split the
   phrase". On a phrase: a pause was missed (pick the silence the app heard, or the word
@@ -133,7 +157,8 @@ cd backend && uv run python -m app.speech_model download
 new tables and columns. Existing analyses are kept: they become "takes", made with the
 default settings, each the first result of its own recording. A take stored before Phase 8
 belongs to no monologue, so it shows in the General Practice history; a reference recording
-stored before it is now a monologue:
+stored before it is now a monologue. A result stored before Phase 9 does not say where the
+voice sits; analysing the recording again adds it, if the recording was kept:
 
 ```bash
 cd backend && uv run alembic upgrade head
@@ -278,6 +303,10 @@ and the worker running: send a recording. This prints a job with a `jobId`:
 ```bash
 curl -s -X POST http://localhost:4321/api/analyses -F "audio=@/path/to/recording.m4a" -F "language=auto"
 ```
+
+To have the coaching read the recording against a voice goal, add `-F "voiceGoal=lower"`
+(or `higher`). Where the voice sat is measured either way, and is under `voiceRange` in
+the result.
 
 Ask how the job is doing (replace `JOB_ID`). Repeat until `status` is `succeeded`:
 
@@ -427,6 +456,7 @@ slower.
 | A monologue: its original recording and that recording's measurements | `backend/data/audio/` (kept by default; untick to store measurements only) and the database | When you delete the monologue. Clearing the General Practice history does not touch it |
 | The takes of a monologue: their results and coaching | `backend/data/monologue_coach.db`, each marked with its monologue | When you delete the take, or its monologue. Clearing the General Practice history does not touch them |
 | Which monologue today's routine is on, and the rounds done | This browser's `localStorage`, with the checklist | With the checklist |
+| The voice goal you last chose | This browser's `localStorage`. Each result also records the goal it was made with | When you choose "No goal", or clear site data |
 | General Practice results, their coaching, and jobs | `backend/data/monologue_coach.db` | When you delete an analysis or clear the General Practice history |
 | Your feedback on a result: labels, reports, notes, corrected words | `backend/data/monologue_coach.db` | With the analysis it is about, or one at a time with "Remove" |
 | The calibration: the adjusted settings and the history of every change | `backend/data/monologue_coach.db` | Never deleted, so that every result can be traced to the settings that made it. "Reset to defaults" puts the values back; the history stays |

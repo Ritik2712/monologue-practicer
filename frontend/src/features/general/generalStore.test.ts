@@ -9,6 +9,7 @@ import {
   MAX_POLL_MS,
   POLL_MS,
   TAKES_LIMIT,
+  VOICE_GOAL_KEY,
   type Submission,
 } from "./generalStore";
 import type {
@@ -1357,6 +1358,64 @@ describe("comparing a take with its monologue's original", () => {
     answer(comparison("m1:take-1", "ref-1")); // the slow first answer arrives last
     await settle();
     expect(store.getSnapshot().comparison).toMatchObject({ status: "ready", referenceId: "ref-0" });
+  });
+});
+
+describe("the voice goal", () => {
+  it("is none until one is chosen, and a recording is then sent without one", async () => {
+    const { store, api } = setup();
+    store.init();
+    expect(store.getSnapshot().voiceGoal).toBe("none");
+
+    store.submit({ ...submission, voiceGoal: store.getSnapshot().voiceGoal });
+    await settle();
+    expect(api.submitAnalysis).toHaveBeenCalledWith(expect.objectContaining({ voiceGoal: "none" }));
+  });
+
+  it("is remembered between visits once chosen, and sent with the next take", async () => {
+    const { store, api, storage } = setup();
+    store.init();
+    store.setVoiceGoal("lower");
+    expect(store.getSnapshot().voiceGoal).toBe("lower");
+    expect(storage.get(VOICE_GOAL_KEY)).toBe("lower");
+
+    store.submit({ ...submission, voiceGoal: store.getSnapshot().voiceGoal });
+    await settle();
+    expect(api.submitAnalysis).toHaveBeenCalledWith(expect.objectContaining({ voiceGoal: "lower" }));
+
+    const next = setup({ [VOICE_GOAL_KEY]: "lower" });
+    next.store.init();
+    expect(next.store.getSnapshot().voiceGoal).toBe("lower");
+  });
+
+  it("is forgotten again when set back to none", () => {
+    const { store, storage } = setup({ [VOICE_GOAL_KEY]: "higher" });
+    store.init();
+    expect(store.getSnapshot().voiceGoal).toBe("higher");
+
+    store.setVoiceGoal("none");
+    expect(store.getSnapshot().voiceGoal).toBe("none");
+    expect(storage.has(VOICE_GOAL_KEY)).toBe(false);
+  });
+
+  it("ignores a remembered value that is not a goal", () => {
+    const { store } = setup({ [VOICE_GOAL_KEY]: "deeper" });
+    store.init();
+    expect(store.getSnapshot().voiceGoal).toBe("none");
+  });
+
+  it("changes nothing that is on view", async () => {
+    const { store } = setup();
+    store.openAnalysis("analysis-1");
+    await settle();
+    const before = store.getSnapshot();
+
+    store.setVoiceGoal("higher");
+
+    const after = store.getSnapshot();
+    expect(after.viewed).toBe(before.viewed);
+    expect(after.run).toBe(before.run);
+    expect(after.comparison).toBe(before.comparison);
   });
 });
 

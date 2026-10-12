@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from app.pipeline.segmentation import Segment, Word, is_countable_word
-from app.pipeline.settings import SAMPLE_RATE
+from app.pipeline.settings import DEFAULT_SETTINGS, SAMPLE_RATE
 
 # Energy is measured over 25 ms windows, every 10 ms.
 FRAME_SAMPLES = 400
@@ -30,6 +30,9 @@ PITCH_MIN_HZ = 65.0
 PITCH_MAX_HZ = 500.0
 PITCH_FRAME_SAMPLES = 1024
 PITCH_HOP_SAMPLES = 256
+# A frame counts as voiced when the tracker is at least this sure of it. Recorded with every
+# result as the setting `pitch_voiced_probability`.
+PITCH_VOICED_PROBABILITY = DEFAULT_SETTINGS.pitch_voiced_probability
 # Fewer voiced frames than this (about half a second) is too little to describe a voice.
 MIN_VOICED_FRAMES = 30
 
@@ -154,7 +157,7 @@ def measure_pitch(samples: np.ndarray, segments: list[Segment]) -> PitchTrack:
             frame_length=PITCH_FRAME_SAMPLES,
             hop_length=PITCH_HOP_SAMPLES,
         )
-        keep = voiced & (probability >= 0.5) & np.isfinite(f0)
+        keep = voiced & (probability >= PITCH_VOICED_PROBABILITY) & np.isfinite(f0)
         frame_times = segment.start + np.arange(f0.shape[0]) * PITCH_HOP_SAMPLES / SAMPLE_RATE
         times.append(frame_times[keep])
         values.append(f0[keep])

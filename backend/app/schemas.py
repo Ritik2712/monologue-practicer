@@ -29,6 +29,13 @@ JobKind = Literal["analysis", "coaching", "summary"]
 # they supply to compare their takes against, such as the original performance.
 Role = Literal["take", "reference"]
 PauseSignificance = Literal["short", "medium", "long"]
+# Where a voice sits. "lower" is typically heard as a masculine voice and "higher" as a
+# feminine one; "neutral" could be heard either way. A description of sound, not of a person.
+VoiceBand = Literal["lower", "neutral", "higher"]
+# One word for pitch and resonance together. "mixed": one is lower and the other higher.
+VoiceMarker = Literal["lower", "neutral", "higher", "mixed"]
+# What the speaker asked to work towards, if anything.
+VoiceGoal = Literal["none", "lower", "higher"]
 
 # Bumped when the shape of AnalysisResult changes in a way older readers cannot handle.
 ANALYSIS_SCHEMA_VERSION = 1
@@ -47,6 +54,27 @@ class MetricValue(ApiModel):
     unit: str
     quality: Quality
     note: str | None = None
+
+
+class VoicePlacement(ApiModel):
+    """One measured value of a voice, and the range of this app's it falls in."""
+
+    value_hz: float
+    band: VoiceBand
+    # How far into its range the value lies, 0 to 100: a position, not a probability. In
+    # the lower and higher ranges 0 is the edge of the neutral range and 100 the far end;
+    # in the neutral range 100 is the middle and 0 either edge.
+    percent: int
+    # "estimated" when there was little to measure from, or the background was loud.
+    quality: Quality = "measured"
+
+
+class SegmentVoice(ApiModel):
+    """Where the voice sat in one phrase. None for a part that could not be measured."""
+
+    pitch: VoicePlacement | None = None
+    resonance: VoicePlacement | None = None
+    marker: VoiceMarker | None = None
 
 
 class SpeechSegment(ApiModel):
@@ -72,6 +100,8 @@ class SpeechSegment(ApiModel):
     energy_delta_db: float | None
     median_pitch_hz: float | None
     pitch_delta_semitones: float | None
+    # Where the voice sat in this phrase. None for results stored before this was measured.
+    voice: SegmentVoice | None = None
 
 
 class PauseEvent(ApiModel):
@@ -143,6 +173,33 @@ class PipelineInfo(ApiModel):
     pitch_tracker: str
 
 
+class VoicePhraseCounts(ApiModel):
+    """How many phrases carry each overall marker."""
+
+    lower: int = 0
+    neutral: int = 0
+    higher: int = 0
+    mixed: int = 0
+    unmeasured: int = 0
+
+
+class VoiceRange(ApiModel):
+    """Where the voice sat over the whole recording, and the ranges it was placed in."""
+
+    # What the speaker asked to work towards. Shapes the coaching, never a measurement.
+    goal: VoiceGoal = "none"
+    pitch: VoicePlacement | None = None
+    resonance: VoicePlacement | None = None
+    marker: VoiceMarker | None = None
+    # The typical first three formants, in Hz, that the resonance figure was fitted to.
+    formants_hz: list[float] | None = None
+    phrases: VoicePhraseCounts = VoicePhraseCounts()
+    # The ranges that were in force, including their version number.
+    bands: dict[str, float | int] = {}
+    # Why the resonance is an estimate or is missing, when it is.
+    resonance_note: str | None = None
+
+
 class Metrics(ApiModel):
     total_word_count: MetricValue
     speech_active_seconds: MetricValue
@@ -192,6 +249,9 @@ class AnalysisBody(ApiModel):
     settings: dict[str, float | int]
     pipeline: PipelineInfo
     warnings: list[AnalysisWarning]
+    # Where the voice sat, in pitch and in resonance. None when there was no speech, and
+    # for results stored before this was measured.
+    voice_range: VoiceRange | None = None
 
 
 # --- Coaching ----------------------------------------------------------------------------
@@ -747,11 +807,20 @@ class UploadLimits(ApiModel):
     accepted_extensions: list[str]
 
 
+class VoiceGoalOption(ApiModel):
+    id: VoiceGoal
+    label: str
+    note: str | None
+
+
 class AnalysisOptions(ApiModel):
     profiles: list[DeliveryProfile]
     profile_note: str
     languages: list[LanguageOption]
     limits: UploadLimits
+    # What the speaker can ask to work towards with their voice, and the note shown with it.
+    voice_goals: list[VoiceGoalOption] = []
+    voice_goal_note: str = ""
 
 
 # --- Jobs --------------------------------------------------------------------------------
@@ -782,6 +851,8 @@ class JobStatus(ApiModel):
     source_analysis_id: str | None = None
     # The monologue the take being analysed belongs to, if any.
     monologue_id: str | None = None
+    # What the speaker asked to work towards with their voice, when the recording was sent.
+    voice_goal: VoiceGoal = "none"
     can_retry: bool
     can_cancel: bool
     # Jobs ahead of this one in the queue. Only set while queued.
