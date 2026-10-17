@@ -17,6 +17,7 @@ import {
 } from "@/features/general/components/SetupForm";
 import { revisionLabel } from "@/features/general/feedback";
 import { formatDateTime, formatMetric, formatSpan } from "@/features/general/format";
+import { hasDeliveryPace, recordingDelivery, summaryDelivery } from "@/features/general/pace";
 import type { GeneralState, GeneralStore } from "@/features/general/generalStore";
 import type { AnalysisResult, LanguageHint } from "@/features/general/types";
 import { generalApi, useRecorder } from "@/features/general/useGeneralPractice";
@@ -204,11 +205,15 @@ export function RecordTools({ state, store, monologue, language, take, reference
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Tile
-              label="Speech-active WPM"
-              value={formatMetric(take.metrics.speechActiveWpm)}
+              label="Delivery pace"
+              value={formatMetric(recordingDelivery(take.metrics))}
               unit="WPM"
-              metric={take.metrics.speechActiveWpm}
-              hint="Words ÷ time speaking. Pauses are left out."
+              metric={recordingDelivery(take.metrics)}
+              hint={
+                hasDeliveryPace(take)
+                  ? "Words ÷ the length of your phrases. Short pauses inside a phrase are counted."
+                  : "Words ÷ time speaking. Pauses are left out."
+              }
             />
             <Tile
               label="Pauses"
@@ -279,7 +284,7 @@ export function RecordTools({ state, store, monologue, language, take, reference
                   <tr className="border-b border-zinc-200 dark:border-zinc-800">
                     <th scope="col" className="py-2 pr-3 font-medium">When</th>
                     <th scope="col" className="py-2 pr-3 text-right font-medium">Length</th>
-                    <th scope="col" className="py-2 pr-3 text-right font-medium">Speech-active WPM</th>
+                    <th scope="col" className="py-2 pr-3 text-right font-medium">Delivery pace (WPM)</th>
                     <th scope="col" className="py-2 pr-3 text-right font-medium">Pauses</th>
                     <th scope="col" className="py-2 font-medium">Actions</th>
                   </tr>
@@ -310,8 +315,8 @@ export function RecordTools({ state, store, monologue, language, take, reference
                           {formatSpan(item.durationSeconds)}
                         </td>
                         <td className="py-2 pr-3 text-right tabular-nums">
-                          {formatMetric(item.metrics.speechActiveWpm)}
-                          {item.metrics.speechActiveWpm?.quality === "estimated" && (
+                          {formatMetric(summaryDelivery(item.metrics))}
+                          {summaryDelivery(item.metrics)?.quality === "estimated" && (
                             <span className={`block text-xs ${MUTED}`}>estimate</span>
                           )}
                         </td>

@@ -6,8 +6,7 @@ import { Button } from "@/components/Button";
 
 import {
   describeFeedback,
-  PAUSE_CHOICES,
-  REFERENCE_PAUSE_CHOICES,
+  pauseChoices,
   silenceNear,
   silencesIn,
   wordBefore,
@@ -39,6 +38,7 @@ export function PauseFeedbackSelect({
   disabled,
   store,
   reference = false,
+  holdsPauses = false,
 }: {
   pause: PauseEvent;
   item: FeedbackItem | undefined;
@@ -46,9 +46,11 @@ export function PauseFeedbackSelect({
   store: FeedbackStore;
   /** True for a reference recording, whose pauses can be reported but not labelled. */
   reference?: boolean;
+  /** True for a result whose phrases can hold a pause. */
+  holdsPauses?: boolean;
 }) {
   const at = formatTimecode(pause.startSeconds);
-  const choices = reference ? REFERENCE_PAUSE_CHOICES : PAUSE_CHOICES;
+  const choices = pauseChoices(pause, { reference, holdsPauses });
   return (
     <div className="max-w-xs min-w-[13rem]">
       <select
@@ -453,7 +455,7 @@ export function SegmentReport({
               {reference
                 ? "Saving makes a new revision of this reference and chooses it. Its word counts and WPM are worked out again from the corrected words and this phrase’s own "
                 : "Saving makes a new revision of this result. Its word counts and WPM are worked out again from your words and this phrase’s own "}
-              {formatNumber(segment.speechActiveSeconds, 2)} s.{" "}
+              {formatNumber(segment.endSeconds - segment.startSeconds, 2)} s.{" "}
               {reference
                 ? "Takes are then lined up with the corrected words. The reference as it is now stays in the list, unchanged, until you delete it."
                 : "The result you are looking at stays in your history, unchanged."}

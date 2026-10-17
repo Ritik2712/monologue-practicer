@@ -106,6 +106,9 @@ export function ListenTools({ state, store, feedback, busy }: ListenToolsProps) 
         onCorrectTranscript={(corrections) =>
           store.correctTranscript(reference.analysisId, corrections)
         }
+        // For an original measured the older way: its phrases are brought up to date by
+        // measuring it again, which stores a new revision that takes are then compared with.
+        onReanalyse={() => store.reanalyse(reference.analysisId, "reference")}
         // Opening another revision means studying, and comparing with, that one.
         onOpenRevision={(analysisId) => store.selectReference(analysisId)}
       />

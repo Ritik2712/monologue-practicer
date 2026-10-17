@@ -12,6 +12,20 @@ adjusts a few settings.
 
 Everything described here is built.
 
+**Phase 11 changed no measurement.** It added a way to download analyses as text (the
+backend document, section 3). One thing in a download is worked out when it is made and
+not stored: for a monologue's original, which has no coaching, the facts a coaching would
+start from, with today's bands (section 13, "The bands"). It is there so that the bands
+can be looked at against real performances; it judges nothing and changes nothing.
+
+**Phase 10 changed where a phrase ends, and which pace is the main one.** A silence of
+half a second is still a pause. But a phrase (a segment) now ends only at a pause of one
+second or more; a shorter pause stays *inside* its phrase, measured and shown where it
+fell. And the pace shown first is the **delivery pace**, which counts those short pauses,
+because a speaker slows a delivery down by pausing and not by dragging the words (sections
+4 and 6). The pauses themselves, the word counts and the speaking speed are measured
+exactly as before: on two real recordings analysed both ways they came out identical.
+
 **Phase 9 added two things to measure and changed one.** New: the voice's **resonance**
 (section 9a), and where the voice **sits**, in pitch and in resonance, against three stated
 ranges (section 9b). Changed: the pitch tracker is less strict about what it counts as
@@ -26,7 +40,7 @@ compared only with the original it was recorded for (section 14, decision S73), 
 original is shown as a script built only from what was measured (section 14, decision
 S74).
 
-**Last updated:** end of Phase 9. The measurements, the coaching (section 13), the
+**Last updated:** end of Phase 11, for that one point; before that, end of Phase 10. The measurements, the coaching (section 13), the
 comparison of a take with a reference recording (section 14) and feedback with calibration
 (section 15) are all built. Phase 7 added to section 15: pointing at a missed pause by a
 word, feedback on a reference recording, and what the feedback adds up to, including three
@@ -39,7 +53,7 @@ ways of using the AI model for it that were measured and only one of which was k
 3. [Finding speech](#3-finding-speech)
 4. [Segments, pauses and sections](#4-segments-pauses-and-sections)
 5. [Words](#5-words)
-6. [Speaking rate: three different WPMs](#6-speaking-rate-three-different-wpms)
+6. [Speaking rate: delivery pace, speaking speed, whole clip](#6-speaking-rate-delivery-pace-speaking-speed-whole-clip)
 7. [Pause statistics](#7-pause-statistics)
 8. [Loudness](#8-loudness)
 9. [Pitch](#9-pitch)
@@ -165,19 +179,51 @@ Code: `vad.py`.
 ## 4. Segments, pauses and sections
 
 The detector's raw regions are too fine: it may see a 150 ms gap inside "wait… what". Those
-are ordinary gaps between words, not pauses. So regions are joined:
+are ordinary gaps between words, not pauses. So regions are joined, in two steps:
 
 | Term | Definition |
 | --- | --- |
-| **Segment** | Speech regions joined across every gap shorter than 0.5 s. Roughly, one phrase said in one go. |
-| **Pause** | The silence between two segments. Always at least 0.5 s. |
+| **Stretch** | Speech regions joined across every gap shorter than 0.5 s. An unbroken run of speaking. |
+| **Pause** | The silence between two stretches. Always at least 0.5 s. |
+| **Segment** | Stretches joined across every pause shorter than 1 s. Roughly, one line of the speech. On screen it is called a phrase. |
 | **Section** | A group of segments. A new section starts after every pause of 5 s or more. |
-| **Short silence** | A gap between speech regions that is shorter than 0.5 s. It stays inside its segment and counts as speaking time. |
+| **Short silence** | A gap between speech regions that is shorter than 0.5 s. It stays inside its stretch and counts as speaking time. |
 
-The 0.5 s here is the **minimum pause**. It is the one threshold in this section that the
-user's feedback can move, between 0.25 s and 0.8 s (section 15). Wherever this document says
-"0.5 s" for a pause, read "the minimum pause the result was made with": every result
-records its own.
+So there are two thresholds, and they do different jobs:
+
+```
+ silence under 0.5 s      not a pause          stays inside a stretch
+ 0.5 s up to 1 s          a pause              stays inside its segment
+ 1 s or more              a pause              ends the segment
+ 5 s or more              a long silence       ends the segment and starts a new section
+```
+
+**A pause inside a segment is a full pause.** It is detected, measured, listed, counted in
+every pause statistic, can be labelled, and is compared with the original like any other.
+The only thing it does not do is cut the line in two.
+
+**Why a phrase does not end at every pause.** Until Phase 10 it did. A speaker who says
+"Be honest, are… all of us… riding toward death?" with two half-second stops got three
+"phrases" of three words each. Each was too short for its pace to mean anything, and the
+table showed a line of the speech as three rows. Measured on the two real recordings
+stored in the app, a film speech of 111 seconds and one of 66 seconds:
+
+| | Phrases before | With a trusted pace | Phrases now | With a trusted pace |
+| --- | --- | --- | --- | --- |
+| 111-second speech, 28 pauses | 29 | 12 | 13 | 10 |
+| 66-second speech, 18 pauses | 19 | 8 | 12 | 6 |
+
+Before, well under half the rows could be trusted; now most can. The brief already said a
+long-silence boundary "is used for segmentation" while shorter pauses "must still be
+detected and measured"; Phase 10 is that, with one second where the brief's first value
+was five. At five seconds the whole 111-second speech, whose longest pause is 2.3 s, would
+be one phrase.
+
+The 0.5 s is the **minimum pause**. It is the one threshold in this section that the
+user's feedback can move, between 0.25 s and 0.8 s (section 15). Wherever this document
+says "0.5 s" for a pause, read "the minimum pause the result was made with": every result
+records its own. The 1 s is the **segment break**. It is fixed (decision S89), and every
+result records it too.
 
 Short silences are measured and stored with every result, although no figure is built from
 them. They are there for one purpose: when the user says "a pause was missed here", the app
@@ -185,19 +231,15 @@ can look up what the detector actually heard at that spot (section 15).
 
 Each pause gets a size label:
 
-| Label | Length | Typical meaning (not decided by the app) |
-| --- | --- | --- |
-| `short` | 0.5 s up to 1 s | A breath, a comma |
-| `medium` | 1 s up to 5 s | A deliberate beat, a full stop, a thought |
-| `long` | 5 s or more | A structural break; starts a new section |
+| Label | Length | Where it lies | Typical meaning (not decided by the app) |
+| --- | --- | --- | --- |
+| `short` | 0.5 s up to 1 s | Inside a segment | A breath, a comma |
+| `medium` | 1 s up to 5 s | Between two segments | A deliberate beat, a full stop, a thought |
+| `long` | 5 s or more | Between two segments, and two sections | A structural break |
 
 The app measures how long a pause is. It does **not** decide whether it was dramatic,
 accidental or a breath. That is a judgement about intention, and it stays separate from the
 measurement.
-
-**The 5-second boundary is not the pause detector.** A pause of 0.7 s and a pause of 6 s are
-both pauses and both go into every pause statistic. The 5-second rule only adds the label
-`long` and starts a new section.
 
 **Silence at the two ends is not a pause.** Silence before the first word and after the last
 word is reported separately (`leadingSilenceSeconds`, `trailingSilenceSeconds`) and is left
@@ -206,18 +248,41 @@ or had already finished.
 
 ### A real example
 
-This is the app's actual output for a 17-second test recording (synthesised speech with
-silences inserted on purpose):
+This is the app's actual output for a 19-second test recording: five runs of synthesised
+speech with silences of 0.65, 0.80, 1.30 and 2.50 s put between them on purpose.
 
 ```
- seg-1          pause 1.6 s    seg-2            0.8 s  seg-3      pause 6.1 s        seg-4
- ████████████   ░░░░░░░░░░░░   ██████████████   ░░░░   ██   ░░░░░░░░░░░░░░░░░░░░░░   █████
- 0.0 ── 3.1                    4.7 ── 8.1              9.0-9.4                       15.6-16.9
- └────────────────────── section 0 ─────────────────────────┘                      └ section 1 ┘
-                 medium                          short               long
+ stretch 0     0.58 s  stretch 1      0.77 s  stretch 2     1.25 s   stretch 3    2.44 s   stretch 4
+ ██████████    ░░░░    ███████████    ░░░░░   █████████     ░░░░░░   ██████████   ░░░░░░░  ████████
+ └──────────────────── seg-1: 1.0 to 9.2 s ──────────┘              └─ seg-2 ─┘           └─ seg-3 ─┘
+       short, inside seg-1     short, inside seg-1       medium                  medium
 ```
 
-Code: `segmentation.py` (`build_segments`, `classify_pause`, `find_short_silences`).
+Five stretches, four pauses, three segments. The two pauses under a second are inside the
+first segment; the two over a second each end one. The silences measure 30 to 70 ms
+shorter than they were made, for the reason given in section 16 (each speech region is
+widened a little, and the detector works in 32 ms steps). So "a pause of one second" means
+a real silence of about 1.05 s.
+
+### Which side of a pause a word is on
+
+A word is put into the **stretch** that contains the middle of its time, or the nearest
+one. That matters more now than it did: a pause inside a segment has words of the same
+segment on both sides. The speech recogniser often gives the first word after a pause a
+start time *inside* the pause, so "which side" is never read from a word's own time. Each
+word stores the number of its stretch, and pause number *n* always lies between stretch
+*n* and stretch *n + 1*.
+
+### Results made before Phase 10
+
+They are not recalculated. In them every pause ended a segment, which is the same as a
+segment break equal to the minimum pause, and that is how every part of the app reads
+them: each segment is one stretch, and no segment holds a pause. The screen says so on
+such a result and offers to analyse the recording again if it was kept.
+
+Code: `segmentation.py` (`build_segments`, `Stretch`, `Segment`, `classify_pause`,
+`find_short_silences`); `stretches.py` (reading the stretches of a stored result, old or
+new).
 
 ## 5. Words
 
@@ -286,45 +351,86 @@ Anything Whisper outputs that contains at least one letter or digit. `danger,` i
 
 Code: `transcribe.py`, `segmentation.py` (`assign_words`, `count_words`).
 
-## 6. Speaking rate: three different WPMs
+## 6. Speaking rate: delivery pace, speaking speed, whole clip
 
-"Words per minute" sounds like one number. It is three, and mixing them up is the most
-common mistake in measuring speech.
+"Words per minute" sounds like one number. It is several, and mixing them up is the most
+common mistake in measuring speech. They differ only in how much silence is counted.
+
+For one segment:
 
 | Name | Formula | What it tells you |
 | --- | --- | --- |
-| **Segment WPM** | words in the segment ÷ length of that segment in minutes | How fast you spoke in that phrase |
-| **Speech-active WPM** | all words ÷ total speaking time in minutes | How fast you speak when you are speaking |
-| **Whole-clip WPM** | all words ÷ full length of the recording in minutes | How many words fit in the recording, silences included |
+| **Delivery pace** | words in the segment ÷ its whole length, from first sound to last | How fast the line went by, the short pauses inside it included |
+| **Speaking speed** | words in the segment ÷ the time spent speaking in it | How fast the words themselves were said |
 
-**Speaking time** is the total length of all segments. Gaps shorter than 0.5 s are inside a
-segment and count as speaking. Pauses, and the silence at the two ends, do not.
+For the recording:
 
-### Why it matters
+| Name | Formula | Silence counted |
+| --- | --- | --- |
+| **Delivery pace** | all words ÷ the length of all segments | The pauses inside segments (under 1 s) |
+| **Speaking speed** (speech-active WPM) | all words ÷ total speaking time | None |
+| **Whole-clip WPM** | all words ÷ full length of the recording | Every pause, and the silence at both ends |
 
-For the 17-second example above:
+**Speaking time** is the total length of all stretches. Gaps shorter than 0.5 s are inside
+a stretch and count as speaking. Pauses, and the silence at the two ends, do not.
+
+A segment with no pause inside it has one pace: its delivery pace and its speaking speed
+are the same number.
+
+### Why delivery pace is the main figure
+
+Until Phase 10 the main figure was the speaking speed. It answers "how fast do the words
+come out", and for most people that hardly changes: a person's speed of articulation is
+much steadier than how they pace a speech. What changes a delivery is the pausing. The two
+real recordings stored in the app show it:
+
+| Recording | Speaking speed | Delivery pace | Whole clip |
+| --- | --- | --- | --- |
+| 111-second film speech, 227 words | 201.6 WPM | 170.4 WPM | 123.2 WPM |
+| 66-second film speech, 133 words | 192.6 WPM | 173.2 WPM | 120.0 WPM |
+
+Both actors say their words at about 200 WPM, which sounds hurried as a bare number, and
+neither delivery is hurried. Judged on speaking speed, the only way to "slow down" is to
+say each word more slowly, as if the recording were played at half speed. Nobody performs
+like that. Judged on delivery pace, the way to slow down is to pause, which is what the
+actors do.
+
+The speaking speed is still measured and still shown, smaller, beside the delivery pace.
+It is what tells two different things apart: a line that went by slowly because it was
+paused, and one that went by slowly because the words were slow.
+
+### One line, worked out by hand
+
+From the first of the two recordings, a line with a half-second stop in it:
+
+```
+ "Be honest, are"   ‖ 0.5 s ‖   "all of us"
+  0.73 s speaking                0.83 s speaking          6 words
+```
 
 | | Words | Time | WPM |
 | --- | --- | --- | --- |
-| Speech-active | 31 | 8.34 s of speaking | 31 ÷ (8.34 ÷ 60) = **223** |
-| Whole clip | 31 | 17.06 s in total | 31 ÷ (17.06 ÷ 60) = **109** |
+| Speaking speed | 6 | 1.56 s of speaking | 6 ÷ (1.56 ÷ 60) = **231** |
+| Delivery pace | 6 | 2.08 s from first sound to last | 6 ÷ (2.08 ÷ 60) = **173** |
 
-Same recording, same words: 223 or 109. Half the recording is silence. If only the
-whole-clip number were shown, a fast speaker who pauses dramatically would look slow. That
-is why the whole-clip figure is always labelled "including pauses" and is never used to
-judge speed.
+### Why the whole-clip figure is not used to judge speed
+
+Same recording, same words: 201.6, 170.4 or 123.2. The whole-clip figure also counts the
+long pauses between the lines and the silence before the first word and after the last. A
+recording that starts three seconds late would come out "slower". It is always labelled
+"including pauses" and is never used to judge speed.
 
 The worked example from the project brief is one of the tests: 12 words in a 4.0-second
-segment is 12 ÷ (4 ÷ 60) = 180 WPM.
+segment with no pause in it is 12 ÷ (4 ÷ 60) = 180 WPM.
 
-### When a segment's WPM can be trusted
+### When a segment's pace can be trusted
 
 Short phrases give wild numbers: one word said in 0.44 s is "135 WPM", and two words in
-0.4 s would be "300 WPM". A segment's WPM is marked **reliable** only if all of these hold:
+0.4 s would be "300 WPM". A segment's pace is marked **reliable** only if all of these hold:
 
 | Condition | Flag when it fails |
 | --- | --- |
-| The segment is at least 2 s long | `short_segment` |
+| The segment holds at least 2 s of *speaking* (its pauses do not count towards this) | `short_segment` |
 | It has at least 3 words | `few_words` |
 | Whisper's average confidence in its words is at least 0.5 | `low_confidence` |
 
@@ -333,23 +439,32 @@ explain why. Hiding it would be as misleading as trusting it.
 
 ### Outliers are flagged, never changed
 
-A segment faster than 180 WPM gets the flag `wpm_outlier`. That flag means "worth a second
-look": it could be genuinely fast speech, or the recogniser may have heard extra words. The
+A segment whose **speaking speed** is above 180 WPM gets the flag `wpm_outlier`. That flag
+means "worth a second look": it could be genuinely fast speech, or the recogniser may have
+heard extra words. It is judged on the speaking speed, because too many words for the time
+spent speaking is what a misheard transcript looks like, whatever pauses the line had. The
 measured value is left exactly as it is. It is never capped or "corrected".
+
+For a speaker whose words really do come at 200 WPM, as in both recordings above, this
+flag appears on most rows. It is a prompt to check the transcript and nothing more; the
+180 is the brief's starting value and has not been tuned.
 
 ### Pace variation
 
-Calculated across the reliable segments only (it needs at least two):
+Calculated across the reliable segments only (it needs at least two), on their delivery
+pace:
 
-- **Pace variation**: the standard deviation of their WPMs. Near 0 means every phrase at the
-  same speed; larger means the speed changes a lot from phrase to phrase.
-- **Slowest and fastest** segment WPM.
+- **Pace variation**: the standard deviation of their delivery paces. Near 0 means every
+  phrase went by at the same pace; larger means the pace changes a lot from phrase to
+  phrase. Since Phase 10 a phrase that holds more pauses is a slower phrase, so pausing
+  unevenly now shows up here.
+- **Slowest and fastest** segment.
 
 ### Faster or slower than your own typical pace
 
-- **Typical pace** is the *median* WPM of your reliable segments in this recording. It needs
-  at least three of them. A median is used so that one rushed line does not drag "typical"
-  upwards.
+- **Typical pace** is the *median* delivery pace of your reliable segments in this
+  recording. It needs at least three of them. A median is used so that one rushed line does
+  not drag "typical" upwards.
 - Each reliable segment is then labelled against it:
 
 | Label | Rule | Example with a typical pace of 160 WPM |
@@ -363,6 +478,24 @@ Calculated across the reliable segments only (it needs at least two):
 This compares you with **yourself in this recording**, not with a target speed. A phrase
 marked "faster" is not a mistake; it is the place to listen to and decide whether the change
 of pace was what you wanted.
+
+### What changed for a recording analysed both ways
+
+The 111-second speech, as stored before Phase 10 and analysed again after it:
+
+| | Before | After |
+| --- | --- | --- |
+| Pauses | 28, same lengths to the millisecond | 28, of which 16 inside a phrase |
+| Words | 227 | 227 |
+| Speaking speed | 201.6 WPM | 201.6 WPM |
+| Whole-clip WPM | 123.2 | 123.2 |
+| Main figure | 201.6 (speaking speed) | 170.4 (delivery pace) |
+| Phrases | 29 | 13 |
+| Typical pace | 220.1 WPM | 184.6 WPM |
+| Pace variation | 38.2 WPM | 47.0 WPM |
+
+Nothing measured from the sound or the words moved. What changed is how the same pauses
+are grouped, and every figure built on the groups.
 
 Code: `metrics.py` (`words_per_minute`, `segment_pace`, `summarize_pace`).
 
@@ -820,6 +953,7 @@ All thresholds are in one place, `settings.py`, as `AnalysisSettings`.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `min_pause_ms` | 500 | A silence at least this long is a pause |
+| `segment_break_ms` | 1000 | A pause at least this long ends a segment. A shorter one stays inside its segment. Added in Phase 10; a result from before it is read as if it were equal to its `min_pause_ms` |
 | `medium_pause_ms` | 1000 | From here a pause is `medium` |
 | `long_silence_ms` | 5000 | From here a pause is `long` and starts a new section |
 | `min_segment_ms` | 2000 | Shortest segment whose WPM is trusted |
@@ -833,7 +967,7 @@ All thresholds are in one place, `settings.py`, as `AnalysisSettings`.
 | `vad_min_silence_ms` | 100 | Shorter gaps do not split a speech region |
 | `vad_speech_pad_ms` | 30 | Widening of each speech region |
 | `pitch_voiced_probability` | 0.3 | How sure the pitch tracker must be that a step is voiced before its pitch is used (section 9). 0.5 until Phase 9 |
-| `version` | 2 | Goes up whenever a default changes. 1 until Phase 9 |
+| `version` | 3 | Goes up whenever a default changes. 1 until Phase 9, 2 until Phase 10 |
 | `calibration_version` | 1 | Which version of the user's calibration supplied `min_pause_ms`. 1 means the default |
 
 **Every result stores a full copy of the settings that produced it.** Months later it is
@@ -927,7 +1061,7 @@ The full list of findings the code can produce:
 
 | Finding | Produced when | The bands it uses |
 | --- | --- | --- |
-| `pace` | Speech-active WPM was measured | Unhurried under 140 WPM, fast over 200 WPM, moderate between |
+| `pace` | A pace was measured. Since Phase 10 the delivery pace: unhurried under 125 WPM, fast over 175. For a result made before it, the speech-active WPM with the older bands that follow | Unhurried under 140 WPM, fast over 200 WPM, moderate between |
 | `pace_variation` | There is a typical pace (at least 3 reliable segments) | Spread of segment WPM ÷ typical pace: very even under 10%, widely varied over 25% |
 | `pause_length` | At least one pause | Median pause: short under 1 s, "long enough to register" from 1 s |
 | `no_pauses` | No pause at all in 15 s or more of speech | — |
@@ -953,8 +1087,10 @@ useful once something says whether that is a little or a lot. The bands do that.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `slow_wpm` | 140 | Below this, speech-active pace is "unhurried" |
-| `fast_wpm` | 200 | Above this, it is "fast" |
+| `delivery_slow_wpm` | 125 | Below this, the delivery pace is "unhurried". Added in Phase 10 |
+| `delivery_fast_wpm` | 175 | Above this, it is "fast" |
+| `slow_wpm` | 140 | The same for the speech-active pace. Used only for a result made before Phase 10, which has no other pace |
+| `fast_wpm` | 200 | Above this, that pace is "fast" |
 | `even_pace_ratio` | 0.10 | Pace variation under this share of typical pace is "very even" |
 | `varied_pace_ratio` | 0.25 | Over this, "widely varied" |
 | `registering_pause_seconds` | 1.0 | A median pause this long "registers" |
@@ -1028,8 +1164,9 @@ the relevant band). For example, for a fast overall pace:
 > stretching the vowels. Then say it once more at a speed between that and normal. Do both 3
 > times. *Target:* Bring your speaking pace down towards 200 WPM or below.
 
-There are seventeen such templates (`rules.py`); four of them, added in Phase 9, are for
-a voice goal and are described under "A voice goal" below. They are what the user gets, labelled
+There are twenty such templates (`rules.py`). Four of them, added in Phase 9, are for a
+voice goal and are described under "A voice goal" below; three were added in Phase 10 and
+are described under "Pace is slowed by pausing" below. They are what the user gets, labelled
 "Written from fixed rules", whenever the AI model cannot be used. They are also the reason
 an analysis never has to fail because of the model.
 
@@ -1177,6 +1314,73 @@ shown to the AI model beside each pause. Their **ratings of corrections** (usefu
 useful) can move a kind of issue down the order in which issues are offered. Neither
 changes a measurement, and the checks on the model's answer are exactly as described
 above. Both are explained in section 15.
+
+### Pace is slowed by pausing
+
+The examples above are from a recording analysed before Phase 10, and are still what such
+a result shows. A result made since then reads like this (the 19-second test recording of
+section 4):
+
+```
+Your delivery pace was 196 WPM: your words over the length of your phrases, counting the
+short pauses inside them. That is fast: over 175 WPM. 2 pauses inside your phrases took
+1.4 seconds; with those left out, the words themselves were said at 217 WPM.
+
+4 pauses of 0.5 seconds or more, with a median of 1 second. 2 of them fell inside a phrase
+and 2 were long enough to end one. …
+```
+
+**The bands for delivery pace** are unhurried under 125 WPM and fast over 175 WPM. They
+are the older bands for speaking speed (140 and 200) scaled down: on the three real
+recordings available, delivery pace came to 85, 88 and 90% of the speaking speed. Three
+recordings is very little to set a band from, and these are stated as rough.
+
+**The correction for a fast delivery** used to be "say it at about half your normal speed,
+stretching the vowels". That fits a speaking speed, which only slower words can lower, and
+it is the wrong advice for a delivery. The template is now:
+
+> **Slow the delivery with pauses.** The lines go by faster than a listener can take them
+> in. What they need is more silence between the thoughts, not slower words. *Drill:* Say
+> “…” at your normal speaking speed. Choose two places in it where the thought turns, and
+> stop at each for one short beat: long enough to think “and then”, and no longer. Where
+> you already pause, hold that pause a little longer, still under a second. Do not stretch
+> the words. Repeat 3 times. *Target:* Bring your delivery pace down towards 175 WPM or
+> below, by pausing inside your phrases.
+
+Two details of that drill were found by reading what the real pipeline and the real model
+produced, not by reasoning:
+
+1. *The stop must be a short one.* The first version said "stop for a silent count of “one
+   thousand one”", which is about a second. A pause of a second ends the phrase, and a
+   pause that ends a phrase is not counted in its delivery pace. The drill could not have
+   moved the figure it was given for.
+2. *The model puts the stop where the speaker already stops.* Told in so many words never
+   to place it after words a listed pause already follows, it did exactly that in 3 runs
+   of 3. The places where a thought turns are the places a speaker already pauses, so
+   this is less a fault than a fact. The drill therefore says what to do there (hold it a
+   little longer), and the instruction, which did nothing, was taken out again.
+
+Two more templates follow from the same idea. A phrase well ahead of the typical pace gets
+"Give this phrase room": one short beat inside it. A phrase well *behind* the typical pace
+that holds pauses gets "Run this phrase through": say it without stopping, then put back
+only the one pause wanted most. The finding says which case it is ("It holds 2 pauses,
+1.8 seconds in all" or "It holds no pause").
+
+A result made before Phase 10 keeps the older templates, because its one pace leaves every
+pause out and pausing cannot move it.
+
+**What the model is shown.** Each phrase on one line with its delivery pace, and under it
+the pauses inside it with the words each came after:
+
+```
+seg-1 [0:00.0-0:05.0] 120 WPM: "you clearly do not know who you are talking to"
+  (inside seg-1, pause-1: 0.6 seconds of silence after “do not know”)
+(pause-2: 1.5 seconds of silence)
+seg-2 [0:06.5-0:10.5] 165 WPM: "so let me clue you in I am not in danger"
+```
+
+The words of a phrase stay together on its own line, because that is the line the model is
+told to quote from.
 
 ### A voice goal
 
@@ -1427,7 +1631,9 @@ extra letter in the reference (ख्यत्री where the take had खत�
 For each pause in the reference, the question is: does the take pause at the same place in
 the words?
 
-A pause sits between the last word of one phrase and the first word of the next. The
+A pause sits between the last word of one stretch of speaking and the first word of the
+next (section 4). That is true of a pause inside a phrase and of one that ends a phrase
+alike, so both are looked for in the same way. The
 matched words nearest to it on either side (at most 3 words away) have partners in the take.
 Those two partner words mark the same place in the take, and then:
 
@@ -1461,12 +1667,16 @@ For each phrase of the reference, the pace of the same words in the take:
 
 ```
 reference pace = matched words of the phrase ÷ time from the first to the last of them
-take pace      = the take's words over the same stretch ÷ that stretch's time,
-                 minus any pauses the take makes inside it
+take pace      = the take's words over the same run ÷ that run's time,
+                 minus any pause the take makes inside it that is long enough to end a phrase
 ```
 
-Both are taken over the same stretch of words, and pauses are left out of both, as
-everywhere else in the app. A phrase is compared only when at least 60% of its words were
+Both are **delivery paces** over the same run of words. A phrase of the reference holds
+no pause as long as its segment break, or the pause would have ended it; its short pauses
+are part of its time. The take is read by the same rule, whatever it was analysed with: a
+pause shorter than the reference's segment break counts, and a longer one is left out and
+appears in the pause table instead. Otherwise one long stop in the take would be reported
+twice, once as a pause and once as a line said slowly. A phrase is compared only when at least 60% of its words were
 matched, it has at least 3 words, and the stretch lasts at least 1.5 seconds in both
 recordings. Otherwise it is listed, can still be played in both, and carries no pace.
 
@@ -1660,10 +1870,20 @@ measured. Code: `feedback.py` (`classify`).
 | "Useful" / "Not useful" | A correction in the coaching | Report | Raising or lowering the priority of that kind of correction |
 
 The brief lists "this segment was incorrectly split" and "these two segments should be
-separate" as feedback of their own. In this app a pause is exactly what ends a segment
-(section 4), so a wrong split *is* a pause that should not have counted, and two segments
-that should be separate *are* a missed pause. They are offered under those wordings on the
-pause and on the phrase, and counted the same way.
+separate" as feedback of their own. Until Phase 10 a pause was exactly what ended a segment,
+so a wrong split *was* a pause that should not have counted, and a result made then is
+still treated that way.
+
+In a result made since, only a pause of a second or more ends a segment, and the two
+reports are told apart:
+
+| Said about | What it means now | Counts towards |
+| --- | --- | --- |
+| A pause inside a phrase: "Not a pause: I was still speaking" | The silence should not have counted | Raising the minimum pause, as before |
+| A pause inside a phrase: "Too short to split the phrase" | Not offered, and refused if sent: that pause did not split anything | — |
+| A pause that ended a phrase: "Should not have ended the phrase" | The line should have carried on | Nothing. It is kept on record, and the answer says why: the one-second segment break is fixed |
+
+A missed pause is reported on a phrase exactly as before.
 
 ### What is looked up when a report arrives
 
@@ -2236,6 +2456,11 @@ What is known, stated plainly.
 | Comparison: which original | Since Phase 8 a take is compared only with the original of the monologue it was recorded for. A take recorded for the wrong monologue (the user chose one and performed another) is still compared, and the line-up will say how few words were found. |
 | The script of the original | A rearrangement of the reference's stored result, so it inherits every limit above: misheard words appear as heard, a pause hidden by music is missing, and only louder or higher words are marked. It is not a transcript checked by a person. |
 | Waveform | A picture. Its height depends on how each recording was made. Nothing is measured from it. |
+| Where a phrase ends | At a pause of one second or more: a fixed, round choice, not a measured property of speech. A line spoken with a 0.95 s stop is one phrase and the same line with a 1.05 s stop is two. Like every pause length it is measured 30 to 70 ms short, so "one second" means about 1.05 s of real silence. Feedback does not move it. |
+| Delivery pace | Depends on where phrases end. A pause just over a second is left out of it and one just under is counted, so two takes that differ by a tenth of a second in one pause can differ by several WPM on that line. Compare it across takes of the same lines; the speaking speed beside it does not have this step. |
+| Delivery pace: the bands | "Unhurried under 125, fast over 175" was scaled from the older bands using three real recordings. That is far too few to call a norm. In a monologue, the original's own pace on the same line is the better yardstick, and the comparison gives it. |
+| Phrases across two results | A result made before Phase 10 ends a phrase at every pause. Set beside a newer one, its phrases, typical pace, pace variation and main pace figure are not like for like, and both screens that compare say so. Its pauses, words and speaking speed are. |
+| Where to pause | The app shows where pauses fell. It says where one *could* go only by comparison with an original. In General Practice there is no original, and the app does not guess. |
 | Short silences | Measured 35 to 75 ms shorter than the silence really is, for the same reason pauses are (the 30 ms widening and the 32 ms steps). A real gap of 400 ms shows as about 350 ms. This is what the minimum pause is compared with, so "500 ms" means about 550 ms of true silence. |
 | Calibration: what it can adjust | One measuring setting, the minimum pause, between 250 and 800 ms, and the order of corrections. It cannot make the detector hear speech it missed, fix a misheard word, or change how pitch and loudness are measured. |
 | Calibration: how much it has to go on | An adjustment is made on as few as three reports. That is a small sample, and the screen says "low confidence". It is one person's judgement of their own recordings, which is the point of it, and also its limit. |
@@ -2331,6 +2556,34 @@ repeated word marked only where it stood out) and was read in the browser for an
 and a Hindi recording. It has **not** been tried on a real performance; both originals
 were synthesised speech.
 
+**How Phase 10 has been tested.** The grouping of stretches into segments, both paces and
+everything that reads them are covered by tests whose answers are worked out by hand: a
+pause of exactly the segment break ends a segment and one a millisecond shorter does not;
+a word timed inside a pause still lands on its own side of it; a corrected line keeps its
+pause and has both paces worked out again; a result stored before Phase 10 reads exactly
+as it did. The complete path was then run through the real API, worker, speech model and
+AI model: 42 checks in two passes, all passed.
+
+| Check | Result |
+| --- | --- |
+| A recording made with silences of 0.65, 0.80, 1.30 and 2.50 s between five runs of speech | Measured as 0.58, 0.77, 1.25 and 2.44 s. All four are pauses; the two under a second are inside a phrase and the two over a second each end one. Three phrases, five stretches |
+| Its first phrase: 24 words, 8.19 s long, of which 1.35 s in two pauses | Delivery pace 175.9 WPM, speaking speed 210.6 WPM. Both equal the figure worked out by hand from the stored lengths |
+| The recording as a whole, 45 words | Delivery 195.5, speaking 216.7, whole clip 139.1 WPM: each equal to the figure worked out by hand |
+| One word added to that phrase's transcript | Delivery 183.2, speaking 219.4; its pauses, its length and the other phrases untouched |
+| "Should not have ended the phrase" on the 1.25 s pause; the same report on a pause inside a phrase | Kept, moves no setting, and says why; refused with a reason |
+| The same file as a monologue's original and as a take of it | All four pauses found in both with a difference of zero, whether inside a phrase or between two; every phrase at the same pace in both; no difference listed |
+| The two real recordings stored in the app, each analysed again | Pauses identical to the millisecond (28 and 18). Word counts identical (227 and 133). Speaking speed identical (201.6 and 192.6 WPM). Phrases 29 → 13 and 19 → 12. The stored result unchanged |
+| The same recording analysed twice the new way | Cut identically |
+| A result made before Phase 10 compared with one made after | The note about different settings appears, in words |
+| The AI model's coaching, read | Written in 25 to 82 seconds. It wrote the pause-based drill and no "half speed". It also showed the two faults described in section 13, which changed the drill |
+
+It has **not** been tried on a recording the user made themselves after the change; on a
+speaker who rarely pauses at all (every phrase would then be very long); on Hindi (the
+grouping does not look at the words, so nothing about it is specific to a language, and
+that is reasoning, not a measurement); or on a recording near the 10-minute limit. Whether
+one second is the right place to end a phrase for this user's own delivery is not known:
+it was chosen on two film speeches and one take.
+
 **How Phase 9 has been tested.** The arithmetic (which range a value falls in, the
 percentage, the one-word marker) is covered by tests worked out by hand, including the
 edges of every range. The resonance measurement is tested on vowels built with exactly
@@ -2399,7 +2652,7 @@ Each entry says what was chosen, what was considered, and what was decided again
 - **Trade-off accepted:** a very soft word ending can fall just outside a segment. That
   affects the pause by a few hundredths of a second, which is within the stated accuracy.
 
-### S3. Every pause ends a segment; five seconds starts a new section
+### S3. Every pause ends a segment; five seconds starts a new section *(the first half replaced in Phase 10 by S84)*
 
 - **Chosen:** segments are phrase-sized (split at every pause of 0.5 s or more), and
   segments are grouped into sections at long silences (5 s or more).
@@ -3432,6 +3685,126 @@ worth understanding.
   own figures. Pitch variation and emphasis candidates in new results rest on more
   steps, so a recording analysed again can show slightly different figures for both.
 
+### S84. A segment ends at a pause of one second or more; a shorter pause stays inside it
+
+- **Chosen:** two thresholds with two jobs. 0.5 s (the minimum pause) decides what is a
+  pause. 1 s (the segment break) decides which pauses end a segment. This replaces the
+  first half of S3; the 5-second rule for sections is unchanged.
+- **Why:** asked for by the user after seeing a real speech cut into 29 rows, 17 of them
+  too short to trust, with one line of the speech spread over three rows. A stop of half
+  a second inside a line is part of how the line is delivered. It is also what the brief
+  says, read plainly: a boundary for segmentation, and shorter pauses still detected.
+- **Why one second:** it is the value the app already used to call a pause "medium", so
+  no new number was invented. On the 111-second speech it gives 13 phrases. Worked out
+  from that recording's stored pauses, 1.5 s would give about 7 phrases of nearly 40 words
+  each, too long to be the unit a drill is done on; 2 s about 4; the brief's 5 s, 1.
+- **Decided against:** *joining rows on screen only*, leaving the stored segments as they
+  were: the table would show one thing while coaching, comparison and typical pace ran on
+  another. *Ending a phrase by meaning* (at the recogniser's full stops): the recogniser's
+  punctuation is unreliable, most of all in Hindi, and S8 keeps boundaries a matter of
+  sound. *A threshold relative to the speaker's own median pause*: the same recording
+  would be cut differently depending on its other pauses, and two takes could not be
+  compared.
+
+### S85. Stretches are kept as the level underneath
+
+- **Chosen:** what used to be a segment is now a stretch, and it is still stored: every
+  stretch, and for every word the stretch it is in. A segment is a group of stretches.
+- **Why:** three things depend on the unbroken runs and not on the lines. Sound is
+  measured where there is speech (loudness, pitch and resonance are taken over stretches,
+  so a pause inside a line does not lower the line's loudness: a test checks that the same
+  tone with and without a 0.9 s silence in it reads within 0.2 dB). Words are put on the right
+  side of a pause by stretch (S8, S39). And the comparison finds a pause by the words on
+  either side of it, which are the last word of one stretch and the first of the next.
+- **What it bought:** the comparison's way of locating a pause did not have to change at
+  all. It moved from "segment" to "stretch" and its tests still pass.
+- **Decided against:** deriving the stretches again from word times when needed. Word
+  times stray into pauses; that is the reason S39 exists.
+
+### S86. Delivery pace is the main figure; speaking speed is kept beside it
+
+- **Chosen:** the figure shown first, judged in coaching, compared with the typical pace
+  and compared with an original is the delivery pace. The speaking speed is shown
+  smaller, wherever it differs.
+- **Why:** the user's point, and the two real recordings bear it out: both actors speak
+  their words at about 200 WPM and deliver at about 170. Practising against the speaking
+  speed means saying words slowly, "as if someone had set the speed to 0.5×". Practising
+  against the delivery pace means pausing.
+- **Why keep the speaking speed at all:** without it two different things look the same.
+  A line at 150 WPM may be slow words, or quick words with long stops, and the remedy is
+  the opposite. It is also the figure that does not jump when a pause crosses one second.
+- **Departs from the brief** in one respect, on purpose: the brief makes the pause-free
+  segment WPM the primary figure. It is still computed by the brief's formula and still
+  shown; it is no longer the headline.
+- **Decided against:** *the whole-clip WPM as the practice figure*: it also counts the
+  long pauses between lines and the silence at both ends, so it changes with when the
+  recorder was started. *One blended score*: there is no honest weighting.
+
+### S87. Delivery pace has bands of its own, scaled from three recordings
+
+- **Chosen:** unhurried under 125 WPM, fast over 175 WPM. The older 140 and 200 stay, for
+  results that have only a speaking speed.
+- **Why:** the two paces differ by 10 to 15%, so one pair of bands cannot serve both. On
+  the three real recordings available, delivery pace was 85, 88 and 90% of the speaking
+  speed (two measured by the new pipeline, the third worked out from its stored pauses);
+  the bands are the old ones times about 0.88, rounded.
+- **Honest limit:** three recordings. And under these bands the 111-second film speech,
+  which the old bands called "fast" at 201.6, is "moderate" at 170.4, close to the edge.
+  They are orientation, as S25 says of all bands.
+- **Decided against:** *no judgement of pace in General Practice until there is more
+  data*: offered to the user as an option; with no answer, the bands were set and are
+  stated as rough. *Bands per language or profile*: nothing to base them on.
+
+### S88. A fast delivery is corrected with short pauses, and the drill stays inside the phrase
+
+- **Chosen:** the templates for a fast pace and a rushed phrase ask for a short silent
+  beat at the places where the thought turns, under a second, with the words unslowed.
+- **Why:** it follows from S86, and the length follows from S84: a stop of a second ends
+  the phrase and no longer counts in its delivery pace. The first version of the drill
+  asked for exactly that and could not have worked; reading the end-to-end output showed
+  it, and no automated check would have.
+- **About the model:** an instruction not to place the beat where the line already
+  pauses was tried and ignored in 3 runs of 3, so it was removed and the drill now says
+  what to do at an existing pause. This is S71's lesson again: what must hold is done by
+  code or by the template, not asked of the model.
+- **Decided against:** *having code choose where the new pause goes*: code does not know
+  where a thought turns. In a monologue the original's pauses are the honest answer, and
+  the comparison lists them.
+
+### S89. The segment break is fixed; feedback does not move it
+
+- **Chosen:** 1,000 ms, a recorded setting, not adjustable. "Should not have ended the
+  phrase" is stored and counted towards nothing, and its answer says so.
+- **Why:** the same reasoning as S48 and S49. A setting is made adjustable when moving it
+  has been measured to do what the report asks. Here one report would be about one
+  pause, and moving the break would regroup every phrase of every later recording and
+  shift every delivery pace with it, making takes from before and after incomparable.
+- **Decided against:** adjustable with a wide dead zone. Possible later, once there are
+  real reports to look at; the reports are being kept for that.
+- **Bound to the minimum pause:** the minimum pause may be moved up to 800 ms by
+  feedback, and the break must stay at or above it. At 1,000 ms it always does.
+
+### S90. Results from before Phase 10 are read as they are, with the break at their own minimum pause
+
+- **Chosen:** a stored result with no stretches is one in which every pause ended a
+  segment. Everything reads it so: one stretch per segment, no pause inside any, and its
+  one pace per segment is its delivery pace, which is exactly true of it. It is judged
+  with the bands that fit that pace and coached with the templates that fit it.
+- **Why:** S63: old results are never recalculated. And it needed no migration, because
+  the reading is done in one small file (`stretches.py`) that every reader goes through.
+- **What the user sees:** a notice on such a result, and "Analyse again" if the recording
+  was kept. A monologue's original is kept by default, so its phrases can be brought up
+  to date with one press.
+
+### S91. A take's pace on a line is read by the reference's segment break
+
+- **Chosen:** in the phrase-by-phrase comparison, a pause of the take counts in its pace
+  for a line unless it is as long as the *reference's* segment break.
+- **Why:** it makes the rule the same on both sides without depending on how the take was
+  analysed. And with an older reference, whose break is its minimum pause, it reduces to
+  exactly what the comparison did before: every pause left out. So older pairs give the
+  figures they always gave.
+
 ## 18. Glossary
 
 | Term | Meaning |
@@ -3443,15 +3816,19 @@ worth understanding.
 | **VAD** | Voice activity detection: deciding where speech is. |
 | **Silero VAD** | The neural network used for VAD. |
 | **Speech region** | One stretch the VAD marked as speech. |
-| **Segment** | Regions joined across gaps under 0.5 s: roughly one phrase. |
-| **Pause** | Silence of 0.5 s or more between two segments. |
+| **Stretch** | Regions joined across gaps under 0.5 s: an unbroken run of speaking. |
+| **Pause** | Silence of 0.5 s or more between two stretches. |
+| **Segment** | Stretches joined across pauses under 1 s: roughly one line. Called a phrase on screen. |
+| **Segment break** | How long a pause must be to end a segment: 1 s. |
+| **Delivery pace** | Words ÷ a segment's whole length, the short pauses inside it counted. The main pace figure. |
+| **Speaking speed** | Words ÷ the time spent speaking, every pause left out. Also called speech-active WPM. |
 | **Section** | Segments grouped between long silences (5 s or more). |
 | **Whisper** | The speech-recognition model. |
 | **faster-whisper** | The library that runs Whisper efficiently on a CPU. |
 | **Word timestamp** | The start and end time the recogniser gives a word. |
 | **Confidence** | The recogniser's own 0-to-1 estimate that a word is right. |
-| **WPM** | Words per minute. See section 6 for the three kinds. |
-| **Articulation rate** | Speaking rate with pauses left out; here, speech-active WPM. |
+| **WPM** | Words per minute. See section 6 for the kinds. |
+| **Articulation rate** | Speaking rate with pauses left out; here, the speaking speed. |
 | **RMS** | Root mean square: a measure of signal strength over a short window. |
 | **Decibel (dB)** | A logarithmic unit for ratios. +20 dB is ten times the amplitude. |
 | **dBFS** | Decibels relative to the loudest possible digital value. Always 0 or negative. |

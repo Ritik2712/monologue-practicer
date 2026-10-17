@@ -1,8 +1,10 @@
 /**
  * The script of a recording as it was actually delivered: its phrases in order, the
- * measured pause after each, and the words that stood out. It is built from a stored
- * result and adds nothing to it: every pause and every mark is one the analysis measured.
+ * measured pauses inside and after each, and the words that stood out. It is built from a
+ * stored result and adds nothing to it: every pause and every mark is one the analysis
+ * measured.
  */
+import { deliveryWpmOf } from "@/features/general/pace";
 import type {
   AnalysisResult,
   EmphasisCandidate,
@@ -14,6 +16,8 @@ export type ScriptWord = {
   text: string;
   /** Why the word stood out from the speaker's typical word. Empty when it did not. */
   emphasis: EmphasisCandidate["reasons"];
+  /** A pause inside the phrase that came straight after this word. Usually none. */
+  pausesAfter: ScriptPause[];
 };
 
 export type ScriptPause = {
@@ -31,12 +35,21 @@ export type ScriptLine = {
   startSeconds: number;
   endSeconds: number;
   words: ScriptWord[];
+  /** The phrase's delivery pace: its words over its whole length, pauses inside counted. */
   wpm: number | null;
   /** Faster or slower than the speaker's own typical pace. Null when it could not be judged. */
   pace: PaceVsTypical | null;
-  /** The pause between this phrase and the next. Null after the last phrase. */
+  /** The pause that ended this phrase. Null after the last phrase. */
   pauseAfter: ScriptPause | null;
 };
+
+const scriptPause = (pause: AnalysisResult["pauses"][number]): ScriptPause => ({
+  id: pause.id,
+  startSeconds: pause.startSeconds,
+  endSeconds: pause.endSeconds,
+  durationSeconds: pause.durationSeconds,
+  significance: pause.significance,
+});
 
 // Word times are stored rounded to the millisecond, so that is what they are matched on.
 const at = (segmentId: string | null, startSeconds: number) =>
@@ -51,21 +64,41 @@ export function buildScript(
       candidate.reasons,
     ]),
   );
-  const pauseAfter = new Map(analysis.pauses.map((pause) => [pause.afterSegmentId, pause]));
+  const pauseAfter = new Map(
+    analysis.pauses
+      .filter((pause) => !pause.insideSegment)
+      .map((pause) => [pause.afterSegmentId, pause]),
+  );
+  // Pause n lies between stretch n and stretch n + 1.
+  const inside = new Map(
+    analysis.pauses.filter((pause) => pause.insideSegment).map((pause) => [pause.index, pause]),
+  );
+  /** The pauses inside a phrase that fall between two neighbouring words of it. */
+  const between = (from: number | null | undefined, to: number | null | undefined) => {
+    const found: ScriptPause[] = [];
+    if (from == null || to == null) return found;
+    for (let index = from; index < to; index += 1) {
+      const pause = inside.get(index);
+      if (pause) found.push(scriptPause(pause));
+    }
+    return found;
+  };
 
   return analysis.segments.map((segment, index) => {
     const timed = analysis.words.filter((word) => word.segmentId === segment.id);
     const words: ScriptWord[] =
       timed.length > 0
-        ? timed.map((word) => ({
+        ? timed.map((word, position) => ({
             text: word.text,
             emphasis: emphasis.get(at(word.segmentId, word.startSeconds)) ?? [],
+            // Which side of a pause a word is on comes from its stretch, not its time.
+            pausesAfter: between(word.stretchIndex, timed[position + 1]?.stretchIndex),
           }))
         : // A phrase with no timed words still has its text, if any was recognised.
           (segment.transcript ?? "")
             .split(/\s+/)
             .filter(Boolean)
-            .map((text) => ({ text, emphasis: [] }));
+            .map((text) => ({ text, emphasis: [], pausesAfter: [] }));
     const pause = pauseAfter.get(segment.id);
     return {
       segmentId: segment.id,
@@ -73,17 +106,9 @@ export function buildScript(
       startSeconds: segment.startSeconds,
       endSeconds: segment.endSeconds,
       words,
-      wpm: segment.segmentWpm,
+      wpm: deliveryWpmOf(segment),
       pace: segment.paceVsTypical,
-      pauseAfter: pause
-        ? {
-            id: pause.id,
-            startSeconds: pause.startSeconds,
-            endSeconds: pause.endSeconds,
-            durationSeconds: pause.durationSeconds,
-            significance: pause.significance,
-          }
-        : null,
+      pauseAfter: pause ? scriptPause(pause) : null,
     };
   });
 }
@@ -91,7 +116,13 @@ export function buildScript(
 /** How many pauses and marked words the script shows, for the line above it. */
 export function scriptCounts(lines: ScriptLine[]): { pauses: number; marked: number } {
   return {
-    pauses: lines.filter((line) => line.pauseAfter !== null).length,
+    pauses: lines.reduce(
+      (total, line) =>
+        total +
+        (line.pauseAfter ? 1 : 0) +
+        line.words.reduce((inside, word) => inside + word.pausesAfter.length, 0),
+      0,
+    ),
     marked: lines.reduce(
       (total, line) => total + line.words.filter((word) => word.emphasis.length > 0).length,
       0,

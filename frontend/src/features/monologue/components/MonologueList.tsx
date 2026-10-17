@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Button, buttonClasses } from "@/components/Button";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { BackendNotice } from "@/features/general/components/BackendNotice";
+import { everythingExportUrl, monologueExportUrl } from "@/features/general/exportLinks";
 import { MUTED, Notice } from "@/features/general/components/parts";
 import { RunPanel } from "@/features/general/components/RunPanel";
 import { formatDateTime, formatSpan, languageName } from "@/features/general/format";
@@ -78,9 +79,15 @@ export function MonologueList() {
       )}
 
       <section aria-labelledby="monologues-heading" className="flex flex-col gap-3">
-        <h2 id="monologues-heading" className="text-lg font-semibold">
-          Your monologues
-        </h2>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 id="monologues-heading" className="text-lg font-semibold">
+            Your monologues
+          </h2>
+          {/* Everything stored: every monologue with its takes, and General Practice. */}
+          <a href={everythingExportUrl()} download className={buttonClasses("secondary")}>
+            Download every analysis as Markdown
+          </a>
+        </div>
 
         {monologues.status === "error" && (
           <Notice kind="error" action={<Button onClick={() => store.refreshMonologues()}>Try again</Button>}>
@@ -124,6 +131,14 @@ export function MonologueList() {
                   >
                     Practise
                   </Link>
+                  <a
+                    href={monologueExportUrl(monologue.monologueId)}
+                    download
+                    aria-label={`Download the analyses of ${monologue.title} as Markdown`}
+                    className={buttonClasses("secondary")}
+                  >
+                    Download
+                  </a>
                   <Button
                     variant="danger"
                     aria-label={`Delete ${monologue.title}`}

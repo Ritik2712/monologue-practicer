@@ -84,9 +84,11 @@ describe("the script of a recording", () => {
     const lines = buildScript(recording);
     const marked = lines.flatMap((line) => line.words.filter((item) => item.emphasis.length > 0));
 
-    expect(marked).toEqual([{ text: "danger.", emphasis: ["louder", "higher_pitch"] }]);
+    expect(marked).toEqual([
+      { text: "danger.", emphasis: ["louder", "higher_pitch"], pausesAfter: [] },
+    ]);
     // "danger," in the first phrase is the same word, said without standing out.
-    expect(lines[0].words.at(-1)).toEqual({ text: "danger,", emphasis: [] });
+    expect(lines[0].words.at(-1)).toEqual({ text: "danger,", emphasis: [], pausesAfter: [] });
     expect(scriptCounts(lines)).toEqual({ pauses: 1, marked: 1 });
   });
 
@@ -98,9 +100,9 @@ describe("the script of a recording", () => {
       pauses: [],
     });
     expect(lines[0].words).toEqual([
-      { text: "मैं", emphasis: [] },
-      { text: "खतरा", emphasis: [] },
-      { text: "हूँ", emphasis: [] },
+      { text: "मैं", emphasis: [], pausesAfter: [] },
+      { text: "खतरा", emphasis: [], pausesAfter: [] },
+      { text: "हूँ", emphasis: [], pausesAfter: [] },
     ]);
   });
 
@@ -114,6 +116,55 @@ describe("the script of a recording", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0].words).toEqual([]);
     expect(scriptCounts(lines)).toEqual({ pauses: 0, marked: 0 });
+  });
+
+  it("shows a pause inside a phrase after the word it followed, and the phrase stays one line", () => {
+    // "I am not in danger, ‖0.6 s‖ I am the danger." as one phrase, then a second phrase.
+    const stretched = (text: string, start: number, stretchIndex: number, segmentId: string) => ({
+      ...word(text, start, segmentId),
+      stretchIndex,
+    });
+    const held: ScriptSource = {
+      segments: [
+        segment("seg-1", 0, 4.5, { segmentWpm: 138.5, deliveryWpm: 120, pauseCount: 1 }),
+        segment("seg-2", 6, 8, { segmentWpm: 90, deliveryWpm: 90 }),
+      ],
+      pauses: [
+        { ...pause("pause-1", "seg-1", 2, 2.6, "short"), index: 0, insideSegment: true },
+        { ...pause("pause-2", "seg-1", 4.5, 6), index: 1, insideSegment: false },
+      ],
+      words: [
+        stretched("I", 0, 0, "seg-1"),
+        stretched("am", 0.4, 0, "seg-1"),
+        stretched("not", 0.8, 0, "seg-1"),
+        stretched("in", 1.2, 0, "seg-1"),
+        stretched("danger,", 1.6, 0, "seg-1"),
+        // Timed inside the pause, as the recogniser often times the first word after one.
+        stretched("I", 2.3, 1, "seg-1"),
+        stretched("am", 3.0, 1, "seg-1"),
+        stretched("the", 3.4, 1, "seg-1"),
+        stretched("danger.", 3.8, 1, "seg-1"),
+        stretched("Remember", 6, 2, "seg-2"),
+        stretched("that.", 7, 2, "seg-2"),
+      ],
+      emphasisCandidates: [],
+    };
+    const [first, second] = buildScript(held);
+
+    expect(first.words.map((item) => item.text).join(" ")).toBe(
+      "I am not in danger, I am the danger.",
+    );
+    // Only the word before the pause carries it.
+    expect(first.words.map((item) => item.pausesAfter.map((mark) => mark.id))).toEqual([
+      [], [], [], [], ["pause-1"], [], [], [], [],
+    ]);
+    expect(first.words[4].pausesAfter[0].durationSeconds).toBeCloseTo(0.6);
+    // The pause that ended the phrase is the one after the line, not the one inside it.
+    expect(first.pauseAfter?.id).toBe("pause-2");
+    expect(second.pauseAfter).toBeNull();
+    // The line's pace is its delivery pace, with the pause inside it counted.
+    expect(first.wpm).toBe(120);
+    expect(scriptCounts([first, second])).toEqual({ pauses: 2, marked: 0 });
   });
 
   it("says in words why a word stood out", () => {

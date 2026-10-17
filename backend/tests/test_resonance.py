@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from app.pipeline import resonance
-from app.pipeline.segmentation import Segment
+from app.pipeline.segmentation import Stretch
 from app.pipeline.settings import SAMPLE_RATE
 
 
@@ -22,11 +22,11 @@ def vowel(formants: tuple[float, ...], *, seconds: float = 1.5, pitch_hz: float 
     return (0.3 * samples / np.max(np.abs(samples))).astype(np.float32)
 
 
-def whole(samples: np.ndarray) -> list[Segment]:
-    return [Segment(index=0, start=0.0, end=samples.shape[0] / SAMPLE_RATE)]
+def whole(samples: np.ndarray) -> list[Stretch]:
+    return [Stretch(index=0, start=0.0, end=samples.shape[0] / SAMPLE_RATE)]
 
 
-def spacing(samples: np.ndarray, segments: list[Segment] | None = None) -> float | None:
+def spacing(samples: np.ndarray, segments: list[Stretch] | None = None) -> float | None:
     track = resonance.measure_resonance(samples, whole(samples) if segments is None else segments)
     return track.spacing_hz(0.0, 1e9, min_frames=resonance.MIN_RECORDING_FRAMES)
 
@@ -67,7 +67,7 @@ def test_a_quieter_recording_of_the_same_voice_reads_the_same():
 
 def test_only_speech_is_measured_and_silence_gives_nothing():
     samples = np.concatenate([vowel((500, 1500, 2500)), np.zeros(SAMPLE_RATE, dtype=np.float32)])
-    speech = [Segment(index=0, start=0.0, end=1.5)]
+    speech = [Stretch(index=0, start=0.0, end=1.5)]
     track = resonance.measure_resonance(samples, speech)
 
     assert track.times.size > 0 and track.times.max() <= 1.5

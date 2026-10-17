@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.pipeline.segmentation import Segment, Word, is_countable_word
+from app.pipeline.segmentation import Stretch, Word, is_countable_word
 from app.pipeline.settings import DEFAULT_SETTINGS, SAMPLE_RATE
 
 # Energy is measured over 25 ms windows, every 10 ms.
@@ -58,6 +58,11 @@ class EnergyTrack:
         selected = self.power[(self.times >= start) & (self.times <= end)]
         return power_to_db(float(selected.mean())) if selected.size else None
 
+    def mean_db_within(self, stretches: list[Stretch]) -> float | None:
+        """The level of the speech in these stretches, leaving out the pauses between them."""
+        selected = self.power[speech_mask(self, stretches)]
+        return power_to_db(float(selected.mean())) if selected.size else None
+
 
 def measure_energy(samples: np.ndarray) -> EnergyTrack:
     if samples.shape[0] < FRAME_SAMPLES:
@@ -68,7 +73,7 @@ def measure_energy(samples: np.ndarray) -> EnergyTrack:
     return EnergyTrack(power, times)
 
 
-def speech_mask(track: EnergyTrack, segments: list[Segment]) -> np.ndarray:
+def speech_mask(track: EnergyTrack, segments: list[Stretch]) -> np.ndarray:
     mask = np.zeros(track.times.shape[0], dtype=bool)
     for segment in segments:
         mask |= (track.times >= segment.start) & (track.times <= segment.end)
@@ -94,7 +99,7 @@ class EnergySummary:
     snr_db: float | None
 
 
-def summarize_energy(track: EnergyTrack, segments: list[Segment]) -> EnergySummary:
+def summarize_energy(track: EnergyTrack, segments: list[Stretch]) -> EnergySummary:
     mask = speech_mask(track, segments)
     if not mask.any():
         return EnergySummary(None, None)
@@ -138,8 +143,8 @@ class PitchTrack:
         return float(np.median(selected)) if selected.size >= min_frames else None
 
 
-def measure_pitch(samples: np.ndarray, segments: list[Segment]) -> PitchTrack:
-    """Tracks pitch inside the speech segments only, using the pYIN algorithm."""
+def measure_pitch(samples: np.ndarray, segments: list[Stretch]) -> PitchTrack:
+    """Tracks pitch inside the stretches of speech only, using the pYIN algorithm."""
     import librosa
 
     times: list[np.ndarray] = []

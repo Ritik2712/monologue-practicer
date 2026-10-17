@@ -114,9 +114,9 @@ PROFILES: tuple[DeliveryProfile, ...] = (
         ),
         focus=(
             FocusMetric(
-                "speechActiveWpm",
+                "deliveryWpm",
                 "Measured pace",
-                "An unhurried speaking rate while speaking",
+                "An unhurried delivery: the pace of the lines, their short pauses counted",
                 "low",
             ),
             FocusMetric(

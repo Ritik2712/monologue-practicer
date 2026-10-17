@@ -28,10 +28,12 @@ from app.pipeline.metrics import (
 from app.pipeline.segmentation import (
     Segment,
     SpeechRegion,
+    Stretch,
     Word,
     assign_words,
     build_segments,
     find_short_silences,
+    stretches_of,
 )
 from app.pipeline.settings import SAMPLE_RATE, AnalysisSettings
 from app.pipeline.transcribe import LanguageHint, Transcriber, Transcription, looks_garbled
@@ -51,6 +53,7 @@ from app.schemas import (
     SegmentVoice,
     ShortSilence,
     SpeechSegment,
+    SpeechStretch,
     VoiceGoal,
     VoicePhraseCounts,
     VoicePlacement,
@@ -120,10 +123,10 @@ class PipelineDeps:
     transcriber: Transcriber
     decode: Callable[..., np.ndarray] = decode_audio
     detect_speech: Callable[[np.ndarray, AnalysisSettings], list[SpeechRegion]] = detect_speech
-    measure_pitch: Callable[[np.ndarray, list[Segment]], acoustics.PitchTrack] = (
+    measure_pitch: Callable[[np.ndarray, list[Stretch]], acoustics.PitchTrack] = (
         acoustics.measure_pitch
     )
-    measure_resonance: Callable[[np.ndarray, list[Segment]], resonance.ResonanceTrack] = (
+    measure_resonance: Callable[[np.ndarray, list[Stretch]], resonance.ResonanceTrack] = (
         resonance.measure_resonance
     )
 
@@ -163,6 +166,9 @@ def run_analysis(
     on_stage("detecting_speech")
     regions = deps.detect_speech(samples, settings)
     segments, pauses = build_segments(regions, settings)
+    # Sound is measured where there is speech: in the stretches, not in the pauses a
+    # segment may hold between them.
+    stretches = stretches_of(segments)
     short_silences = find_short_silences(regions, settings)
     check()
 
@@ -192,18 +198,18 @@ def run_analysis(
     pause_summary = summarize_pauses(pauses, duration, speech_detected=bool(segments))
 
     energy = acoustics.measure_energy(samples)
-    energy_summary = acoustics.summarize_energy(energy, segments)
+    energy_summary = acoustics.summarize_energy(energy, stretches)
     if energy_summary.snr_db is not None and energy_summary.snr_db < NOISY_SNR_DB:
         warnings.append("noisy")
     check()
 
-    pitch = deps.measure_pitch(samples, segments)
+    pitch = deps.measure_pitch(samples, stretches)
     pitch_summary = acoustics.summarize_pitch(pitch)
     if segments and pitch_summary is None:
         warnings.append("pitch_unavailable")
     check()
 
-    formants = deps.measure_resonance(samples, segments)
+    formants = deps.measure_resonance(samples, stretches)
     voice = _VoiceReader(formants, energy_summary.snr_db, voice_ranges)
     if voice.noisy and formants.times.size:
         warnings.append("resonance_noisy")
@@ -213,7 +219,8 @@ def run_analysis(
     word_segment = {
         id(word): segment_ids[id(segment)] for segment in segments for word in segment.words
     }
-    segment_levels = [energy.mean_db(segment.start, segment.end) for segment in segments]
+    word_stretch = {id(word): stretch.index for stretch in stretches for word in stretch.words}
+    segment_levels = [energy.mean_db_within(segment.stretches) for segment in segments]
     known_levels = [level for level in segment_levels if level is not None]
     typical_level = float(np.median(known_levels)) if len(known_levels) >= 2 else None
 
@@ -228,12 +235,15 @@ def run_analysis(
                 section_index=segment.section_index,
                 start_seconds=round_out(segment.start, 3),
                 end_seconds=round_out(segment.end, 3),
-                speech_active_seconds=round_out(segment.duration, 3),
+                speech_active_seconds=round_out(segment.speaking_seconds, 3),
+                pause_count=segment.pause_count,
+                pause_seconds=round_out(segment.pause_seconds, 3),
                 transcript=" ".join(word.text for word in segment.words)
                 if has_transcript
                 else None,
                 word_count=pace_info.word_count if has_transcript else None,
-                segment_wpm=round_out(pace_info.wpm, 1),
+                segment_wpm=round_out(pace_info.speaking_wpm, 1),
+                delivery_wpm=round_out(pace_info.wpm, 1),
                 pace_vs_typical=pace_vs_typical(pace_info, typical, settings),
                 quality=weaker(pace_info.quality, word_quality),
                 reliable=pace_info.reliable,
@@ -263,8 +273,9 @@ def run_analysis(
             end_seconds=round_out(pause.end, 3),
             duration_seconds=round_out(pause.duration, 3),
             significance=pause.significance,
-            after_segment_id=f"seg-{pause.index + 1}",
-            before_segment_id=f"seg-{pause.index + 2}",
+            after_segment_id=f"seg-{pause.after_segment + 1}",
+            before_segment_id=f"seg-{pause.before_segment + 1}",
+            inside_segment=pause.inside_segment,
             starts_new_section=pause.significance == "long",
         )
         for pause in pauses
@@ -280,6 +291,16 @@ def run_analysis(
         duration_seconds=round_out(duration, 3),
         transcript=transcription.text if has_transcript and transcription else None,
         segments=segments_out,
+        stretches=[
+            SpeechStretch(
+                index=stretch.index,
+                start_seconds=round_out(stretch.start, 3),
+                end_seconds=round_out(stretch.end, 3),
+                segment_id=segment_ids[id(segment)],
+            )
+            for segment in segments
+            for stretch in segment.stretches
+        ],
         pauses=pauses_out,
         short_silences=[
             ShortSilence(
@@ -304,6 +325,7 @@ def run_analysis(
                 end_seconds=round_out(word.end, 3),
                 confidence=round_out(word.probability, 3),
                 segment_id=word_segment.get(id(word)),
+                stretch_index=word_stretch.get(id(word)),
             )
             for word in words
         ],
@@ -552,7 +574,8 @@ def _metrics(
             settings=settings,
         ),
         speech_active_seconds=_out(
-            seconds(pace.speech_active_seconds, "Total length of all speech segments."), 3
+            seconds(pace.speech_active_seconds, "Total time spent speaking: every pause left out."),
+            3,
         ),
         pause_count=_out(pauses.count, 0),
         total_pause_seconds=_out(pauses.total_seconds, 3),
@@ -645,6 +668,7 @@ def word_metric_values(
             else unavailable("words", "No transcript is available."),
             0,
         ),
+        "delivery_wpm": _out(pace.delivery_wpm, 1),
         "speech_active_wpm": _out(pace.speech_active_wpm, 1),
         "whole_clip_wpm": _out(pace.whole_clip_wpm, 1),
         "pace_variation": _out(pace.pace_variation, 1),
@@ -655,8 +679,8 @@ def word_metric_values(
                 typical,
                 "words/minute",
                 word_quality,
-                "Median WPM of the segments long enough to measure reliably: your usual pace "
-                "in this recording.",
+                "Median delivery pace of the segments long enough to measure reliably: your "
+                "usual pace in this recording.",
             )
             if typical is not None
             else unavailable(

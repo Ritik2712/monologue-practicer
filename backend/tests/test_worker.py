@@ -51,7 +51,7 @@ def test_a_job_runs_to_success_and_its_upload_is_deleted(
     assert analysis.profile == "joker"
     assert analysis.language == "en"
     assert analysis.revision == 1
-    assert analysis.settings_version == 2
+    assert analysis.settings_version == 3
     assert analysis.audio_path is None
 
     result = analysis.result

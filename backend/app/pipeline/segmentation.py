@@ -2,14 +2,18 @@
 
 Vocabulary used throughout the pipeline:
 
-- speech region: one stretch the voice activity detector marked as speech.
-- segment: speech regions joined across gaps that are too short to be a pause.
-- pause: the silence between two segments. Always at least `min_pause_ms` long.
-- short silence: a gap between speech regions that is shorter than that. It stays inside a
-  segment and counts as speaking time, but it is kept on record.
+- speech region: one run the voice activity detector marked as speech.
+- stretch: speech regions joined across gaps that are too short to be a pause. An unbroken
+  run of speaking.
+- pause: the silence between two stretches. Always at least `min_pause_ms` long.
+- segment: stretches joined across pauses shorter than `segment_break_ms`. Roughly one
+  line of a speech. A pause shorter than that stays inside its segment: it is detected,
+  measured and listed like any other, and it does not end the segment.
+- short silence: a gap between speech regions that is shorter than a pause. It stays inside
+  a stretch and counts as speaking time, but it is kept on record.
 - section: a group of segments. A new section starts after every "long" silence.
 
-Silence before the first segment and after the last one is not a pause: nothing was
+Silence before the first stretch and after the last one is not a pause: nothing was
 interrupted, the recording simply had not started or had already finished.
 """
 
@@ -36,11 +40,12 @@ class Word:
 
 
 @dataclass
-class Segment:
+class Stretch:
+    """An unbroken run of speaking. Numbered through the whole recording."""
+
     index: int
     start: float
     end: float
-    section_index: int = 0
     words: list[Word] = field(default_factory=list)
 
     @property
@@ -48,16 +53,68 @@ class Segment:
         return self.end - self.start
 
 
+@dataclass
+class Segment:
+    """One or more stretches, with the short pauses between them inside it."""
+
+    index: int
+    stretches: list[Stretch]
+    section_index: int = 0
+
+    @property
+    def start(self) -> float:
+        return self.stretches[0].start
+
+    @property
+    def end(self) -> float:
+        return self.stretches[-1].end
+
+    @property
+    def words(self) -> list[Word]:
+        return [word for stretch in self.stretches for word in stretch.words]
+
+    @property
+    def speaking_seconds(self) -> float:
+        """Time spent speaking: the stretches, without the pauses between them."""
+        return sum(stretch.duration for stretch in self.stretches)
+
+    @property
+    def span_seconds(self) -> float:
+        """From the first sound to the last, the pauses inside included."""
+        return self.end - self.start
+
+    @property
+    def pause_seconds(self) -> float:
+        return self.span_seconds - self.speaking_seconds
+
+    @property
+    def pause_count(self) -> int:
+        return len(self.stretches) - 1
+
+
 @dataclass(frozen=True)
 class Pause:
+    """The silence between stretch `index` and stretch `index + 1`."""
+
     index: int
     start: float
     end: float
     significance: PauseSignificance
+    # The segments on either side. The same segment twice for a pause inside one.
+    after_segment: int = 0
+    before_segment: int = 0
 
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+    @property
+    def inside_segment(self) -> bool:
+        return self.after_segment == self.before_segment
+
+
+def stretches_of(segments: list[Segment]) -> list[Stretch]:
+    return [stretch for segment in segments for stretch in segment.stretches]
 
 
 @dataclass(frozen=True)
@@ -86,7 +143,11 @@ def classify_pause(duration_ms: int, settings: AnalysisSettings) -> PauseSignifi
 def build_segments(
     regions: list[SpeechRegion], settings: AnalysisSettings
 ) -> tuple[list[Segment], list[Pause]]:
-    """Joins speech regions into segments and lists the pauses between them."""
+    """Joins speech regions into stretches, groups those into segments, and lists the pauses.
+
+    Every gap of `min_pause_ms` or more is a pause. Only one of `segment_break_ms` or more
+    ends a segment.
+    """
     ordered = sorted((r for r in regions if r.end > r.start), key=lambda r: r.start)
     if not ordered:
         return [], []
@@ -104,13 +165,23 @@ def build_segments(
     pauses: list[Pause] = []
     section = 0
     for index, (start, end) in enumerate(spans):
-        if index > 0:
-            previous_end = spans[index - 1][1]
-            significance = classify_pause(_gap_ms(previous_end, start), settings)
-            if significance == "long":
-                section += 1
-            pauses.append(Pause(len(pauses), previous_end, start, significance))
-        segments.append(Segment(index=index, start=start, end=end, section_index=section))
+        stretch = Stretch(index=index, start=start, end=end)
+        if index == 0:
+            segments.append(Segment(index=0, stretches=[stretch]))
+            continue
+        previous_end = spans[index - 1][1]
+        gap_ms = _gap_ms(previous_end, start)
+        significance = classify_pause(gap_ms, settings)
+        if significance == "long":
+            section += 1
+        after = segments[-1].index
+        if gap_ms >= settings.segment_break_ms:
+            segments.append(Segment(index=after + 1, stretches=[stretch], section_index=section))
+        else:
+            segments[-1].stretches.append(stretch)
+        pauses.append(
+            Pause(len(pauses), previous_end, start, significance, after, segments[-1].index)
+        )
     return segments, pauses
 
 
@@ -135,31 +206,35 @@ def find_short_silences(
 
 
 def assign_words(segments: list[Segment], words: list[Word]) -> int:
-    """Puts every word into the segment that contains its midpoint.
+    """Puts every word into the stretch that contains its midpoint.
 
     Word times come from the speech recogniser and can drift into a pause. Such a word goes
-    to the nearest segment. Returns how many words had to be moved that way, which is a
+    to the nearest stretch. Returns how many words had to be moved that way, which is a
     measure of how well the two sources agree.
+
+    Stretches, not segments: a pause inside a segment has words on both sides of it, and
+    which side a word is on must not depend on a word time that drifted into the pause.
     """
-    for segment in segments:
-        segment.words = []
-    if not segments:
+    stretches = stretches_of(segments)
+    for stretch in stretches:
+        stretch.words = []
+    if not stretches:
         return 0
 
     moved = 0
     for word in sorted(words, key=lambda w: (w.start, w.end)):
         midpoint = (word.start + word.end) / 2
-        best = segments[0]
+        best = stretches[0]
         best_distance = float("inf")
-        for segment in segments:
-            if segment.start <= midpoint <= segment.end:
-                best, best_distance = segment, 0.0
+        for stretch in stretches:
+            if stretch.start <= midpoint <= stretch.end:
+                best, best_distance = stretch, 0.0
                 break
             distance = (
-                segment.start - midpoint if midpoint < segment.start else midpoint - segment.end
+                stretch.start - midpoint if midpoint < stretch.start else midpoint - stretch.end
             )
             if distance < best_distance:
-                best, best_distance = segment, distance
+                best, best_distance = stretch, distance
         if best_distance > 0:
             moved += 1
         best.words.append(word)

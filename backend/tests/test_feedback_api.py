@@ -582,9 +582,14 @@ def test_after_an_adjustment_new_analyses_use_it_and_old_ones_stay_as_they_were(
         2,
         400,
     )
-    # The same recording is now cut at the 0.45 s gap.
-    assert [segment["id"] for segment in after["segments"]] == ["seg-1", "seg-2"]
-    assert [pause["durationSeconds"] for pause in after["pauses"]] == [0.45]
+    # The 0.45 s gap in the same recording now counts as a pause. It is shorter than the
+    # segment break, so it is a pause inside the phrase and does not cut it in two.
+    assert [segment["id"] for segment in after["segments"]] == ["seg-1"]
+    assert len(after["stretches"]) == 2
+    assert [(pause["durationSeconds"], pause["insideSegment"]) for pause in after["pauses"]] == [
+        (0.45, True)
+    ]
+    assert after["segments"][0]["pauseCount"] == 1
     assert after["shortSilences"] == []
     # The earlier result is untouched and still says which version produced it.
     again = client.get(f"/api/analyses/{before['analysisId']}").json()

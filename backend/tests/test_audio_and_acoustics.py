@@ -7,7 +7,7 @@ from app.pipeline import acoustics
 from app.pipeline.audio import clipping_ratio, decode_audio, probe_audio
 from app.pipeline.errors import PipelineError
 from app.pipeline.fillers import find_hesitations
-from app.pipeline.segmentation import Segment, Word
+from app.pipeline.segmentation import Stretch, Word
 from app.pipeline.settings import DEFAULT_SETTINGS, SAMPLE_RATE
 from app.pipeline.vad import detect_speech
 from tests.conftest import wav_bytes
@@ -103,7 +103,7 @@ def test_a_part_ten_times_quieter_measures_twenty_decibels_lower():
 def test_signal_to_noise_compares_speech_with_the_background_between_it():
     samples = np.concatenate([tone(2.0, amplitude=0.3), tone(2.0, amplitude=0.003), tone(2.0, amplitude=0.3)])  # fmt: skip
     track = acoustics.measure_energy(samples)
-    segments = [Segment(0, 0.0, 2.0), Segment(1, 4.0, 6.0)]
+    segments = [Stretch(0, 0.0, 2.0), Stretch(1, 4.0, 6.0)]
 
     summary = acoustics.summarize_energy(track, segments)
 
@@ -116,7 +116,7 @@ def test_energy_summary_is_empty_without_speech_or_background():
     track = acoustics.measure_energy(tone(2.0))
     assert acoustics.summarize_energy(track, []) == acoustics.EnergySummary(None, None)
     # Speech from start to end leaves no background to compare against.
-    assert acoustics.summarize_energy(track, [Segment(0, 0.0, 2.0)]).snr_db is None
+    assert acoustics.summarize_energy(track, [Stretch(0, 0.0, 2.0)]).snr_db is None
 
 
 def test_the_timeline_has_one_point_per_quarter_second_and_is_capped_for_long_clips():
@@ -140,7 +140,7 @@ def test_a_clip_shorter_than_one_analysis_window_does_not_crash():
 
 def test_pitch_of_a_steady_tone_is_found():
     samples = np.concatenate([silence(0.5), tone(2.0, frequency=220.0), silence(0.5)])
-    track = acoustics.measure_pitch(samples, [Segment(0, 0.5, 2.5)])
+    track = acoustics.measure_pitch(samples, [Stretch(0, 0.5, 2.5)])
     summary = acoustics.summarize_pitch(track)
 
     assert summary is not None
@@ -151,7 +151,7 @@ def test_pitch_of_a_steady_tone_is_found():
 
 
 def test_pitch_is_unavailable_for_silence_and_for_too_little_voiced_sound():
-    quiet = acoustics.measure_pitch(silence(2.0), [Segment(0, 0.0, 2.0)])
+    quiet = acoustics.measure_pitch(silence(2.0), [Stretch(0, 0.0, 2.0)])
     assert acoustics.summarize_pitch(quiet) is None
 
     few = acoustics.PitchTrack(np.arange(10) * 0.016, np.full(10, 200.0))

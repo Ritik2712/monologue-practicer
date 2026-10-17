@@ -14,14 +14,23 @@ from dataclasses import asdict, dataclass
 @dataclass(frozen=True)
 class CoachingSettings:
     # Bumped whenever a default below changes, so results stay traceable.
-    version: int = 1
+    # 2: the delivery-pace bands added. Coaching of version 1 judged pace on the
+    #    speech-active WPM, the only pace there was.
+    version: int = 2
     # Which version of the user's calibration supplied the priorities below. 1 means none.
     calibration_version: int = 1
     # How readily each kind of correction makes the top three, as (finding kind, priority)
     # pairs. Feedback on corrections moves these; a kind that is not listed has priority 1.
     priorities: tuple[tuple[str, float], ...] = ()
 
-    # Speech-active WPM (pauses left out). Below the first is "unhurried", above the second "fast".
+    # Delivery pace: words over the length of the phrases, the short pauses inside them
+    # counted. Below the first is "unhurried", above the second "fast". On the three real
+    # recordings this was set from, delivery pace came to 85 to 90% of the speech-active
+    # WPM, so these are the bands below scaled by that and rounded.
+    delivery_slow_wpm: float = 125.0
+    delivery_fast_wpm: float = 175.0
+    # Speech-active WPM (every pause left out). Used only for a result made before the
+    # delivery pace existed, where it is the one pace there is.
     slow_wpm: float = 140.0
     fast_wpm: float = 200.0
     # Pace variation as a share of the speaker's own typical pace. 0.10 means 10%.
@@ -44,6 +53,7 @@ class CoachingSettings:
 
     def __post_init__(self) -> None:
         ordered = (
+            (self.delivery_slow_wpm, self.delivery_fast_wpm),
             (self.slow_wpm, self.fast_wpm),
             (self.even_pace_ratio, self.varied_pace_ratio),
             (self.even_loudness_db, self.varied_loudness_db),

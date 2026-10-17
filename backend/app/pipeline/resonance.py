@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.pipeline.segmentation import Segment
+from app.pipeline.segmentation import Stretch
 from app.pipeline.settings import SAMPLE_RATE
 
 # Formants are searched for below this frequency, with one pair of LPC coefficients for
@@ -124,8 +124,8 @@ def _frame_formants(frame: np.ndarray, rate: int) -> np.ndarray | None:
     return found[:FORMANT_COUNT] if found.shape[0] >= FORMANT_COUNT else None
 
 
-def measure_resonance(samples: np.ndarray, segments: list[Segment]) -> ResonanceTrack:
-    """Tracks the formants inside the speech segments only."""
+def measure_resonance(samples: np.ndarray, segments: list[Stretch]) -> ResonanceTrack:
+    """Tracks the formants inside the stretches of speech only."""
     if not segments or samples.shape[0] == 0:
         return EMPTY
     import librosa

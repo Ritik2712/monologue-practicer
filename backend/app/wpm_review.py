@@ -1,13 +1,17 @@
 """What goes into a WPM figure, laid out for a user who says it looks wrong.
 
 A report of "the WPM looks too high" never changes the number. WPM is words divided by
-speaking time, so it can only be wrong if the words or the time are wrong. This lays both
-out, with what was measured for each, and points at the feedback that would correct them.
+time, so it can only be wrong if the words or the time are wrong. This lays both out, with
+what was measured for each, and points at the feedback that would correct them.
+
+The figure reviewed is the one the screen shows first: the delivery pace, which counts the
+short pauses inside a phrase. In a result from before phrases could hold a pause, that is
+the same number as the speaking speed.
 """
 
 from typing import Literal
 
-from app import schemas
+from app import schemas, stretches
 from app.pipeline.segmentation import is_countable_word
 from app.pipeline.settings import AnalysisSettings
 
@@ -76,6 +80,32 @@ def _formula(words: int | None, seconds: float | None, wpm: float | None) -> str
     return f"{words} words ÷ {seconds:.2f} s of speaking × 60 = {wpm:.1f} WPM."
 
 
+def _pauses(count: int, seconds: float) -> str:
+    return f"{count} {'pause' if count == 1 else 'pauses'}, {_seconds(seconds)} in all"
+
+
+def _delivery_formula(
+    words: int | None,
+    seconds: float,
+    wpm: float | None,
+    pause_count: int,
+    pause_seconds: float,
+    speaking_wpm: float | None,
+    *,
+    where: str,
+) -> str:
+    """The arithmetic of a delivery pace, with the pauses it counts named."""
+    if words is None or seconds <= 0 or wpm is None:
+        return "No WPM could be worked out here, because no words were recognised."
+    text = f"{words} words ÷ {seconds:.2f} s × 60 = {wpm:.1f} WPM."
+    if pause_count == 0:
+        return f"{text} There is no pause inside {where}, so all of that time is speaking."
+    text += f" The {seconds:.2f} s include {_pauses(pause_count, pause_seconds)}, inside {where}."
+    if speaking_wpm is not None:
+        text += f" With those left out, the speaking speed is {speaking_wpm:.1f} WPM."
+    return text
+
+
 def _seconds(value: float) -> str:
     return f"{value:.2f} s"
 
@@ -105,7 +135,27 @@ def review(
         )
     ]
 
-    length = f"The phrase lasts {_seconds(segment.speech_active_seconds)}."
+    inside = stretches.pauses_inside(body, segment.id)
+    span = segment.end_seconds - segment.start_seconds
+    length = (
+        f"The phrase lasts {_seconds(span)}, of which {_seconds(segment.speech_active_seconds)} "
+        "is speaking."
+        if inside
+        else f"The phrase lasts {_seconds(segment.speech_active_seconds)}."
+    )
+    if inside:
+        checks.append(
+            schemas.WpmCheck(
+                label="The pauses inside the phrase",
+                text=(
+                    f"This phrase holds {_pauses(len(inside), segment.pause_seconds)}. They "
+                    "are part of how the line was delivered, so the delivery pace counts "
+                    "them, and comes out lower than the speaking speed. A pause is left "
+                    "out of both only when it is long enough to end the phrase."
+                ),
+                action=None,
+            )
+        )
     if too == "low":
         silences = [s for s in body.short_silences or [] if s.segment_id == segment.id]
         if body.short_silences is None:
@@ -124,8 +174,9 @@ def review(
             text = f"{length} No silence was detected inside it, so all of it is speaking time."
             action = None
     else:
-        before = next((p for p in body.pauses if p.before_segment_id == segment.id), None)
-        after = next((p for p in body.pauses if p.after_segment_id == segment.id), None)
+        between = [pause for pause in body.pauses if not pause.inside_segment]
+        before = next((p for p in between if p.before_segment_id == segment.id), None)
+        after = next((p for p in between if p.after_segment_id == segment.id), None)
         around = [
             f"a pause of {_seconds(pause.duration_seconds)} {side} it"
             for pause, side in ((before, "before"), (after, "after"))
@@ -133,9 +184,9 @@ def review(
         ]
         if around:
             text = (
-                f"{length} There is {' and '.join(around)}. Time inside a pause is not "
-                f"speaking time. {STILL_SPEAKING[on_reference]}, the WPM comes out too high: "
-                "mark that pause as “Not a pause”."
+                f"{length} There is {' and '.join(around)}. Time inside a pause that ends "
+                f"a phrase is not counted. {STILL_SPEAKING[on_reference]}, the WPM comes "
+                "out too high: mark that pause as “Not a pause”."
             )
             action = "report_false_pause"
         else:
@@ -167,12 +218,23 @@ def review(
             )
         )
     checks += _timing_check(body, segment)
+    wpm = stretches.delivery_wpm_of(segment)
     return schemas.WpmReview(
         target=f"Segment {segment.index + 1}",
         words=segment.word_count,
         speaking_seconds=segment.speech_active_seconds,
-        wpm=segment.segment_wpm,
-        formula=_formula(segment.word_count, segment.speech_active_seconds, segment.segment_wpm),
+        wpm=wpm,
+        formula=_delivery_formula(
+            segment.word_count,
+            span,
+            wpm,
+            len(inside),
+            segment.pause_seconds,
+            segment.segment_wpm,
+            where="the phrase",
+        )
+        if stretches.has_delivery_pace(body)
+        else _formula(segment.word_count, segment.speech_active_seconds, wpm),
         checks=checks,
     )
 
@@ -230,7 +292,12 @@ def _review_recording(
     metrics = body.metrics
     words = metrics.total_word_count.value
     seconds = metrics.speech_active_seconds.value
-    wpm = metrics.speech_active_wpm.value
+    speaking_wpm = metrics.speech_active_wpm.value
+    with_delivery = stretches.has_delivery_pace(body)
+    wpm = stretches.recording_delivery_wpm(body).value
+    inside = [pause for pause in body.pauses if pause.inside_segment]
+    inside_seconds = sum(pause.duration_seconds for pause in inside)
+    delivery_seconds = sum(s.end_seconds - s.start_seconds for s in body.segments)
     checks = [_words_check(body.words, settings, too, "in the whole recording", on_reference)]
 
     pauses = (
@@ -265,7 +332,22 @@ def _review_recording(
     checks.append(schemas.WpmCheck(label="The speaking time", text=text, action=action))
 
     whole = metrics.whole_clip_wpm.value
-    if whole is not None and wpm is not None:
+    if whole is not None and wpm is not None and with_delivery and speaking_wpm is not None:
+        checks.append(
+            schemas.WpmCheck(
+                label="Which WPM this is",
+                text=(
+                    "This is the delivery pace: the short pauses inside a phrase are counted, "
+                    "and the longer pauses that end a phrase are not. With every pause left "
+                    f"out, the speaking speed is {speaking_wpm:.1f} WPM. Counting every "
+                    f"pause in, and the silence before and after, the same recording comes "
+                    f"to {whole:.1f} WPM. If you were comparing with a figure worked out "
+                    "another way, that is the difference."
+                ),
+                action=None,
+            )
+        )
+    elif whole is not None and wpm is not None:
         checks.append(
             schemas.WpmCheck(
                 label="Which WPM this is",
@@ -278,11 +360,22 @@ def _review_recording(
             )
         )
     checks += _timing_check(body)
+    counted = None if words is None else int(words)
     return schemas.WpmReview(
         target="The whole recording",
-        words=None if words is None else int(words),
+        words=counted,
         speaking_seconds=seconds,
         wpm=wpm,
-        formula=_formula(None if words is None else int(words), seconds, wpm),
+        formula=_delivery_formula(
+            counted,
+            delivery_seconds,
+            wpm,
+            len(inside),
+            inside_seconds,
+            speaking_wpm,
+            where="the phrases",
+        )
+        if with_delivery
+        else _formula(counted, seconds, wpm),
         checks=checks,
     )

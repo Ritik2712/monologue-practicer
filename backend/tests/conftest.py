@@ -22,8 +22,9 @@ from app.dependencies import get_data_dir, get_now
 from app.llm import LlmError, Message, Reply
 from app.main import app
 from app.pipeline import acoustics, resonance
-from app.pipeline.runner import PipelineDeps
+from app.pipeline.runner import PipelineDeps, run_analysis
 from app.pipeline.segmentation import SpeechRegion, Word
+from app.pipeline.settings import DEFAULT_SETTINGS, AnalysisSettings
 from app.pipeline.transcribe import Transcription
 from app.worker import Worker
 
@@ -321,6 +322,50 @@ def make_recording(
     return make_body(profile, segments=segments, pauses=pauses, words=words, **overrides)
 
 
+def measured(
+    tmp_path: Path,
+    runs: list[tuple[float, float, str]],
+    profile: str = "custom",
+    *,
+    settings: AnalysisSettings = DEFAULT_SETTINGS,
+    seconds: float | None = None,
+    name: str = "recording.wav",
+) -> schemas.AnalysisBody:
+    """A recording put through the real pipeline, with its speech and words scripted.
+
+    Each run is one unbroken stretch of speaking, given as (start, end, "the words"). The
+    gaps between runs become pauses: one shorter than the segment break stays inside its
+    segment, a longer one ends it. This is the shape of a result as the pipeline makes it
+    today. `make_body` and `make_recording` build the shape of an older result, in which
+    every pause ended a segment.
+    """
+    spans = [(start, end) for start, end, _ in runs]
+    words: list[Word] = []
+    for start, end, text in runs:
+        spoken = text.split()
+        step = (end - start) / max(1, len(spoken))
+        words += [
+            Word(token, start + k * step, start + (k + 1) * step, 0.9)
+            for k, token in enumerate(spoken)
+        ]
+    length = seconds if seconds is not None else (spans[-1][1] + 0.5 if spans else 1.0)
+    path = tmp_path / name
+    path.write_bytes(wav_bytes(length, sounding=spans))
+    return run_analysis(
+        path,
+        profile=profile,
+        language="en",
+        settings=settings,
+        max_seconds=600,
+        deps=PipelineDeps(
+            transcriber=FakeTranscriber(words),
+            detect_speech=fake_vad(spans),
+            measure_pitch=steady_pitch,
+            measure_resonance=no_resonance,
+        ),
+    )
+
+
 def make_words(start: float, end: float, count: int, probability: float = 0.9) -> list[Word]:
     """`count` evenly spaced words filling the time from `start` to `end`."""
     step = (end - start) / count
@@ -482,6 +527,7 @@ def add_job(session_factory, data_dir: Path, clock: FakeClock):
                 now=clock(),
                 role=fields.pop("role", "take"),
                 title=fields.pop("title", None),
+                monologue_id=fields.pop("monologue_id", None),
             )
         # Later jobs must sort after earlier ones.
         clock.advance(seconds=1)

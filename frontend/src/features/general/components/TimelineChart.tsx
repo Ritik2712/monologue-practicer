@@ -3,6 +3,7 @@
 import { useId, useState, type KeyboardEvent } from "react";
 
 import { formatNumber, formatSpan, formatTimecode, PAUSE_LABELS } from "../format";
+import { deliveryWpmOf } from "../pace";
 import {
   formatTick,
   labelFits,
@@ -40,13 +41,14 @@ function describeMoment(moment: Moment): { title: string; detail: string } {
   switch (moment.kind) {
     case "segment": {
       const { segment } = moment;
+      const wpm = deliveryWpmOf(segment);
       const pace =
-        segment.segmentWpm === null
+        wpm === null
           ? "no words recognised"
-          : `${formatNumber(segment.segmentWpm)} WPM${segment.reliable ? "" : " (estimate)"}`;
+          : `${formatNumber(wpm)} WPM${segment.reliable ? "" : " (estimate)"}`;
       return {
         title: `Segment ${segment.index + 1}`,
-        detail: `${pace} · ${formatSpan(segment.speechActiveSeconds)}`,
+        detail: `${pace} · ${formatSpan(segment.endSeconds - segment.startSeconds)}`,
       };
     }
     case "pause":
@@ -206,17 +208,39 @@ export function TimelineChart({ analysis, playheadSeconds, onSeek }: TimelineCha
               const segmentWidth = Math.max(1, x(segment.endSeconds) - left);
               const marker =
                 segment.paceVsTypical === "faster" ? "▲" : segment.paceVsTypical === "slower" ? "▼" : null;
+              const opacity = hoveredSegmentId === null || hoveredSegmentId === segment.id ? 1 : 0.55;
+              // A phrase that holds pauses is drawn as its runs of speaking, joined by a
+              // thin line, so the pauses inside it show as gaps and it still reads as one.
+              const runs = (analysis.stretches ?? []).filter((run) => run.segmentId === segment.id);
+              const pieces = runs.length > 1 ? runs : [segment];
               return (
                 <g key={segment.id}>
-                  <rect
-                    x={left}
-                    y={STRIP_TOP}
-                    width={segmentWidth}
-                    height={STRIP_HEIGHT}
-                    rx={Math.min(4, segmentWidth / 2)}
-                    fill="var(--viz-series-1)"
-                    opacity={hoveredSegmentId === null || hoveredSegmentId === segment.id ? 1 : 0.55}
-                  />
+                  {runs.length > 1 && (
+                    <rect
+                      x={left}
+                      y={STRIP_TOP + STRIP_HEIGHT / 2 - 1.5}
+                      width={segmentWidth}
+                      height={3}
+                      fill="var(--viz-series-1)"
+                      opacity={opacity * 0.6}
+                    />
+                  )}
+                  {pieces.map((piece) => {
+                    const pieceLeft = x(piece.startSeconds);
+                    const pieceWidth = Math.max(1, x(piece.endSeconds) - pieceLeft);
+                    return (
+                      <rect
+                        key={piece.startSeconds}
+                        x={pieceLeft}
+                        y={STRIP_TOP}
+                        width={pieceWidth}
+                        height={STRIP_HEIGHT}
+                        rx={Math.min(4, pieceWidth / 2)}
+                        fill="var(--viz-series-1)"
+                        opacity={opacity}
+                      />
+                    );
+                  })}
                   {marker && segmentWidth >= 10 && (
                     <text
                       x={left + segmentWidth / 2}

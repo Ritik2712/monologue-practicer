@@ -18,6 +18,8 @@ from app.calibration.registry import MIN_PAUSE, show
 from app.coaching.findings import number, seconds_text
 from app.comparison.align import Alignment, align_words, match_key
 from app.comparison.settings import ComparisonSettings
+from app.pipeline.settings import AnalysisSettings
+from app.stretches import stretch_index_of
 
 # How many words of a phrase are shown when pointing at it.
 QUOTED_WORDS = 6
@@ -38,7 +40,14 @@ class MetricSpec:
 METRICS: tuple[MetricSpec, ...] = (
     MetricSpec("speechActiveSeconds", "Time speaking", "s", 1),
     MetricSpec("totalWordCount", "Words", "", 0),
-    MetricSpec("speechActiveWpm", "Speech-active WPM", "WPM", 1),
+    MetricSpec(
+        "deliveryWpm",
+        "Delivery pace",
+        "WPM",
+        1,
+        note="Counts the short pauses inside a phrase, and not the longer ones that end it.",
+    ),
+    MetricSpec("speechActiveWpm", "Speaking speed (every pause left out)", "WPM", 1),
     MetricSpec("wholeClipWpm", "Whole-clip WPM (including pauses)", "WPM", 1),
     MetricSpec("paceVariation", "Pace variation", "WPM", 1),
     MetricSpec("pauseCount", "Pauses", "", 0),
@@ -84,29 +93,45 @@ class Side:
         self.words = [word for word in body.words if match_key(word.text)]
         self.keys = [match_key(word.text) for word in self.words]
         self.segments = {segment.id: segment for segment in body.segments}
+        # A pause that ends a phrase in this recording is at least this long.
+        self.segment_break_seconds = (
+            AnalysisSettings.from_dict(body.settings).segment_break_ms / 1000
+        )
         # For each segment, the positions of its first and last word in `self.words`.
         self.segment_words: dict[str, tuple[int, int]] = {}
+        # The same for each stretch of unbroken speaking, and the stretch of every word.
+        self.stretch_words: dict[int, tuple[int, int]] = {}
+        self.stretches = [stretch_index_of(body, word) for word in self.words]
         for index, word in enumerate(self.words):
             if word.segment_id is None:
                 continue
             first, _ = self.segment_words.get(word.segment_id, (index, index))
             self.segment_words[word.segment_id] = (first, index)
+            stretch = self.stretches[index]
+            if stretch is not None:
+                first, _ = self.stretch_words.get(stretch, (index, index))
+                self.stretch_words[stretch] = (first, index)
+        # Every word a stretch holds, as text, for saying where a pause falls.
+        self.stretch_texts: dict[int, list[str]] = {}
+        for word in body.words:
+            stretch = stretch_index_of(body, word)
+            if stretch is not None:
+                self.stretch_texts.setdefault(stretch, []).append(word.text)
 
     def pauses_between(self, left: int, right: int) -> list:
         """The pauses that fall between two words, given by their positions in `self.words`.
 
-        Decided by which phrase each word belongs to, never by the words' own times. A
-        pause is by definition the gap between two phrases, and the recogniser's word times
-        stray: the first word after a pause is often given a start time inside the pause.
-        Two words of the same phrase therefore have no pause between them, whatever their
-        times say.
+        Decided by which stretch of speaking each word belongs to, never by the words' own
+        times. A pause is by definition the gap between two stretches, and the recogniser's
+        word times stray: the first word after a pause is often given a start time inside
+        the pause. Two words of the same stretch therefore have no pause between them,
+        whatever their times say.
         """
-        first = self.segments.get(self.words[left].segment_id or "")
-        last = self.segments.get(self.words[right].segment_id or "")
+        first, last = self.stretches[left], self.stretches[right]
         if first is None or last is None:
             return []
-        # Pause number i lies between phrase number i and phrase number i + 1.
-        return [pause for pause in self.body.pauses if first.index <= pause.index < last.index]
+        # Pause number i lies between stretch number i and stretch number i + 1.
+        return [pause for pause in self.body.pauses if first <= pause.index < last]
 
     def clamp(self, start: float, end: float) -> schemas.PlayRange:
         return schemas.PlayRange(
@@ -114,9 +139,9 @@ class Side:
             end_seconds=round(min(self.body.duration_seconds, max(end, start)), 3),
         )
 
-    def last_words(self, segment_id: str) -> str:
-        """The closing words of a phrase, to say where a pause falls."""
-        words = (self.segments[segment_id].transcript or "").split()
+    def words_before(self, pause) -> str:
+        """The words spoken just before a pause, to say where it falls."""
+        words = " ".join(self.stretch_texts.get(pause.index, [])).split()
         shown = " ".join(words[-QUOTED_WORDS:]).rstrip(".,;:!?।")
         return ("…" if len(words) > QUOTED_WORDS else "") + shown
 
@@ -183,7 +208,10 @@ def compare_metrics(
         )
     ]
     for spec in METRICS:
-        a, b = mine[spec.name], theirs[spec.name]
+        # A result from before the delivery pace existed has one pace, stored as the
+        # speech-active WPM: no phrase of it holds a pause.
+        a = mine[spec.name] or mine["speechActiveWpm"]
+        b = theirs[spec.name] or theirs["speechActiveWpm"]
         estimated = "estimated" in (a["quality"], b["quality"])
         rows.append(row(spec, a["value"], b["value"], estimated))
     return rows
@@ -208,12 +236,13 @@ def _around(side: Side, start: float, end: float, context: float) -> schemas.Pla
 def _locate(pause, here: Side, there: Side, bridge: Bridge) -> tuple[int, int] | None:
     """The two words of the other recording that a pause in this one falls between.
 
-    The pause sits between the last word of one phrase and the first word of the next. If
-    matched words can be found close on both sides, their partners in the other recording
-    mark the same place there. Returns their positions in the other recording's words.
+    The pause sits between the last word of one stretch of speaking and the first word of
+    the next. If matched words can be found close on both sides, their partners in the
+    other recording mark the same place there. Returns their positions in the other
+    recording's words.
     """
-    before = here.segment_words.get(pause.after_segment_id)
-    after = here.segment_words.get(pause.before_segment_id)
+    before = here.stretch_words.get(pause.index)
+    after = here.stretch_words.get(pause.index + 1)
     if before is None or after is None:
         return None
     left, right = bridge.at_or_before(before[1]), bridge.at_or_after(after[0])
@@ -241,7 +270,7 @@ def compare_pauses(
     for pause in reference.body.pauses:
         reference_side = _side_of(pause)
         reference_play = _around(reference, pause.start_seconds, pause.end_seconds, context)
-        after_words = reference.last_words(pause.after_segment_id)
+        after_words = reference.words_before(pause)
         spot = _locate(pause, reference, take, to_take)
         if spot is None:
             row = schemas.ComparedPause(
@@ -295,7 +324,7 @@ def compare_pauses(
             continue
         row = schemas.ComparedPause(
             status="take_only",
-            after_words=take.last_words(pause.after_segment_id),
+            after_words=take.words_before(pause),
             reference=None,
             take=_side_of(pause),
             difference_seconds=None,
@@ -313,7 +342,13 @@ def compare_pauses(
 def compare_phrases(
     take: Side, reference: Side, alignment: Alignment, settings: ComparisonSettings
 ) -> list[schemas.ComparedPhrase]:
-    """The pace of each phrase of the reference, against the same words in the take."""
+    """The delivery pace of each phrase of the reference, against the same words in the take.
+
+    A phrase of the reference holds no pause as long as its segment break: such a pause
+    would have ended it. The take is read by the same rule, whatever it was analysed with:
+    over the same words, a pause of the take shorter than that is part of how the line was
+    delivered and counts, and a longer one is left out and listed with the pauses.
+    """
     to_take = Bridge(alignment.pairs, 0)
     phrases: list[schemas.ComparedPhrase] = []
     for segment in reference.body.segments:
@@ -347,11 +382,13 @@ def compare_phrases(
         if word_count < settings.phrase_min_words or coverage < settings.phrase_min_coverage:
             continue
 
-        # Both paces are taken over the same stretch of words: from the first matched word
-        # to the last. Pauses the take makes inside that stretch are left out, as always.
+        # Both paces are taken over the same run of words: from the first matched word to
+        # the last.
         reference_seconds = reference.words[r2].end_seconds - reference.words[r1].start_seconds
         take_seconds = (take_end - take_start) - sum(
-            pause.duration_seconds for pause in take.pauses_between(t1, t2)
+            pause.duration_seconds
+            for pause in take.pauses_between(t1, t2)
+            if pause.duration_seconds >= reference.segment_break_seconds
         )
         if min(reference_seconds, take_seconds) < settings.phrase_min_seconds:
             continue
@@ -446,15 +483,15 @@ def find_differences(
                 phrase,
             )
 
-    pace = next((m for m in metrics if m.metric == "speechActiveWpm"), None)
+    pace = next((m for m in metrics if m.metric == "deliveryWpm"), None)
     if pace and pace.take and pace.reference:
         ratio = pace.take / pace.reference - 1
         if abs(ratio) >= settings.notable_overall_pace_ratio:
             add(
                 abs(ratio) * 2.0,
                 "overall_faster" if ratio > 0 else "overall_slower",
-                f"Overall you spoke at {number(pace.take)} WPM while speaking; the reference "
-                f"speaks at {number(pace.reference)} WPM. That is {round(abs(ratio) * 100)}% "
+                f"Overall your delivery pace was {number(pace.take)} WPM; the reference's is "
+                f"{number(pace.reference)} WPM. That is {round(abs(ratio) * 100)}% "
                 f"{'faster' if ratio > 0 else 'slower'}.",
                 None,
             )
@@ -522,6 +559,24 @@ def settings_note(take: schemas.AnalysisBody, reference: schemas.AnalysisBody) -
     """
     mine = take.settings.get(MIN_PAUSE.name, MIN_PAUSE.default)
     theirs = reference.settings.get(MIN_PAUSE.name, MIN_PAUSE.default)
+    my_break = AnalysisSettings.from_dict(take.settings).segment_break_ms
+    their_break = AnalysisSettings.from_dict(reference.settings).segment_break_ms
+    if mine == theirs and my_break != their_break:
+
+        def phrases(break_ms: int, min_pause: float) -> str:
+            return (
+                "ended a phrase at every pause"
+                if break_ms <= min_pause
+                else f"ended a phrase only at a pause of {seconds_text(break_ms / 1000)} or more"
+            )
+
+        return (
+            "These two were analysed with different settings: the analysis of your take "
+            f"{phrases(my_break, mine)}, and that of the reference {phrases(their_break, theirs)}. "
+            "The pauses themselves are found the same way in both, so they are compared like "
+            "for like. Phrases, and every delivery pace, are not. Analyse the older result "
+            "again, with the settings as they are now, to bring the two into line."
+        )
     if mine == theirs:
         return None
     return (

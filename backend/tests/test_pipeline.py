@@ -109,7 +109,8 @@ def test_every_word_is_listed_with_the_segment_it_belongs_to(tmp_path):
 def test_the_result_records_which_settings_and_tools_produced_it(tmp_path):
     body, _, _ = run(tmp_path, regions=[(1.0, 5.0)], words=make_words(1.0, 5.0, 8))
     assert body.settings == DEFAULT_SETTINGS.to_dict()
-    assert body.settings["version"] == 2
+    assert body.settings["version"] == 3
+    assert body.settings["segment_break_ms"] == 1000
     # How sure the pitch tracker must be that a moment is voiced: lowered once, on evidence.
     assert body.settings["pitch_voiced_probability"] == 0.3
     assert body.settings["min_pause_ms"] == 500
@@ -464,12 +465,12 @@ def test_a_recording_with_no_speech_has_no_voice_range(tmp_path):
 def test_a_loud_background_makes_resonance_an_estimate_and_a_very_loud_one_withholds_it():
     from app.pipeline.resonance import ResonanceTrack
     from app.pipeline.runner import WARNINGS, _VoiceReader
-    from app.pipeline.segmentation import Segment
+    from app.pipeline.segmentation import Segment, Stretch
     from app.pipeline.voice_range import DEFAULT_VOICE_RANGES
 
     times = np.arange(0.0, 4.0, 0.01)
     track = ResonanceTrack(times, np.tile([500.0, 1500.0, 2500.0], (times.shape[0], 1)))
-    phrase = Segment(index=0, start=0.0, end=4.0)
+    phrase = Segment(index=0, stretches=[Stretch(0, 0.0, 4.0)])
 
     def read(snr_db):
         reader = _VoiceReader(track, snr_db, DEFAULT_VOICE_RANGES)
@@ -477,7 +478,7 @@ def test_a_loud_background_makes_resonance_an_estimate_and_a_very_loud_one_withh
 
     # A phrase with under a second and a half of usable sound is placed, as an estimate.
     short = _VoiceReader(track, 40.0, DEFAULT_VOICE_RANGES).of_segment(
-        Segment(index=1, start=1.0, end=2.0), 120.0
+        Segment(index=1, stretches=[Stretch(1, 1.0, 2.0)]), 120.0
     )
     assert (short.resonance.band, short.resonance.quality) == ("lower", "estimated")
 

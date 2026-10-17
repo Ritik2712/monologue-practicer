@@ -2,7 +2,7 @@
 
     stored result + corrected words -> a new result
 
-Only what rests on the words is worked out again: word counts, the three WPM figures, pace
+Only what rests on the words is worked out again: word counts, the WPM figures, pace
 variation, hesitation sounds. It is done by the same functions the audio pipeline uses, from
 the corrected word count and the phrase's own measured length. Nothing is multiplied by a
 correction factor.
@@ -12,7 +12,7 @@ are, how long they last, loudness and pitch. The stored result this starts from 
 touched; the caller saves the outcome as a new revision.
 """
 
-from app import schemas
+from app import schemas, stretches
 from app.comparison.align import align_words, match_key
 from app.pipeline.fillers import find_hesitations
 from app.pipeline.metrics import (
@@ -30,7 +30,7 @@ from app.pipeline.runner import (
     word_metric_values,
     word_quality_of,
 )
-from app.pipeline.segmentation import Segment, Word
+from app.pipeline.segmentation import Segment, Stretch, Word, assign_words
 from app.pipeline.settings import AnalysisSettings
 
 CORRECTED = "transcript_corrected"
@@ -94,7 +94,8 @@ def _stored_pace(segment: schemas.SpeechSegment) -> SegmentPace:
     """A phrase whose words did not change keeps the figures it was stored with."""
     return SegmentPace(
         word_count=segment.word_count or 0,
-        wpm=segment.segment_wpm,
+        wpm=stretches.delivery_wpm_of(segment),
+        speaking_wpm=segment.segment_wpm,
         confidence=segment.confidence,
         quality="unavailable"
         if segment.segment_wpm is None
@@ -129,27 +130,43 @@ def correct_transcript(
         if word.segment_id:
             stored_words.setdefault(word.segment_id, []).append(word)
 
+    stored_stretches: dict[str, list[schemas.SpeechStretch]] = {}
+    for stretch in stretches.stretches_of(body):
+        stored_stretches.setdefault(stretch.segment_id, []).append(stretch)
+
     had_transcript = bool(body.words)
     segments: list[Segment] = []
     paces: list[SegmentPace] = []
     for stored in body.segments:
         old_words = stored_words.get(stored.id, [])
-        if stored.id in changed:
-            words = retime(
-                old_words, corrections[stored.id].split(), stored.start_seconds, stored.end_seconds
-            )
-        else:
-            words = [
-                Word(word.text, word.start_seconds, word.end_seconds, word.confidence)
-                for word in old_words
-            ]
         segment = Segment(
             index=stored.index,
-            start=stored.start_seconds,
-            end=stored.end_seconds,
+            stretches=[
+                Stretch(stretch.index, stretch.start_seconds, stretch.end_seconds)
+                for stretch in stored_stretches[stored.id]
+            ],
             section_index=stored.section_index,
-            words=words,
         )
+        by_index = {stretch.index: stretch for stretch in segment.stretches}
+        if stored.id in changed:
+            # A corrected word has no stretch of its own yet. It goes where its time puts
+            # it, by the rule the pipeline uses, so it lands on one side of a pause inside
+            # the phrase or the other.
+            assign_words(
+                [segment],
+                retime(
+                    old_words,
+                    corrections[stored.id].split(),
+                    stored.start_seconds,
+                    stored.end_seconds,
+                ),
+            )
+        else:
+            for word in old_words:
+                index = stretches.stretch_index_of(body, word)
+                by_index.get(index, segment.stretches[0]).words.append(
+                    Word(word.text, word.start_seconds, word.end_seconds, word.confidence)
+                )
         segments.append(segment)
         paces.append(
             _stored_pace(stored)
@@ -186,6 +203,14 @@ def correct_transcript(
         for stored, segment in zip(body.segments, segments, strict=True)
         for word in segment.words
     }
+    # A result from before segments could hold a pause keeps the shape it was stored in.
+    with_stretches = stretches.has_delivery_pace(body)
+    word_stretch = {
+        id(word): stretch.index
+        for segment in segments
+        for stretch in segment.stretches
+        for word in stretch.words
+    }
     segments_out = [
         stored.model_copy(
             update={
@@ -193,7 +218,8 @@ def correct_transcript(
                 if has_transcript
                 else None,
                 "word_count": info.word_count if has_transcript else None,
-                "segment_wpm": round_out(info.wpm, 1),
+                "segment_wpm": round_out(info.speaking_wpm, 1),
+                "delivery_wpm": round_out(info.wpm, 1) if with_stretches else None,
                 "pace_vs_typical": pace_vs_typical(info, typical, settings),
                 "quality": weaker(info.quality, word_quality),
                 "reliable": info.reliable,
@@ -229,18 +255,23 @@ def correct_transcript(
                     end_seconds=round_out(word.end, 3),
                     confidence=round_out(word.probability, 3),
                     segment_id=word_segment[id(word)],
+                    stretch_index=word_stretch[id(word)] if with_stretches else None,
                 )
                 for word in all_words
             ],
             "metrics": body.metrics.model_copy(
-                update=word_metric_values(
-                    pace,
-                    typical,
-                    hesitation_count=len(hesitations),
-                    has_transcript=has_transcript,
-                    word_quality=word_quality,
-                    settings=settings,
-                )
+                update={
+                    name: value
+                    for name, value in word_metric_values(
+                        pace,
+                        typical,
+                        hesitation_count=len(hesitations),
+                        has_transcript=has_transcript,
+                        word_quality=word_quality,
+                        settings=settings,
+                    ).items()
+                    if with_stretches or name != "delivery_wpm"
+                }
             ),
             "emphasis_candidates": emphasis,
             "hesitations": [

@@ -76,14 +76,15 @@ export function momentAt(
   seconds: number,
   analysis: Pick<AnalysisResult, "segments" | "pauses">,
 ): Moment {
-  const segment = analysis.segments.find(
-    (item) => seconds >= item.startSeconds && seconds <= item.endSeconds,
-  );
-  if (segment) return { kind: "segment", segment };
+  // A pause first: a short one lies inside its phrase, and a moment in it is a pause.
   const pause = analysis.pauses.find(
     (item) => seconds > item.startSeconds && seconds < item.endSeconds,
   );
   if (pause) return { kind: "pause", pause };
+  const segment = analysis.segments.find(
+    (item) => seconds >= item.startSeconds && seconds <= item.endSeconds,
+  );
+  if (segment) return { kind: "segment", segment };
   if (analysis.segments.length === 0) return { kind: "empty" };
   return {
     kind: "silence",

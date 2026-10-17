@@ -238,7 +238,7 @@ def test_the_full_journey_from_upload_to_result(client, data_dir, make_worker, c
         "value": 180.0,
         "unit": "words/minute",
         "quality": "measured",
-        "note": "Total words / speaking time. Pauses are excluded.",
+        "note": "Total words / speaking time. Every pause is excluded.",
     }
     assert result["metrics"]["breathCount"]["quality"] == "unavailable"
     assert len(result["segments"]) == 2
@@ -374,13 +374,26 @@ def test_a_result_carries_coaching_built_on_its_own_measurements(client, make_wo
     assert coaching["notice"]["code"] == "ai_off"
     assert [line["label"] for line in coaching["summary"]] == ["Pace", "Pauses", "Voice", "Clarity"]
     by_id = {finding["id"]: finding for finding in coaching["findings"]}
-    first = coaching["corrections"][0]
-    assert by_id[first["findingId"]]["kind"] == "held_silence"
-    assert first["title"] == "Hold one full silence"
+    # 180 WPM with no pause inside either phrase: fast for a profile that wants an
+    # unhurried delivery, and the remedy offered is pauses, not slower words.
+    first, second = coaching["corrections"][:2]
+    assert by_id[first["findingId"]]["kind"] == "pace"
+    assert by_id[first["findingId"]]["statement"].startswith(
+        "Your delivery pace was 180 WPM: your words over the length of your phrases, "
+        "counting the short pauses inside them. That is fast: over 175 WPM. No phrase "
+        "held a pause"
+    )
+    assert first["title"] == "Slow the delivery with pauses"
+    assert "Do not stretch the words" in first["drill"]
+    assert by_id[second["findingId"]]["kind"] == "held_silence"
+    assert second["title"] == "Hold one full silence"
     assert first["practise"]["kind"] == "segment"
-    assert coaching["nextTake"][0] == "Hold at least one silence for 2 seconds or more."
+    assert coaching["nextTake"][:2] == [
+        "Bring your delivery pace down towards 125 WPM or below, by pausing inside your phrases.",
+        "Hold at least one silence for 2 seconds or more.",
+    ]
     assert coaching["caveats"][-1].startswith("Breaths are not detected")
-    assert coaching["settings"]["version"] == 1
+    assert coaching["settings"]["version"] == 2
 
 
 def test_every_job_says_what_kind_it_is(client, make_worker):

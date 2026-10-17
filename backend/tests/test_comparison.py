@@ -296,8 +296,7 @@ def test_a_clearly_different_overall_pace_is_listed_without_a_place_to_play():
     (difference,) = comparing(take=take, reference=reference).differences
     assert difference.kind == "overall_faster"
     assert difference.statement == (
-        "Overall you spoke at 230 WPM while speaking; the reference speaks at 180 WPM. "
-        "That is 28% faster."
+        "Overall your delivery pace was 230 WPM; the reference's is 180 WPM. That is 28% faster."
     )
     assert difference.reference_play is None and difference.take_play is None
 
@@ -321,7 +320,7 @@ def test_different_words_are_compared_only_as_whole_recordings():
     assert result.alignment.status == "unmatched"
     assert "do not appear to be the same passage" in result.alignment.note
     assert result.pauses == [] and result.phrases == []
-    assert len(result.metrics) == 14
+    assert len(result.metrics) == 15
     assert not any("Phrases are lined up" in caveat for caveat in result.caveats)
 
 

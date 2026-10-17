@@ -27,7 +27,7 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Literal
 
-from app import profiles, schemas
+from app import profiles, schemas, stretches
 from app.coaching.settings import CoachingSettings
 
 Level = Literal["low", "moderate", "high"]
@@ -36,6 +36,7 @@ Want = Literal["low", "high"]
 
 # Which aspect of delivery each profile focus metric speaks about.
 DIMENSION_BY_METRIC = {
+    "deliveryWpm": "pace",
     "speechActiveWpm": "pace",
     "paceVariation": "pace_variation",
     "medianPauseSeconds": "pause_length",
@@ -201,7 +202,7 @@ def build_findings(
     labels = known_labels(body, labels)
     found: list[Found] = []
 
-    pace = _pace(metrics, settings, wants)
+    pace = _pace(body, settings, wants)
     variation = _pace_variation(body, settings, wants)
     pauses = _pauses(body, settings, wants, labels)
     longest = _longest_pause(body, settings, wants, labels)
@@ -260,30 +261,69 @@ def build_findings(
     return FindingSet(findings, details, summary, _caveats(body, variation is not None))
 
 
-def _pace(metrics: schemas.Metrics, settings: CoachingSettings, wants) -> Found | None:
-    metric = metrics.speech_active_wpm
+def pace_bands(body: schemas.AnalysisBody, settings: CoachingSettings) -> tuple[float, float]:
+    """The bands a recording's pace is judged by, which depend on which pace it has."""
+    if stretches.has_delivery_pace(body):
+        return settings.delivery_slow_wpm, settings.delivery_fast_wpm
+    return settings.slow_wpm, settings.fast_wpm
+
+
+def _pace(body: schemas.AnalysisBody, settings: CoachingSettings, wants) -> Found | None:
+    """How fast the lines went by.
+
+    Judged on the delivery pace, which counts the short pauses inside a phrase: a speaker
+    slows a delivery down by pausing, not by dragging the words. A result from before
+    that figure existed has only its speech-active WPM, and is judged on that as it was.
+    """
+    with_delivery = stretches.has_delivery_pace(body)
+    metric = stretches.recording_delivery_wpm(body)
     if metric.value is None:
         return None
-    level = band(metric.value, settings.slow_wpm, settings.fast_wpm)
+    slow, fast = pace_bands(body, settings)
+    level = band(metric.value, slow, fast)
     described = {
-        "low": f"That is unhurried: under {number(settings.slow_wpm)} WPM.",
-        "moderate": (
-            f"That is a moderate pace: between {number(settings.slow_wpm)} and "
-            f"{number(settings.fast_wpm)} WPM."
-        ),
-        "high": f"That is fast: over {number(settings.fast_wpm)} WPM.",
+        "low": f"That is unhurried: under {number(slow)} WPM.",
+        "moderate": f"That is a moderate pace: between {number(slow)} and {number(fast)} WPM.",
+        "high": f"That is fast: over {number(fast)} WPM.",
     }[level]
     role, weight = banded_role("pace", level, wants)
+    estimate = ESTIMATE_NOTE if metric.quality == "estimated" else ""
+    if not with_delivery:
+        return Found(
+            kind="pace",
+            level=level,
+            role=role,
+            weight=weight,
+            statement=(
+                f"You spoke at {number(metric.value)} WPM while speaking (pauses left out). "
+                f"{described}{estimate}"
+            ),
+            evidence=[metric_evidence("speechActiveWpm", "Speech-active WPM")],
+            data={"basis": "speaking"},
+        )
+
+    inside = [pause for pause in body.pauses if pause.inside_segment]
+    speaking = body.metrics.speech_active_wpm.value
+    if inside and speaking is not None:
+        seconds = round(sum(pause.duration_seconds for pause in inside), 3)
+        apart = (
+            f" {plural(len(inside), 'pause')} inside your phrases took "
+            f"{seconds_text(seconds)}; with those left out, the words themselves were said "
+            f"at {number(speaking)} WPM."
+        )
+    else:
+        apart = " No phrase held a pause, so the words themselves were said at that speed."
     return Found(
         kind="pace",
         level=level,
         role=role,
         weight=weight,
         statement=(
-            f"You spoke at {number(metric.value)} WPM while speaking (pauses left out). "
-            f"{described}" + (ESTIMATE_NOTE if metric.quality == "estimated" else "")
+            f"Your delivery pace was {number(metric.value)} WPM: your words over the length "
+            f"of your phrases, counting the short pauses inside them. {described}{apart}"
+            f"{estimate}"
         ),
-        evidence=[metric_evidence("speechActiveWpm", "Speech-active WPM")],
+        evidence=[metric_evidence("deliveryWpm", "Delivery pace")],
     )
 
 
@@ -302,16 +342,17 @@ def _pace_variation(body: schemas.AnalysisBody, settings: CoachingSettings, want
         "high": f"That is widely varied: over {varied}%.",
     }[level]
 
-    reliable = [s for s in body.segments if s.reliable and s.segment_wpm is not None]
+    pace_of = stretches.delivery_wpm_of
+    reliable = [s for s in body.segments if s.reliable and pace_of(s) is not None]
     evidence = [metric_evidence("paceVariation", "Pace variation")]
     extremes = ""
     data: dict[str, str] = {}
     if len(reliable) >= 2:
-        slowest = min(reliable, key=lambda s: s.segment_wpm)
-        fastest = max(reliable, key=lambda s: s.segment_wpm)
+        slowest = min(reliable, key=pace_of)
+        fastest = max(reliable, key=pace_of)
         extremes = (
-            f" Slowest: segment {slowest.index + 1} at {number(slowest.segment_wpm)} WPM. "
-            f"Fastest: segment {fastest.index + 1} at {number(fastest.segment_wpm)} WPM."
+            f" Slowest: segment {slowest.index + 1} at {number(pace_of(slowest))} WPM. "
+            f"Fastest: segment {fastest.index + 1} at {number(pace_of(fastest))} WPM."
         )
         evidence += [segment_evidence(slowest), segment_evidence(fastest)]
         data = {"slowest": slowest.id, "fastest": fastest.id}
@@ -366,6 +407,13 @@ def _pauses(
         f"{plural(count, 'pause')} of {shortest_pause} or more, with a median of "
         f"{seconds_text(median)}."
     )
+    inside = sum(1 for pause in body.pauses if pause.inside_segment)
+    if inside:
+        # Where the pauses fell: a short one stays inside its phrase, a longer one ends it.
+        measured += (
+            f" {inside} of them fell inside a phrase and {count - inside} "
+            f"{'was' if count - inside == 1 else 'were'} long enough to end one."
+        )
     share = metrics.pause_ratio.value
     share_text = (
         f" Pauses make up {round(share * 100)}% of the recording." if share is not None else ""
@@ -455,12 +503,21 @@ def _longest_pause(
         weight=weight,
         statement=(
             f"{opening} is {seconds_text(pause.duration_seconds)}, at "
-            f"{timecode(pause.start_seconds)}, between segments {pause.index + 1} and "
-            f"{pause.index + 2}.{intended} {described}"
+            f"{timecode(pause.start_seconds)}, {pause_place(body, pause)}.{intended} "
+            f"{described}"
         ),
         evidence=[pause_evidence(pause)],
         data={"after": pause.after_segment_id, "before": pause.before_segment_id},
     )
+
+
+def pause_place(body: schemas.AnalysisBody, pause: schemas.PauseEvent) -> str:
+    """Where a pause lies, in words: "inside segment 3" or "between segments 3 and 4"."""
+    number_of = {segment.id: segment.index + 1 for segment in body.segments}
+    after = number_of.get(pause.after_segment_id, pause.index + 1)
+    if pause.inside_segment:
+        return f"inside segment {after}"
+    return f"between segments {after} and {number_of.get(pause.before_segment_id, after + 1)}"
 
 
 def _labelled_pauses(body: schemas.AnalysisBody, wants, labels: dict[str, str]) -> list[Found]:
@@ -670,12 +727,25 @@ def _segment_findings(body: schemas.AnalysisBody, settings: CoachingSettings, wa
     variation_want = wants.get("pace_variation")
     found: list[Found] = []
     for direction, kind in (("faster", "fast_segment"), ("slower", "slow_segment")):
+        pace_of = stretches.delivery_wpm_of
         matching = [
-            s for s in body.segments if s.pace_vs_typical == direction and s.segment_wpm is not None
+            s for s in body.segments if s.pace_vs_typical == direction and pace_of(s) is not None
         ]
-        matching.sort(key=lambda s: -abs(s.segment_wpm / typical - 1))
+        matching.sort(key=lambda s: -abs(pace_of(s) / typical - 1))
         for segment in matching[: settings.max_segment_findings]:
-            deviation = abs(segment.segment_wpm / typical - 1)
+            deviation = abs(pace_of(segment) / typical - 1)
+            data = {"segment": segment.id}
+            held = ""
+            if not stretches.has_delivery_pace(body):
+                data["basis"] = "speaking"
+            elif segment.pause_count:
+                held = (
+                    f" It holds {plural(segment.pause_count, 'pause')}, "
+                    f"{seconds_text(segment.pause_seconds)} in all."
+                )
+                data["pauses"] = "some"
+            else:
+                held = " It holds no pause."
             if variation_want == "high":
                 # A profile built on contrast: a phrase that breaks the pattern is the point.
                 role, weight = "strength", 0.0
@@ -690,12 +760,12 @@ def _segment_findings(body: schemas.AnalysisBody, settings: CoachingSettings, wa
                     weight=weight,
                     statement=(
                         f"Segment {segment.index + 1} ({timecode(segment.start_seconds)} to "
-                        f"{timecode(segment.end_seconds)}) ran at {number(segment.segment_wpm)} "
+                        f"{timecode(segment.end_seconds)}) ran at {number(pace_of(segment))} "
                         f"WPM, {round(deviation * 100)}% {direction} than your typical "
-                        f"{number(typical)} WPM."
+                        f"{number(typical)} WPM.{held}"
                     ),
                     evidence=[segment_evidence(segment)],
-                    data={"segment": segment.id},
+                    data=data,
                 )
             )
     return found

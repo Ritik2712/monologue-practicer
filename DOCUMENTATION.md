@@ -13,11 +13,16 @@ top to bottom and understand what each part does and why it was built that way.
 
 The documents are updated at the end of every phase. Every phase in the original plan
 (0 to 6) is built, Phase 7 added what Phase 6 had left out, Phase 8 joined the Monologue
-screen and Daily Practice into one flow, and Phase 9 added where a voice sits (its pitch
-and its resonance) and an optional voice goal. If the code and a document ever disagree, the code
+screen and Daily Practice into one flow, Phase 9 added where a voice sits (its pitch
+and its resonance) and an optional voice goal, and Phase 10 changed where a phrase ends
+and which pace is the main one. If the code and a document ever disagree, the code
 is right and the document needs fixing.
 
-**Last updated:** end of Phase 9 (every result says where the voice sat, in pitch and in
+**Last updated:** end of Phase 11 (any analysis, a monologue with its takes, or
+everything stored can be downloaded as a Markdown document). Before that, Phase 10 (a
+phrase ends only at a pause of a second or more,
+shorter pauses stay inside it and are shown where they fell, and the pace shown first is
+the delivery pace, which counts them). Before that, Phase 9 (every result says where the voice sat, in pitch and in
 resonance, for the recording and for each phrase; a speaker may choose to keep their
 voice lower or higher, and the coaching then follows that). Before that, Phase 8 (a list
 of monologues, Daily Practice done on one of them, takes stored under their monologue).
@@ -70,6 +75,19 @@ you can choose a goal, "keep my voice lower" or "keep my voice higher", and the 
 then points at the phrases that left that range and gives a drill. With no goal, nothing
 about it is judged.
 
+**Phrases and pace** (Phase 10). A silence of half a second or more is a pause. A phrase
+ends only at a pause of a second or more; a shorter pause stays inside its phrase and is
+shown at the place it fell. Each phrase, and the recording, has two paces: the **delivery
+pace**, which counts those short pauses and is the one shown first and practised against,
+and the **speaking speed**, which leaves every pause out. The idea is that a delivery is
+slowed by pausing, not by saying the words slowly.
+
+**Downloads** (Phase 11). Any analysis can be saved as a Markdown file, and so can a
+monologue with all its takes, the General Practice takes, or everything at once. The file
+holds every figure of each result, its coaching with the findings and bands behind it,
+and for a take of a monologue its comparison with the original. It is for reading back
+later and for studying the results outside the app.
+
 All three programs can be started with one command: `./run.sh`.
 
 ## 2. What is built so far
@@ -86,6 +104,8 @@ All three programs can be started with one command: `./run.sh`.
 | 7 | What Phase 6 left out, and one command to start the app | Picking the word a missed pause came after; feedback controls on a reference, on the Monologue screen; "What your feedback adds up to" in the calibration panel, with a button to ask the AI model | Feedback and transcript corrections on references; the rule that a setting needs a report from one of your own takes; the facts counted from the feedback; a third kind of job that has the AI model word them, with checks; 2 new endpoints, 1 new table; `run.sh` | **Built** |
 | 8 | Monologues and Daily Practice as one flow | The Monologues list; Daily Practice on a chosen monologue, with the tools of each step under it; the script of the original; rounds ("practise again"); a page for a take's full analysis; General Practice without the reference comparison | Which monologue a take belongs to; the monologues as a list with their takes counted; deleting a monologue with its takes; the General Practice history narrowed to takes that belong to none; 2 new endpoints, 2 new database columns | **Built** |
 | 9 | Where a voice sits, and a voice goal | The "Where your voice sits" section of every result (two cards, a table per phrase, the ranges and limits); the goal list on the recording forms, remembered in the browser | Resonance measured from the formants; pitch and resonance placed in three ranges, for the recording and each phrase; the goal carried from the form to the coaching; two new findings and four templates; a check on the AI model's wording; 1 new form field, 1 new database column, no new endpoint | **Built** |
+| 10 | Phrases that hold pauses, and delivery pace | The delivery pace as the large figure, with the speaking speed beside it; the pauses inside a phrase shown in its words, in the script and on the timeline; a notice on results made the older way | A phrase ends only at a pause of a second or more; stretches kept underneath; both paces for every phrase and for the recording; comparison, coaching, WPM review, transcript correction and feedback moved onto them; three new templates; no new endpoint, table or migration | **Built** |
+| 11 | Downloading analyses | A download button on every result, on every monologue, on the General Practice history, and one for everything | Two endpoints that write stored analyses out as Markdown, each recording in its newest revision, a take with its comparison and an original with how today's bands read it; nothing new stored | **Built** |
 
 Phase 1 was a frontend-only phase: the checklist runs completely in the browser and never
 calls the backend. Phase 2 was a backend-only phase. Phase 3 is where the two meet: the
@@ -101,6 +121,13 @@ Phase 8 was not in the plan either. It came from using the app: the daily routin
 always done on a monologue, so keeping the routine on one screen and the monologue on
 another made no sense. It is mostly frontend work, with a small backend part (a take
 remembers its monologue), and it changes no measurement.
+Phase 11 is small and practical: the user wanted the analyses out of the app, to add
+more monologues and then study, with the numbers in hand, what the coaching's bands
+should be. It measures nothing new.
+Phase 10 came from the user reading a result: a speech of 111 seconds had been cut into
+29 rows, most too short to trust, and the main pace figure could only be lowered by
+speaking in slow motion. It changes how the same measured pauses are grouped and which
+pace is put first; the pauses, the words and the speaking speed are measured as before.
 Phase 9 also came from use: a speaker who is working on how their voice is heard asked
 whether the app could show it. It is mostly science: a new measurement (resonance) that
 was tried on recordings with known answers before anything was shown, the ranges, and
@@ -380,6 +407,24 @@ are in their own documents.
   comparison of a take with an original it was not recorded for is a question nobody
   asked.
 
+### G16. A delivery is paced by its pauses
+
+- **Chosen:** a phrase is a line of the speech, ended by a pause of a second or more. A
+  shorter pause belongs to the line. The pace a speaker practises against, the delivery
+  pace, counts those shorter pauses; the speaking speed, which leaves every pause out, is
+  shown beside it.
+- **Why:** it is how delivery works, and how the two film speeches stored in the app are
+  performed: words at about 200 a minute, delivered at about 170, with the difference
+  made entirely of short stops. A figure that only slower words can lower teaches the
+  wrong thing.
+- **What it does not change:** G5 and G6. Every figure is still worked out by code, and a
+  pause is still only measured: the app does not say whether it was meant.
+- **Where it is decided:** science decisions S84 to S91, backend B68 to B73, frontend
+  F84 to F88.
+- **Honest limits:** one second is a round choice, not a law of speech; the bands that
+  call a delivery pace "fast" rest on three recordings; and results made before the
+  change keep their older phrases until their recording is analysed again.
+
 ### G15. The app describes a voice, and never says who is speaking
 
 - **Chosen:** pitch and resonance are placed in a lower, a neutral or a higher range.
@@ -439,6 +484,10 @@ are in their own documents.
 | **Resonance** | How deep or bright a voice sounds, apart from its note. Measured here as the spacing of its formants, in Hz. |
 | **Voice range** | Where a voice sits: its pitch and its resonance, each in the lower, neutral or higher range, with a percentage saying how far into the range. |
 | **Voice goal** | Your own choice to keep your voice lower or higher. Optional; it changes the coaching and no measurement. |
+| **Stretch** | An unbroken run of speaking, with no pause in it. |
+| **Phrase (segment)** | A line of the speech: stretches joined across pauses shorter than a second. Ends at a pause of a second or more. |
+| **Delivery pace** | Words ÷ a phrase's whole length, the short pauses inside it counted. The pace shown first. |
+| **Speaking speed** | Words ÷ the time spent speaking, every pause left out. |
 | **Line-up (alignment)** | Working out which word of one recording is which word of the other. |
 | **Waveform** | A picture of a sound wave. Here it is only ever a picture: nothing is measured from it. |
 | **Feedback** | Something you say about one analysis: a label, a report, or a note for the record. |

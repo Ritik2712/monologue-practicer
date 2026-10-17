@@ -84,10 +84,20 @@ class SpeechSegment(ApiModel):
     section_index: int
     start_seconds: float
     end_seconds: float
+    # Time spent speaking in the segment: its length without the pauses inside it.
     speech_active_seconds: float
+    # The pauses inside the segment: shorter than the segment break, so they did not end it.
+    # Always 0 in results from before segments could hold a pause.
+    pause_count: int = 0
+    pause_seconds: float = 0.0
     transcript: str | None
     word_count: int | None
+    # Speaking speed: words / time spent speaking, the pauses inside left out.
     segment_wpm: float | None
+    # Delivery pace: words / the segment's whole length, the pauses inside included. This is
+    # the figure compared with the typical pace. None in results from before it existed,
+    # where no segment held a pause and it would equal `segment_wpm`.
+    delivery_wpm: float | None = None
     # Against the speaker's own typical pace in this recording, not against any target.
     # None when the segment is too short to judge or there is no typical pace to compare with.
     pace_vs_typical: Literal["typical", "faster", "slower"] | None = None
@@ -111,9 +121,20 @@ class PauseEvent(ApiModel):
     end_seconds: float
     duration_seconds: float
     significance: PauseSignificance
+    # The segments on either side. The same one twice for a pause inside a segment.
     after_segment_id: str
     before_segment_id: str
+    inside_segment: bool = False
     starts_new_section: bool
+
+
+class SpeechStretch(ApiModel):
+    """An unbroken run of speaking. Pause `n` lies between stretch `n` and stretch `n + 1`."""
+
+    index: int
+    start_seconds: float
+    end_seconds: float
+    segment_id: str
 
 
 class ShortSilence(ApiModel):
@@ -132,6 +153,8 @@ class WordTiming(ApiModel):
     end_seconds: float
     confidence: float | None
     segment_id: str | None
+    # The stretch the word was spoken in, which says which side of a pause it is on.
+    stretch_index: int | None = None
 
 
 class EmphasisCandidate(ApiModel):
@@ -203,6 +226,8 @@ class VoiceRange(ApiModel):
 class Metrics(ApiModel):
     total_word_count: MetricValue
     speech_active_seconds: MetricValue
+    # None in results from before it existed, where it would equal `speech_active_wpm`.
+    delivery_wpm: MetricValue | None = None
     speech_active_wpm: MetricValue
     whole_clip_wpm: MetricValue
     pace_variation: MetricValue
@@ -236,6 +261,9 @@ class AnalysisBody(ApiModel):
     duration_seconds: float
     transcript: str | None
     segments: list[SpeechSegment]
+    # None in results from before a segment could hold more than one stretch: there, each
+    # segment is one stretch.
+    stretches: list[SpeechStretch] | None = None
     pauses: list[PauseEvent]
     # Kept so a report of a missed pause can be checked against what the detector heard.
     # None for results stored before these were recorded.

@@ -243,6 +243,30 @@ describe("timeline arithmetic", () => {
     expect(momentAt(2, { segments: [], pauses: [] })).toEqual({ kind: "empty" });
   });
 
+  it("says a moment inside a phrase's own pause is a pause", () => {
+    // One phrase from 1 s to 6 s, holding a pause from 3 s to 3.6 s.
+    const analysis = {
+      segments: [{ id: "seg-1", startSeconds: 1, endSeconds: 6 }] as SpeechSegment[],
+      pauses: [{ id: "pause-1", startSeconds: 3, endSeconds: 3.6, insideSegment: true }] as PauseEvent[],
+    };
+    expect(momentAt(3.3, analysis)).toMatchObject({ kind: "pause", pause: { id: "pause-1" } });
+    expect(momentAt(2, analysis)).toMatchObject({ kind: "segment", segment: { id: "seg-1" } });
+    expect(momentAt(4, analysis)).toMatchObject({ kind: "segment", segment: { id: "seg-1" } });
+  });
+
+  it("compares attempts on delivery pace, reading an older result's one pace as that", () => {
+    const rows = compareAttempts(
+      { deliveryWpm: metric(140), speechActiveWpm: metric(150) },
+      { speechActiveWpm: metric(182.5) },
+    );
+    const byKey = Object.fromEntries(rows.map((row) => [row.key, row]));
+    expect(byKey.deliveryWpm).toMatchObject({ current: 140, previous: 182.5, delta: -42.5 });
+    expect(byKey.speechActiveWpm).toMatchObject({ current: 150, previous: 182.5 });
+    // A result that stored the metric as empty is read the same way as one without it.
+    const stored = compareAttempts({ deliveryWpm: null, speechActiveWpm: metric(160) }, {});
+    expect(stored.find((row) => row.key === "deliveryWpm")?.current).toBe(160);
+  });
+
   it("only places a label where it fits with padding", () => {
     expect(labelFits("6.1 s", 60)).toBe(true);
     expect(labelFits("6.1 s", 30)).toBe(false);

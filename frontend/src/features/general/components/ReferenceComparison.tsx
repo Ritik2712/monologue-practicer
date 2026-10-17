@@ -160,8 +160,9 @@ export function ReferenceComparison({
               <h4 className="text-sm font-semibold">Phrase by phrase</h4>
               <p className={`mt-1 text-xs ${MUTED}`}>
                 Each phrase of the reference, and the pace at which the same words are said in
-                your take. Pauses inside the phrase are left out of both. An estimate: it rests
-                on the recognised words and their times.
+                your take. This is the delivery pace: a short pause inside the line counts in
+                both, and a pause long enough to end a phrase is left out and listed with the
+                pauses above. An estimate: it rests on the recognised words and their times.
               </p>
               <div className="mt-1 overflow-x-auto">
                 <table className="w-full min-w-[36rem] text-left text-sm">

@@ -1,6 +1,6 @@
 "use client";
 
-import { Button } from "@/components/Button";
+import { Button, buttonClasses } from "@/components/Button";
 
 import { revisionLabel } from "../feedback";
 import {
@@ -10,6 +10,8 @@ import {
   languageName,
   profileName,
 } from "../format";
+import { generalExportUrl } from "../exportLinks";
+import { summaryDelivery } from "../pace";
 import type { GeneralState } from "../generalStore";
 import { LinkButton, MUTED, Notice } from "./parts";
 
@@ -39,9 +41,16 @@ export function HistoryPanel({
         <h2 id="history-heading" className="text-lg font-semibold">
           Past analyses
         </h2>
-        <Button variant="danger" disabled={history.items.length === 0} onClick={onClear}>
-          Clear all history
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {history.items.length > 0 && (
+            <a href={generalExportUrl()} download className={buttonClasses("secondary")}>
+              Download all as Markdown
+            </a>
+          )}
+          <Button variant="danger" disabled={history.items.length === 0} onClick={onClear}>
+            Clear all history
+          </Button>
+        </div>
       </div>
 
       {history.status === "error" && (
@@ -66,7 +75,7 @@ export function HistoryPanel({
                   <th scope="col" className="py-2 pr-3 font-medium">When</th>
                   <th scope="col" className="py-2 pr-3 font-medium">Profile</th>
                   <th scope="col" className="py-2 pr-3 text-right font-medium">Length</th>
-                  <th scope="col" className="py-2 pr-3 text-right font-medium">Speech-active WPM</th>
+                  <th scope="col" className="py-2 pr-3 text-right font-medium">Delivery pace (WPM)</th>
                   <th scope="col" className="py-2 pr-3 text-right font-medium">Pauses</th>
                   <th scope="col" className="py-2 font-medium">Actions</th>
                 </tr>
@@ -100,8 +109,8 @@ export function HistoryPanel({
                         {formatSpan(item.durationSeconds)}
                       </td>
                       <td className="py-2 pr-3 text-right tabular-nums">
-                        {formatMetric(item.metrics.speechActiveWpm)}
-                        {item.metrics.speechActiveWpm?.quality === "estimated" && (
+                        {formatMetric(summaryDelivery(item.metrics))}
+                        {summaryDelivery(item.metrics)?.quality === "estimated" && (
                           <span className={`block text-xs ${MUTED}`}>estimate</span>
                         )}
                       </td>

@@ -119,9 +119,12 @@ def test_a_phrase_is_pointed_at_by_its_opening_words():
 def test_every_template_fills_in_completely_and_quotes_only_known_figures(profile, key):
     """No template may leave a {placeholder} behind or state a figure that is not a band."""
     template = rules.TEMPLATES[key]
-    found = Found(kind=key[0], role="issue", statement="")
+    # A template for a result with only a speaking speed names the bands for that speed.
+    data = {"basis": "speaking"} if key[1].endswith("_speaking") else {}
+    found = Found(kind=key[0], role="issue", statement="", data=data)
     values = rules.template_values(found, profile, SETTINGS, "“the line”")
-    bands = "140 WPM 200 WPM 10% 25% 1 second 2 seconds 3 dB 6 dB 2 semitones 4 semitones"
+    pace = "140 WPM 200 WPM" if data else "125 WPM 175 WPM"
+    bands = f"{pace} 10% 25% 1 second 2 seconds 3 dB 6 dB 2 semitones 4 semitones"
     facts = collect_facts(bands, segment_count=1, pause_count=1, transcript="")
     for text in (
         template.title,

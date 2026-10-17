@@ -11,7 +11,12 @@ the slow work: measuring the audio and getting the coaching written.
 
 Everything described here is built.
 
-**Last updated:** end of Phase 9 (where the voice sits: resonance is measured, pitch and
+**Last updated:** end of Phase 11 (analyses can be downloaded as Markdown: one analysis,
+a monologue with its takes, the General Practice takes, or everything; two new endpoints,
+one new file, nothing new stored). Before that, Phase 10 (a phrase ends only at a pause of a second or more, and
+shorter pauses stay inside it; the delivery pace beside the speaking speed: new fields in
+the stored result, one new file that reads old and new results alike, no new endpoint, no
+new table, no migration). Before that, Phase 9 (where the voice sits: resonance is measured, pitch and
 resonance are placed in three ranges for every phrase and for the recording, and a
 recording can be submitted with a voice goal: two new pipeline files, one new form field,
 one new column, no new endpoint and no new table). Before that, Phase 8 (a take remembers
@@ -97,6 +102,8 @@ backend/
 │   ├── feedback_summary.py   What all the feedback adds up to: the facts, the notes, and
 │   │                     the few notes the AI model picks out
 │   ├── revisions.py      Later results of one recording: corrected transcripts, fresh analyses
+│   ├── stretches.py      Reads the stretches and paces of a stored result, old or new
+│   ├── export.py         Writes stored analyses out as Markdown documents
 │   ├── transcript_correction.py   Works word counts and WPM out again from corrected words
 │   ├── wpm_review.py     Lays out what went into a WPM figure the user says looks wrong
 │   ├── profiles.py       The delivery profiles and language choices, as text
@@ -110,6 +117,7 @@ backend/
 │   │   │                 ask for coaching to be written again
 │   │   ├── jobs.py       GET /api/jobs/{id}, POST …/cancel, POST …/retry
 │   │   ├── monologues.py GET /api/monologues, DELETE /api/monologues/{id}
+│   │   ├── export.py     GET /api/analyses/{id}/export, GET /api/export
 │   │   └── feedback.py   Feedback on an analysis; the calibration: read, undo, reset, on/off;
 │   │                     what the feedback adds up to
 │   ├── calibration/      The settings feedback may adjust (explained in the science document)
@@ -132,14 +140,14 @@ backend/
 │       ├── audio.py          Decodes any audio file to one standard format
 │       ├── vad.py            Finds where speech is
 │       ├── transcribe.py     Speech to words with timestamps
-│       ├── segmentation.py   Speech regions -> segments and pauses
-│       ├── metrics.py        Words per minute and pause statistics
+│       ├── segmentation.py   Speech regions -> stretches, pauses and segments
+│       ├── metrics.py        Delivery pace, speaking speed and pause statistics
 │       ├── acoustics.py      Loudness, pitch, emphasis candidates
 │       ├── resonance.py      Resonance: how deep or bright the voice sounds, from its formants
 │       ├── voice_range.py    The three ranges for pitch and for resonance; the voice goals
 │       ├── fillers.py        Hesitation sounds
 │       ├── waveform.py       The outline of the sound wave, for drawing only
-│       ├── settings.py       The thresholds (0.5 s pause, 5 s long silence…)
+│       ├── settings.py       The thresholds (0.5 s pause, 1 s segment break, 5 s long silence…)
 │       └── errors.py         Errors with a code and a message safe to show
 ├── migrations/
 │   ├── env.py            Tells the migration tool where the database is
@@ -457,6 +465,46 @@ Since Phase 6 a result also carries:
 Since Phase 8 a result also carries `monologueId`: the monologue the take was recorded for,
 or `null`. It is read from its own column when the result is asked for, and is not part
 of the stored measurements (decision B58).
+
+Since Phase 10 a phrase (a segment) can hold pauses, and the result says so in five
+places. What the terms mean is in the science document, section 4.
+
+```json
+"segments": [
+  { "id": "seg-1", "startSeconds": 0.0, "endSeconds": 5.0,
+    "speechActiveSeconds": 4.4, "pauseCount": 1, "pauseSeconds": 0.6,
+    "wordCount": 10, "deliveryWpm": 120.0, "segmentWpm": 136.4, "…": 0 }
+],
+"stretches": [
+  { "index": 0, "startSeconds": 0.0, "endSeconds": 2.0, "segmentId": "seg-1" },
+  { "index": 1, "startSeconds": 2.6, "endSeconds": 5.0, "segmentId": "seg-1" },
+  { "index": 2, "startSeconds": 6.5, "endSeconds": 10.5, "segmentId": "seg-2" }
+],
+"pauses": [
+  { "id": "pause-1", "index": 0, "durationSeconds": 0.6, "insideSegment": true,
+    "afterSegmentId": "seg-1", "beforeSegmentId": "seg-1", "…": 0 },
+  { "id": "pause-2", "index": 1, "durationSeconds": 1.5, "insideSegment": false,
+    "afterSegmentId": "seg-1", "beforeSegmentId": "seg-2", "…": 0 }
+],
+"words": [ { "text": "who", "segmentId": "seg-1", "stretchIndex": 1, "…": 0 } ],
+"metrics": { "deliveryWpm": { "value": 140.0, "unit": "words/minute", "quality": "measured", "note": "…" } }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `segments[].deliveryWpm` | The phrase's words ÷ its whole length, the pauses inside it counted. The figure the screen shows first and `paceVsTypical` is judged on |
+| `segments[].segmentWpm` | Its words ÷ its speaking time: the speaking speed. The same field and the same formula as before Phase 10 |
+| `segments[].speechActiveSeconds`, `pauseCount`, `pauseSeconds` | Time spent speaking in the phrase, and the pauses it holds. Its whole length is `endSeconds − startSeconds` |
+| `stretches` | Every unbroken run of speaking, in order, with the segment it belongs to. Pause number *n* lies between stretch *n* and stretch *n + 1* |
+| `pauses[].insideSegment` | True for a pause shorter than the segment break. `afterSegmentId` and `beforeSegmentId` are then the same segment |
+| `words[].stretchIndex` | The stretch the word was spoken in: which side of a pause it is on |
+| `metrics.deliveryWpm` | The recording's delivery pace. `speechActiveWpm` is still there, and is the speaking speed |
+| `settings.segment_break_ms` | How long a pause had to be to end a phrase: 1000. `settings.version` is 3 |
+
+A result stored before Phase 10 has `stretches: null`, `metrics.deliveryWpm: null`, no
+`deliveryWpm` on its segments and no `insideSegment: true`. It is not filled in afterwards.
+Every reader goes through `app/stretches.py`, which gives such a result the shape it
+really has: one stretch per segment, and its one pace as its delivery pace (decision B69).
 
 Since Phase 9 a result also says **where the voice sat**. For the whole recording:
 
@@ -841,7 +889,8 @@ them. The texts live in `app/pipeline/voice_range.py`:
 ```
 
 The profile texts live in `app/profiles.py`. `focus[].metric` is the JSON name of a real
-metric in the result; a test fails if a profile points at a metric that does not exist.
+metric in the result (since Phase 10 a profile that cares about pace points at
+`deliveryWpm`, where it used to point at `speechActiveWpm`); a test fails if a profile points at a metric that does not exist.
 
 ### `GET /api/analyses`
 
@@ -928,6 +977,41 @@ be the monologue's own or that of any revision of its reference.
 | --- | --- |
 | `404 monologue_not_found` | No such monologue. The ID of a take is not one |
 | `409 monologue_busy` | A recording of this monologue is still queued or being analysed: a take of it, a fresh analysis of its reference, or new coaching for one of its takes. Nothing is deleted. Wait, or cancel the job, and ask again |
+
+### `GET /api/analyses/{analysisId}/export` and `GET /api/export`
+
+Added in Phase 11. Both answer with a Markdown document (`text/markdown; charset=utf-8`)
+and the header `Content-Disposition: attachment`, so a browser saves it as a file.
+
+| Request | The document holds | File name |
+| --- | --- | --- |
+| `GET /api/analyses/{id}/export` | That one analysis, in the revision asked for | `monologue-coach-take-<date>-<id>.md`, or `…-<title>-<date>-<id>.md` for an original |
+| `GET /api/export` or `?scope=all` | Every monologue with its takes, oldest monologue first, then the General Practice takes | `monologue-coach-all-<date>.md` |
+| `GET /api/export?scope=monologue&monologue=<id>` | One monologue: its original, then the takes recorded for it, oldest first | `monologue-coach-<title>-<date>.md` |
+| `GET /api/export?scope=general` | The takes that belong to no monologue | `monologue-coach-general-practice-<date>.md` |
+
+`404 analysis_not_found` or `404 monologue_not_found` for an unknown ID (a take's ID is
+not a monologue); `422` for an unknown scope.
+
+What is written for each analysis, in this order:
+
+| Part | What it holds |
+| --- | --- |
+| A table at the top | What it is (an original, a take of which monologue, or a General Practice take), its ID, when it was analysed, which revision, the file's name, profile, language, length, whether the recording was kept, the voice goal |
+| Warnings | As stored |
+| Settings | Every setting the result was measured with |
+| Measurements | Every metric by its JSON name, with its unit and quality. A metric the result does not have is left out; one that could not be measured is a dash |
+| Phrases | One row per phrase: times, length, words, speaking time, pauses inside, both paces, faster or slower than typical, whether trusted and why not, loudness and pitch against the typical phrase, where the voice sat, and the words with each pause inside the phrase marked ‖0.6 s‖ where it fell. An older result has one pace column |
+| Pauses | Every pause: when, how long, its kind, inside which phrase or between which two, the words before it, and the user's label if any |
+| Where the voice sits | Pitch, resonance, the marker, the goal, the phrase counts and the ranges used |
+| Words that stood out, hesitation sounds, transcript | As stored |
+| Coaching (a take) | Who wrote it and when, the bands behind its wording, the summary, **every finding** with its level and role, the corrections with their drills, what works, the targets, the caveats |
+| How the app's bands read this recording (an original) | The findings a coaching would start from, worked out now with today's bands. Not stored (decision B76) |
+| Feedback given | Each piece, with what it does |
+| Against the original (a take of a monologue) | The comparison: the note on the line-up, the biggest differences, the recordings as wholes, pause by pause, phrase by phrase |
+
+In a document of several analyses each recording is given once, in its **newest
+revision**. Writing a document reads the stored results and changes none of them.
 
 ### `GET /api/analyses/{analysisId}/audio`
 
@@ -2424,19 +2508,141 @@ What was checked on this machine is in the table at the end of section 10.
 - **Decided against:** *re-measuring pitch for kept recordings*: it would change figures
   the user has already read, behind their back (B16).
 
+### B68. Stretches, and the pauses a segment holds, are part of the result document
+
+- **Chosen:** `stretches`, `stretchIndex`, `insideSegment`, `pauseCount`, `pauseSeconds`
+  and the two `deliveryWpm` fields live in the one JSON document of the result (B15). No
+  table, no column, no migration.
+- **Why:** they are measurements, stored once (B16), and nothing ever needs to search or
+  join on them: a result is always read whole.
+- **Pause numbering was kept:** pause *n* used to lie between segment *n* and segment
+  *n + 1*. It now lies between *stretch* *n* and *n + 1*, and in an older result the two
+  statements are the same. So `pause-3` means the same pause before and after, which
+  matters because feedback is stored against pause IDs.
+
+### B69. One file reads old and new results alike
+
+- **Chosen:** `app/stretches.py` answers five questions about a stored result: its
+  stretches, the stretch of a word, the pauses inside a segment, whether it has a
+  delivery pace, and what that pace is. The comparison, the coaching, the WPM review, the
+  transcript correction and the feedback rules all ask it, and none of them looks at
+  `stretches is None` for itself.
+- **Why:** an older result is not a damaged newer one. It is a result in which every
+  pause ended a segment, and read that way everything about it is still true: one stretch
+  per segment, and a pace per segment that *is* its delivery pace. Putting that reading
+  in one place is what let Phase 10 go without a migration and without touching a stored
+  row (B16, science decision S90).
+- **Decided against:** *a migration that rewrites old results into the new shape*: it
+  could add the stretches, but not regroup the segments without measuring again, so the
+  result would look new and still be cut the old way. Better that it says what it is.
+
+### B70. `segmentWpm` keeps its meaning; `deliveryWpm` is added beside it
+
+- **Chosen:** `segmentWpm` is still words ÷ speaking time, as the brief defines it and as
+  every stored result has it. The pace with pauses counted is a new field.
+- **Why:** changing what an existing field means would make every older result silently
+  wrong to a newer reader, and every newer result wrong to anything still reading the
+  old way. A new name can simply be absent.
+- **Cost:** the main figure on screen is not the field with the obvious name. The schema
+  says so beside both.
+
+### B71. Sound is measured over stretches, phrases over segments
+
+- **Chosen:** the detector's output goes to loudness, pitch and resonance as stretches.
+  A segment's loudness is the mean over its stretches (`EnergyTrack.mean_db_within`), not
+  over its whole length.
+- **Why:** a segment now contains silence. Averaging over it would make a line read
+  quieter the more it paused, and would count pause time as speech when the voice is set
+  against the background.
+- **What did not change:** `PipelineDeps` still passes replaceable pieces; they are now
+  handed stretches, which have the same `start` and `end` a segment had.
+
+### B72. A corrected transcript puts each word back on its side of the pause
+
+- **Chosen:** when the words of a segment that holds a pause are corrected, unchanged
+  words keep their stretch, and new or changed words are placed by the rule the pipeline
+  uses (`assign_words`): the stretch containing the middle of their time, or the nearest.
+- **Why:** the corrected words arrive as one line of text, with nothing to say where the
+  pause falls among them. Their times are already estimates (B45); the stretch follows
+  from the time by the same code as everywhere else.
+- **For an older result** the revision keeps the older shape, with no `deliveryWpm` and
+  no stretches, so a revision never looks newer than the analysis it came from.
+
+### B73. A report that a pause split a phrase is refused where it did not, and kept where it cannot count
+
+- **Chosen:** `split_wrong` on a pause inside a segment answers `422 not_a_split`. On a
+  pause that did end a segment it is stored with `no_vote: fixed_break` and the break it
+  was made with, and counts towards nothing.
+- **Why:** the first is a statement that is not true of that pause, and the screen does
+  not offer it; the refusal is for anything else that sends it. The second is true and
+  useful to keep, and the segment break is not adjustable (science decision S89).
+- **In an older result** the same report still counts towards the minimum pause, as it
+  did when it was made.
+
+### B74. An export is written by the backend, as Markdown, on request
+
+- **Chosen:** two `GET` endpoints that answer with a text document. Nothing is stored,
+  queued or cached; the document is written from the stored results each time.
+- **Why Markdown:** the user asked for "PDF or Markdown", to read the analyses and to hand
+  them to someone else to study. Markdown is plain text: it can be read as it is, opened
+  in any editor, searched, compared between two days, and its tables can be read by a
+  program. It needs no new dependency. A browser or editor prints it to PDF if paper is
+  wanted.
+- **Why the backend:** the document has to say exactly what the results hold, including
+  parts the screen never loads together (every take of every monologue, each with its
+  comparison). The backend already has all of it and the code that reads old and new
+  results alike (B69).
+- **Decided against:** *a PDF library*: a large dependency to produce something harder to
+  reuse. *A job in the queue*: writing every analysis of a real database took four
+  hundredths of a second. *The raw stored JSON as the download*: complete, and unreadable
+  by a person; it also leaves out the comparison, which is never stored (B34).
+
+### B75. One recording, one entry: its newest revision
+
+- **Chosen:** a document of several analyses gives each recording once, in its newest
+  revision, and says which revision that is and out of how many.
+- **Why:** revisions of one recording repeat almost everything, and a reader comparing
+  takes wants each take once. The newest is the one with corrected words or the current
+  settings.
+- **A single analysis is the exception:** `GET /api/analyses/{id}/export` gives exactly
+  the revision asked for, so an earlier one can still be downloaded from its own page.
+- **A take is compared with the newest revision of its original**, as on screen (B59).
+
+### B76. An original's export says how today's bands read it, and that is not stored
+
+- **Chosen:** for a reference, the export runs the findings step of the coaching on it,
+  with the default bands, and lists the findings under a heading that says what they are.
+- **Why:** an original gets no coaching (B33), so nothing stored says whether its pace
+  would be called "fast" or its pauses "short". That is exactly what is needed to judge
+  the bands themselves: they are this app's rough choices, and the originals are real
+  performances to hold them against. It is the purpose the export was asked for.
+- **Why not stored:** it is a reading of the result with today's bands, not a measurement.
+  Stored, it would go stale the day a band changes, and B33 would no longer be true.
+- **What it is not:** coaching. No corrections, no drills, no AI model. It is the output
+  of `build_findings` and nothing else.
+
 ### Decisions already made for later phases
 
 None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 10. Tests
 
-Run with the command in the README. Current result: **761 pass**, 1 skipped (the opt-in
-real-speech test, which also passes when run). 96 of them are new in Phase 9.
+Run with the command in the README. Current result: **847 pass**, 1 skipped (the opt-in
+real-speech test, which also passes when run). 21 of them are new in Phase 11
+(`test_export.py`); 65 were new in Phase 10.
+
+Most of the older tests build their recordings with `make_body` and `make_recording`,
+which make a result of the shape stored before Phase 10. They were left that way on
+purpose: all of them still pass, which is the evidence that an older result reads as it
+did. The Phase 10 tests build theirs with `measured`, which runs the real pipeline on
+scripted speech and so makes a result of today's shape.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
-| `test_segmentation.py` | 25 | Segments and pauses from speech regions; threshold edges; long silences; word assignment. Short silences: every gap is either a pause or a short silence, never both; what counts follows the minimum pause in force; settings stored with an older result can still be read |
-| `test_metrics.py` | 23 | WPM with pauses excluded and included; reliability flags; typical pace and faster/slower; pause statistics; no division by zero |
+| `test_segmentation.py` | 34 | Segments and pauses from speech regions; threshold edges; long silences; word assignment. Short silences: every gap is either a pause or a short silence, never both; what counts follows the minimum pause in force; settings stored with an older result can still be read. Since Phase 10: a pause shorter than the segment break stays inside its segment and is still a pause; one of exactly the break ends it and a millisecond less does not; a segment's speaking time apart from its pauses; every pause knows the segments either side; with the break at the minimum pause the cut is the old one; words either side of a pause inside a segment go to their own stretch; a result from before the break is read as ending a segment at every pause |
+| `test_metrics.py` | 30 | WPM with pauses excluded and included; reliability flags; typical pace and faster/slower; pause statistics; no division by zero. Since Phase 10: a segment with a pause inside has a delivery pace and a speaking speed, and one without has one pace; the recording's delivery pace counts pauses inside segments and not those between; whether a segment is long enough is judged on its speaking time; the review flag is judged on speaking speed; typical pace and variation are taken from delivery pace |
+| `test_segment_pauses.py` | 37 | One recording with a pause inside a line and one between two lines, built by the real pipeline, followed through everything that reads a result. What is stored: both pauses, both paces, the stretches, each word's stretch, loudness taken from the speech and not the pause. **An older result reads as one stretch per segment**, and correcting it leaves it in the older shape. A corrected line keeps its pause, has both paces worked out again, and its words stay on their side of the pause. The WPM review lays out the delivery pace and the pauses it counts. The comparison: a recording against itself matches every pause, inside a line or not; a pause left out or added inside a line is reported where it fell; a line's pace is its delivery pace in both; a pause of the take long enough to end a line is not also counted as slowness; an older take against a newer original says the phrases are not like for like. The coaching: pace judged on delivery pace, **a fast delivery slowed with short pauses and not with slower words**, an older result keeping the advice that fits it, a phrase slow because of its pauses run through, and the model shown the pauses inside a phrase under its line. Feedback: a pause inside a phrase cannot be reported as having split it; one that ended a phrase can, and moves nothing. Through the API: the new fields, and an older result served without them |
+| `test_export.py` | 21 | A missing figure is a dash, never a zero; text cannot break a table; a title becomes a plain file name. One analysis written out in full: its settings and measurements by name, **a phrase with both paces and its pause marked where it fell**, an older result with the one pace it has, the coaching with its findings and bands, the feedback given, beside the pause it is about. The download is a Markdown file with a plain name; an unknown analysis is refused; **exporting changes nothing stored**. An original is given with how the bands read it and no coaching; a take of a monologue with its comparison; a take of none without one. A monologue's export holds its original and only its own takes; the General Practice export only takes of no monologue; everything is given monologues first; **a recording appears once, in its newest revision**; an unknown monologue or scope is refused; with nothing stored it says so |
 | `test_audio_and_acoustics.py` | 20 | Decoding, length limit, clipping, loudness in dB, pitch, emphasis candidates, hesitation sounds |
 | `test_pipeline.py` | 33 | The whole pipeline with scripted speech: numbers, warnings, no-speech, garbled transcripts, cancellation. Since Phase 9: pitch and resonance each placed in a range with a position; every phrase placed and counted; the ranges stored with the result; **the goal recorded and no measurement changed by it**; resonance that could not be measured is unavailable and pitch still decides; a phrase with neither measured counted as unmeasured; no voice range without speech; a loud background makes resonance an estimate and a very loud one withholds it |
 | `test_voice_range.py` | 30 | The ranges as stated, low to high; a pitch and a resonance placed by position, at the far ends, at the edges of the neutral range and in its middle; beyond a far end stays at 100%; ranges that overlap or run backwards are refused; every combination of pitch and resonance gives the right marker, including "mixed" and one of the two missing |
@@ -2460,7 +2666,7 @@ real-speech test, which also passes when run). 96 of them are new in Phase 9.
 | `test_revisions.py` | 17 | A reference's words can be corrected too: still a reference, still without coaching, both revisions in the library, a take comparable with either. A corrected transcript becomes revision 2 and the corrected result stays exactly as it was; both are in the history; pause labels come along and reports do not; the kept recording is shared and each copy can be deleted alone. Analysing again: a new revision with the settings in force, for takes and references; asking twice; refused without a kept recording; a cancelled one leaves the kept recording alone |
 | `test_wpm_review.py` | 13 | The review of a reference is worded for someone else speaking, and points at the same things. The arithmetic shown; too high points at extra words and speech lost in a pause, too low at dropped words and silences counted as speaking; word timing is always part of it; reviewing changes nothing |
 | `test_coaching_findings.py` | 45 | Every finding: its band, its wording, its role under each profile; what is left out when a measurement is missing; that statements contain no figure that is not a measurement or a band. Pause labels: an accidental pause is not praised as a held silence, an intentional one is never an issue, labels never change a measurement. Priorities move an issue down the list without removing it |
-| `test_coaching_rules.py` | 80 | Template coaching: order, practice phrase, profile sentence, targets; every template under every profile fills in completely and quotes only known figures. 16 more since Phase 9: the four voice templates under each of the four profiles |
+| `test_coaching_rules.py` | 92 | Template coaching: order, practice phrase, profile sentence, targets; every template under every profile fills in completely and quotes only known figures. 16 more since Phase 9: the four voice templates under each of the four profiles. 12 more since Phase 10: the three pause-based templates |
 | `test_coaching_prompt.py` | 14 | What the model is shown and forbidden; that its answer can only name findings and phrases that exist; the size estimate staying above the model's real token counts; a long recording losing its timings before any words, then being cut to fit; the model is told which pauses the actor marked |
 | `test_coaching_grounding.py` | 32 | Invented figures, times, segments and quotations are caught; copied ones pass; units in their common spellings |
 | `test_coaching_coach.py` | 26 | A clean answer is used; a bad one is sent back once; what still fails is removed; nothing surviving means templates; every way the model can be unavailable; cancellation |
@@ -2668,3 +2874,50 @@ near the 10-minute limit (resonance was timed on short clips only, at about 85 t
 time); and the user's own worker, which has to be restarted to run the new code. Until it
 is, a recording is analysed by the worker as it was started: with no voice range in the
 result, and the goal ignored.
+
+Also checked at the end of Phase 10, the same way: the real API, worker, speech model and
+AI model, in a complete copy of the project in a temporary folder, on other ports. This
+time the copy's database was a copy of the project's own, with its two kept recordings,
+so that real recordings could be analysed again without touching the originals. All 42
+checks passed, in two passes; the first was run by the user from their own terminal. The
+measured figures are in the science document ("How Phase 10 has been tested"); what
+concerns the backend:
+
+| Check | Result |
+| --- | --- |
+| A recording with four known silences, uploaded | The result carries `stretches` (5), `segments` (3), `insideSegment` true, true, false, false on its pauses, `stretchIndex` on every word, and `settings.segment_break_ms` 1000 with `settings.version` 3 |
+| `POST …/feedback` with `split_wrong` on a pause inside a phrase | `422 not_a_split`, nothing stored |
+| The same on a pause that ended a phrase | `200`; the item's message says the break is fixed and no setting changes |
+| `POST …/feedback` with `wpm_too_low` on a phrase | The item's `review.formula` reads "24 words ÷ 8.19 s × 60 = 175.9 WPM. The 8.19 s include 2 pauses, 1.35 s in all, inside the phrase. With those left out, the speaking speed is 210.6 WPM." |
+| `POST …/transcript` adding one word to that phrase | `201`, revision 2: both paces worked out again, `pauses` and `stretches` equal to the first revision's |
+| `POST …/reanalysis` on each of the two real recordings | 11 and 17 s. A new revision cut the new way; the stored result it started from is unchanged, byte for byte in its segments |
+| `GET …/comparison/…` between a result made before Phase 10 and one made after | `settingsNote` says, in words, that one ended a phrase at every pause and the other only at a pause of 1 second or more |
+| The same file as a reference and as a take of it | `metrics` has a `deliveryWpm` row with the same value on both sides; `differences` is empty; `settingsNote` is `null` |
+| `GET /api/analyses` | Each row's `metrics` has `deliveryWpm` when the result has one, and leaves it out when it does not |
+
+One fault was found by the automated tests before this and fixed: a result saved again
+after Phase 10 (a corrected transcript of an older result) stores `"deliveryWpm": null`,
+and the history list tried to read that as a metric and failed. The list now leaves out a
+metric that is empty as well as one that is missing.
+
+Not checked in Phase 10: a real recording made by the user after the change; a recording
+near the 10-minute limit; and the user's own worker and API, which were not running at
+the end of the phase. The worker loads its code once, so it must be started again before
+a new recording is cut the new way.
+
+Also checked at the end of Phase 11: the export was run against a copy of the project's
+own database (two monologue originals and one General Practice take, real recordings) and
+the document was read. 41,555 characters, written in 0.04 s. It held, for each recording,
+every part listed in section 3; the take's coaching with its eleven findings and the
+bands of the day it was written; its five pieces of feedback; and for each original the
+findings today's bands give it. Reading it showed nothing wrong with the export, and one
+thing about the data worth knowing when the bands are studied: both originals are film
+clips with other sound in them. Both carry the warning that word timings did not line up
+with the detected speech, one is also marked noisy, and neither has a resonance figure:
+the background was too loud for one to be given.
+
+Not checked in Phase 11: the download links in a browser (they are plain links to these
+endpoints; the endpoints are tested through the same HTTP layer a browser uses); a
+monologue with takes in the real database, because none had been recorded for either
+monologue yet (the comparison part of the export is covered by tests on scripted
+recordings); and a database with hundreds of analyses.

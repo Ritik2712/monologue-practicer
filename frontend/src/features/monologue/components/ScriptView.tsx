@@ -66,6 +66,18 @@ export function ScriptView({ reference, audioSrc }: ScriptViewProps) {
                     ) : (
                       word.text
                     )}{" "}
+                    {word.pausesAfter.map((pause) => (
+                      <span
+                        key={pause.id}
+                        className={`mr-1 text-sm whitespace-nowrap tabular-nums ${MUTED}`}
+                      >
+                        <span aria-hidden="true" className="text-indigo-700 dark:text-indigo-300">
+                          ‖
+                        </span>
+                        <span className="sr-only">pause </span>
+                        {formatNumber(pause.durationSeconds, 1)} s{" "}
+                      </span>
+                    ))}
                   </span>
                 ))}
               </p>
@@ -88,7 +100,9 @@ export function ScriptView({ reference, audioSrc }: ScriptViewProps) {
 
       <div className={`text-xs ${MUTED}`}>
         <p>
-          <span aria-hidden="true">‖</span> a measured pause, with its length.{" "}
+          <span aria-hidden="true">‖</span> a measured pause, with its length. A pause of
+          under a second stays inside its phrase, where it fell; a longer one ends the
+          phrase and has a line of its own.{" "}
           <strong className="font-semibold underline decoration-indigo-600 decoration-2 underline-offset-4 dark:decoration-indigo-400">
             Underlined
           </strong>{" "}

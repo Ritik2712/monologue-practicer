@@ -84,10 +84,20 @@ export type SpeechSegment = {
   sectionIndex: number;
   startSeconds: number;
   endSeconds: number;
+  /** Time spent speaking: the segment's length without the pauses inside it. */
   speechActiveSeconds: number;
+  /** The pauses inside the segment. Missing on results made before a segment could hold one. */
+  pauseCount?: number;
+  pauseSeconds?: number;
   transcript: string | null;
   wordCount: number | null;
+  /** Speaking speed: words ÷ time spent speaking, the pauses inside left out. */
   segmentWpm: number | null;
+  /**
+   * Delivery pace: words ÷ the segment's whole length, the pauses inside counted. Missing
+   * on results made before it existed, where it would equal `segmentWpm`.
+   */
+  deliveryWpm?: number | null;
   paceVsTypical: PaceVsTypical | null;
   quality: Quality;
   reliable: boolean;
@@ -108,9 +118,19 @@ export type PauseEvent = {
   endSeconds: number;
   durationSeconds: number;
   significance: PauseSignificance;
+  /** The segments on either side. The same one twice for a pause inside a segment. */
   afterSegmentId: string;
   beforeSegmentId: string;
+  insideSegment?: boolean;
   startsNewSection: boolean;
+};
+
+/** An unbroken run of speaking. Pause `n` lies between stretch `n` and stretch `n + 1`. */
+export type SpeechStretch = {
+  index: number;
+  startSeconds: number;
+  endSeconds: number;
+  segmentId: string;
 };
 
 /** A silence too short to count as a pause. It stays inside a segment as speaking time. */
@@ -127,6 +147,8 @@ export type WordTiming = {
   endSeconds: number;
   confidence: number | null;
   segmentId: string | null;
+  /** The stretch the word was spoken in, which says which side of a pause it is on. */
+  stretchIndex?: number | null;
 };
 
 export type EmphasisCandidate = {
@@ -154,6 +176,7 @@ export type LanguageInfo = {
 export type MetricName =
   | "totalWordCount"
   | "speechActiveSeconds"
+  | "deliveryWpm"
   | "speechActiveWpm"
   | "wholeClipWpm"
   | "paceVariation"
@@ -178,7 +201,13 @@ export type MetricName =
   | "breathCount"
   | "clippingRatio";
 
-export type Metrics = Record<MetricName, MetricValue>;
+/**
+ * `deliveryWpm` is missing on results made before it existed. There it would equal
+ * `speechActiveWpm`: no segment of such a result holds a pause.
+ */
+export type Metrics = Record<Exclude<MetricName, "deliveryWpm">, MetricValue> & {
+  deliveryWpm?: MetricValue | null;
+};
 
 /** A pointer from a finding back to the measurement it rests on. */
 export type Evidence = {
@@ -268,6 +297,11 @@ export type AnalysisResult = {
   durationSeconds: number;
   transcript: string | null;
   segments: SpeechSegment[];
+  /**
+   * Null or missing for results made before a segment could hold a pause. In those, every
+   * pause ended a segment, so each segment is one stretch.
+   */
+  stretches?: SpeechStretch[] | null;
   pauses: PauseEvent[];
   /** Null or missing for results stored before these were recorded. */
   shortSilences?: ShortSilence[] | null;

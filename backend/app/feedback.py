@@ -22,12 +22,12 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import schemas, wpm_review
+from app import schemas, stretches, wpm_review
 from app.calibration import engine, store
 from app.calibration.registry import ADAPTIVE, CORRECTION_KINDS, MIN_PAUSE, priority_name
 from app.job_queue import REFERENCE, new_id
 from app.models import Analysis, CalibrationVersion, Feedback
-from app.pipeline.settings import DEFAULT_SETTINGS
+from app.pipeline.settings import DEFAULT_SETTINGS, AnalysisSettings
 
 # A short silence this close to the marked time is taken to be the one the user means.
 NEAR_SECONDS = 0.5
@@ -87,6 +87,21 @@ def classify(
         if category in PAUSE_LABELS:
             # A label says what the pause meant. The pause itself is measured and stays.
             return about_pause()
+        if category == "split_wrong" and stretches.has_delivery_pace(body):
+            # In a result whose phrases can hold a pause, only a pause as long as the
+            # segment break splits one, and that length is not one feedback may move.
+            if pause.inside_segment:
+                raise FeedbackError(
+                    422,
+                    "not_a_split",
+                    "This pause is inside a phrase and did not split it. If you were still "
+                    "speaking there, mark it as “Not a pause”.",
+                )
+            features["no_vote"] = "fixed_break"
+            features["segment_break_ms"] = AnalysisSettings.from_dict(
+                body.settings
+            ).segment_break_ms
+            return about_pause()
         if length_ms < MIN_PAUSE.maximum:
             # Short enough that a higher minimum pause would no longer report it.
             return about_pause(setting=MIN_PAUSE.name, direction=1, evidence=float(length_ms))
@@ -140,10 +155,12 @@ def classify(
     if category in WPM_CATEGORIES:
         if target_id is None:
             metrics = body.metrics
+            # `wpm` is the figure the screen shows first, which is what was reported on.
             features = {
                 "words": metrics.total_word_count.value,
                 "seconds": metrics.speech_active_seconds.value,
-                "wpm": metrics.speech_active_wpm.value,
+                "wpm": stretches.recording_delivery_wpm(body).value,
+                "speaking_wpm": metrics.speech_active_wpm.value,
             }
             return Classified("recording", None, "wpm:recording", features)
         segment = next((s for s in body.segments if s.id == target_id), None)
@@ -152,7 +169,9 @@ def classify(
         features = {
             "words": segment.word_count,
             "seconds": segment.speech_active_seconds,
-            "wpm": segment.segment_wpm,
+            "wpm": stretches.delivery_wpm_of(segment),
+            "speaking_wpm": segment.segment_wpm,
+            "pause_seconds": segment.pause_seconds,
         }
         return Classified("segment", segment.id, f"wpm:{segment.id}", features)
 
@@ -353,6 +372,11 @@ NO_VOTE_MESSAGES = {
         "Saved. A silence of {pause_seconds} is a pause at any setting, and a pause always "
         "ends a phrase, so this changes no setting."
     ),
+    "fixed_break": (
+        "Saved. A pause of {break_seconds} or more ends a phrase, and this one lasted "
+        "{pause_seconds}. That length is fixed and feedback does not move it, so this "
+        "changes no setting."
+    ),
     "missed_speech": (
         "Saved. The detector heard no speech for {pause_seconds} there. No minimum pause "
         "explains a silence that long, so this changes no setting. {unheard}"
@@ -460,6 +484,7 @@ def _message(
     if reason in NO_VOTE_MESSAGES:
         return "recorded", NO_VOTE_MESSAGES[reason].format(
             pause_seconds=f"{(row.features.get('pause_ms') or 0) / 1000:.1f} s",
+            break_seconds=f"{(row.features.get('segment_break_ms') or 0) / 1000:.1f} s",
             silence_ms=row.features.get("silence_ms"),
             unheard=UNHEARD[on_reference],
         )

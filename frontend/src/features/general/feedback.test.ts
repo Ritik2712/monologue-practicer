@@ -10,6 +10,7 @@ import {
   minPauseSeconds,
   bareWord,
   PAUSE_CHOICES,
+  pauseChoices,
   pauseFeedback,
   pauseFloorText,
   REFERENCE_PAUSE_CHOICES,
@@ -177,6 +178,19 @@ describe("the minimum pause a result was made with", () => {
     );
     expect(settingsMismatch({ min_pause_ms: 500 }, {})).toBeNull();
     expect(settingsMismatch(undefined, undefined)).toBeNull();
+    // The same minimum pause, but one result keeps short pauses inside its phrases.
+    const cut = settingsMismatch(
+      { min_pause_ms: 500, segment_break_ms: 1000 },
+      { min_pause_ms: 500 },
+    );
+    expect(cut).toContain("this attempt ended a phrase only at a pause of 1 s or more");
+    expect(cut).toContain("the earlier one at every pause");
+    expect(
+      settingsMismatch(
+        { min_pause_ms: 500, segment_break_ms: 1000 },
+        { min_pause_ms: 500, segment_break_ms: 1000 },
+      ),
+    ).toBeNull();
   });
 });
 
@@ -321,6 +335,38 @@ describe("feedback on a reference recording", () => {
       "split_wrong",
     ]);
     expect(PAUSE_CHOICES.map((choice) => choice.category)).toContain("pause_intentional");
+  });
+});
+
+describe("what can be said about one pause", () => {
+  const categories = (
+    pause: { insideSegment?: boolean },
+    options: { reference: boolean; holdsPauses: boolean },
+  ) => pauseChoices(pause, options).map((choice) => choice.category);
+
+  it("is the full list in a result whose phrases end at every pause", () => {
+    expect(pauseChoices({}, { reference: false, holdsPauses: false })).toEqual(PAUSE_CHOICES);
+    expect(pauseChoices({}, { reference: true, holdsPauses: false })).toEqual(
+      REFERENCE_PAUSE_CHOICES,
+    );
+  });
+
+  it("leaves out “split the phrase” for a pause that is inside its phrase", () => {
+    const inside = { insideSegment: true };
+    expect(categories(inside, { reference: false, holdsPauses: true })).toEqual([
+      "pause_intentional",
+      "pause_accidental",
+      "pause_false",
+    ]);
+    expect(categories(inside, { reference: true, holdsPauses: true })).toEqual(["pause_false"]);
+  });
+
+  it("words it as ending the phrase for a pause that did end one", () => {
+    const choices = pauseChoices({ insideSegment: false }, { reference: false, holdsPauses: true });
+    expect(choices.map((choice) => choice.category)).toContain("split_wrong");
+    expect(choices.find((choice) => choice.category === "split_wrong")?.label).toBe(
+      "Should not have ended the phrase",
+    );
   });
 });
 

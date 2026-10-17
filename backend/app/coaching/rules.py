@@ -38,7 +38,43 @@ class Template:
 
 # Keyed by what the finding is about and which way the measurement should move.
 TEMPLATES: dict[tuple[str, str], Template] = {
+    # A delivery is slowed by pausing, not by dragging the words: the speaking speed stays
+    # the speaker's own, and the silences between the thoughts do the work.
+    #
+    # The stop asked for is a short one, on purpose. A pause as long as the segment break
+    # ends the phrase and is left out of its delivery pace, so a drill built on a full
+    # second of silence could not move the figure it is given for.
+    #
+    # The model was also told, in one trial, never to place the beat where the line already
+    # pauses. It did so in 3 runs of 3 regardless: the places where a thought turns are the
+    # places a speaker already pauses. So the drill says what to do there instead.
     ("pace", "lower"): Template(
+        title="Slow the delivery with pauses",
+        why=(
+            "The lines go by faster than a listener can take them in. What they need is "
+            "more silence between the thoughts, not slower words."
+        ),
+        why_profile="The {profile} profile depends on an unhurried delivery.",
+        drill=(
+            "Say {line} at your normal speaking speed. Choose two places in it where the "
+            "thought turns, and stop at each for one short beat: long enough to think “and "
+            "then”, and no longer. Where you already pause, hold that pause a little "
+            "longer, still under a second. Do not stretch the words. Repeat 3 times."
+        ),
+        target=(
+            "Bring your delivery pace down towards {pace_target} WPM or below, by pausing "
+            "inside your phrases."
+        ),
+        technique=(
+            "normal speaking speed, with one short silent beat (long enough to think “and "
+            "then”, well under a second) at two places where the thought turns, and any "
+            "pause the line already has held a little longer; the words themselves are not "
+            "slowed"
+        ),
+    ),
+    # For a result from before the delivery pace existed. Its one pace leaves every pause
+    # out, so pausing more cannot move it: only the words can be said more slowly.
+    ("pace", "lower_speaking"): Template(
         title="Slow your overall pace",
         why="At this speed a listener has little time to take each phrase in.",
         why_profile="The {profile} profile depends on an unhurried delivery.",
@@ -145,6 +181,21 @@ TEMPLATES: dict[tuple[str, str], Template] = {
         technique="the line as a question, as an order and as a secret",
     ),
     ("fast_segment", "lower"): Template(
+        title="Give this phrase room",
+        why="This phrase went by well ahead of your own typical pace, so it stands out as rushed.",
+        why_profile="The {profile} profile calls for a similar speed from phrase to phrase.",
+        drill=(
+            "Say {line} at your normal speaking speed, and stop for one short beat at the "
+            "one place in it where the thought turns: long enough to think “and then”, and "
+            "no longer. Repeat 3 times, then say it together with the phrase before it."
+        ),
+        target="Bring the rushed phrase back to your typical pace, by pausing inside it.",
+        technique=(
+            "normal speaking speed, with one short silent beat (long enough to think “and "
+            "then”, well under a second) where the thought turns"
+        ),
+    ),
+    ("fast_segment", "lower_speaking"): Template(
         title="Slow down this phrase",
         why="This phrase ran well ahead of your own typical pace, so it stands out as rushed.",
         why_profile="The {profile} profile calls for a similar speed from phrase to phrase.",
@@ -154,6 +205,21 @@ TEMPLATES: dict[tuple[str, str], Template] = {
         ),
         target="Bring the rushed phrase back to your typical pace.",
         technique="the phrase alone at the typical pace, one clear beat per word",
+    ),
+    # A phrase that is slow because of the pauses it holds, not because of its words.
+    ("slow_segment", "raise_through"): Template(
+        title="Run this phrase through",
+        why=(
+            "This phrase went by well behind your own typical pace, and the pauses inside "
+            "it are what held it back."
+        ),
+        why_profile="The {profile} profile calls for a similar speed from phrase to phrase.",
+        drill=(
+            "Say {line} straight through without stopping. Then say it again and put back "
+            "only the one pause you want most. Repeat 3 times."
+        ),
+        target="Bring the slow phrase up to your typical pace, by pausing less inside it.",
+        technique="the phrase straight through with no stop, then with only one pause put back",
     ),
     ("slow_segment", "raise"): Template(
         title="Bring this phrase up to pace",
@@ -295,16 +361,24 @@ def direction(found: Found, wants: dict[str, str]) -> str:
     if found.kind in VOICE_KINDS:
         # Decided by the goal the speaker chose, not by any profile.
         return found.data.get("direction", "lower")
-    if found.kind in ("fast_segment", "hesitations", "accidental_pauses"):
+    # A result with no delivery pace has only its speaking speed to work on.
+    speaking = "_speaking" if found.data.get("basis") == "speaking" else ""
+    if found.kind == "fast_segment":
+        return f"lower{speaking}"
+    if found.kind in ("hesitations", "accidental_pauses"):
         return "lower"
-    if found.kind in ("slow_segment", "no_emphasis", "no_pauses"):
+    if found.kind == "slow_segment":
+        return "raise_through" if found.data.get("pauses") == "some" else "raise"
+    if found.kind in ("no_emphasis", "no_pauses"):
         return "raise"
     if found.level == "low":
         return "raise"
     if found.level == "high":
-        return "lower"
+        return f"lower{speaking}" if found.kind == "pace" else "lower"
     # In the middle band, the profile decides which way is "further".
-    return "raise" if wants.get(found.kind) == "high" else "lower"
+    if wants.get(found.kind) == "high":
+        return "raise"
+    return f"lower{speaking}" if found.kind == "pace" else "lower"
 
 
 # The aspects of delivery a finding touches, when that is not simply its own kind.
@@ -361,14 +435,22 @@ def template_values(
     found: Found, profile_id: str, settings: CoachingSettings, line: str
 ) -> dict[str, str]:
     profile = profiles.get_profile(profile_id)
-    wants_low_pace = any(f.metric == "speechActiveWpm" and f.wants == "low" for f in profile.focus)
+    wants_low_pace = any(
+        f.metric in ("deliveryWpm", "speechActiveWpm") and f.wants == "low" for f in profile.focus
+    )
+    # The pace a target names is the pace the finding was judged on.
+    slow_wpm, fast_wpm = (
+        (settings.slow_wpm, settings.fast_wpm)
+        if found.data.get("basis") == "speaking"
+        else (settings.delivery_slow_wpm, settings.delivery_fast_wpm)
+    )
     wants_wide_pitch = any(
         f.metric == "pitchVariationSemitones" and f.wants == "high" for f in profile.focus
     )
     return {
         "line": line,
         "profile": profile.name,
-        "pace_target": number(settings.slow_wpm if wants_low_pace else settings.fast_wpm),
+        "pace_target": number(slow_wpm if wants_low_pace else fast_wpm),
         "even_pct": str(round(settings.even_pace_ratio * 100)),
         "varied_pct": str(round(settings.varied_pace_ratio * 100)),
         "registering": seconds_text(settings.registering_pause_seconds),

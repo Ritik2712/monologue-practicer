@@ -166,7 +166,13 @@ def test_a_wpm_report_speaks_for_no_setting(category):
 
     assert vote(whole) == vote(phrase) == (None, 0, None)
     assert (whole.target_kind, whole.slot) == ("recording", "wpm:recording")
-    assert phrase.features == {"words": 6, "seconds": 4.0, "wpm": 90.0}
+    assert phrase.features == {
+        "words": 6,
+        "seconds": 4.0,
+        "wpm": 90.0,
+        "speaking_wpm": 90.0,
+        "pause_seconds": 0.0,
+    }
 
 
 def test_flagging_the_transcript_speaks_for_no_setting():

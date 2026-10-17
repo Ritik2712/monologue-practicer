@@ -47,7 +47,7 @@ How the project works, file by file, and why each design decision was made:
   of that take, its coaching, the comparison with the original, and the feedback controls.
 - **General Practice** at `/general`: for any speaking, without an original to compare
   with. Choose a delivery profile, record in the browser or upload a file, and get
-  speaking rate (with pauses excluded), every pause, loudness and pitch, phrase by phrase,
+  your pace, every pause, loudness and pitch, phrase by phrase,
   with a timeline you can click to listen. Its analyses are kept in a history of their own
   and can be compared, reopened and deleted. It needs the API and the worker running; the
   screen tells you if either is missing.
@@ -58,6 +58,20 @@ How the project works, file by file, and why each design decision was made:
   [Ollama](https://ollama.com), and every figure in it is checked against the measurements.
   If Ollama is not running, the analysis still works and the coaching is written from fixed
   rules instead; you can ask the model again later without re-recording.
+- **Phrases and pace**, in every result. A silence of half a second or more is a pause. A
+  phrase ends only at a pause of a second or more; a shorter pause stays inside its phrase
+  and is shown at the place it fell, like "Be honest are ‖ 0.5 s all of us". Each phrase,
+  and the recording as a whole, has two paces:
+
+  | Pace | Worked out as | What it is for |
+  | --- | --- | --- |
+  | **Delivery pace** | words ÷ the length of the phrases, short pauses inside them counted | The figure shown first, and the one to practise against |
+  | Speaking speed | words ÷ the time spent speaking, every pause left out | How fast the words themselves were said |
+
+  A delivery is slowed by pausing, not by saying the words slowly, so the coaching for a
+  fast pace asks for short stops inside the line and leaves the words alone. A third
+  figure, the whole-clip WPM, also counts the long pauses and the silence at both ends; it
+  is shown and never used to judge speed.
 - **Where your voice sits**, in every result. Two things decide how a voice is heard: its
   pitch (the note it speaks on) and its resonance (how deep or bright it sounds). The app
   measures both and places each in one of three ranges, with how far into the range it
@@ -80,6 +94,14 @@ How the project works, file by file, and why each design decision was made:
   nothing about where your voice sits is judged. The choice is remembered in this browser.
   The drills are gentle voice exercises, not medical advice: stop if your throat feels
   strained, and consider a voice coach or a speech therapist for guidance.
+- **Download** any analysis as a Markdown file (a plain text document that opens in any
+  editor): **Download as Markdown** in the header of a result; **Download** on a monologue,
+  for its original and every take of it; **Download all as Markdown** in the General
+  Practice history; and **Download every analysis as Markdown** at the top of the
+  Monologues list for everything at once. The file holds every measurement, each phrase
+  with its pauses, the coaching with the facts and bands behind it, your feedback, and
+  for a take of a monologue its comparison with the original. To get a PDF, open the file
+  and print it.
 - **Feedback** on every result of your own, next to the thing it is about. On a pause:
   intentional, accidental, "not a pause: I was still speaking", or "too short to split the
   phrase". On a phrase: a pause was missed (pick the silence the app heard, or the word
@@ -158,7 +180,11 @@ new tables and columns. Existing analyses are kept: they become "takes", made wi
 default settings, each the first result of its own recording. A take stored before Phase 8
 belongs to no monologue, so it shows in the General Practice history; a reference recording
 stored before it is now a monologue. A result stored before Phase 9 does not say where the
-voice sits; analysing the recording again adds it, if the recording was kept:
+voice sits, and one stored before Phase 10 ends a phrase at every pause and shows only a
+speaking speed. Analysing the recording again brings either up to date, if the recording
+was kept; the screen says so on such a result. A monologue's original is kept by default,
+so open it in step 1 of Daily Practice and press **Analyse this recording again** once.
+No database step is new in Phase 10:
 
 ```bash
 cd backend && uv run alembic upgrade head
@@ -319,6 +345,16 @@ Fetch the result, using the `analysisId` from the finished job. The coaching is 
 
 ```bash
 curl -s http://localhost:4321/api/analyses/ANALYSIS_ID
+```
+
+Save an analysis, or everything stored, as a Markdown file:
+
+```bash
+curl -s -OJ http://localhost:4321/api/analyses/ANALYSIS_ID/export
+```
+
+```bash
+curl -s -OJ "http://localhost:4321/api/export?scope=all"
 ```
 
 Have the coaching written again by the AI model. This prints a new job to follow the same

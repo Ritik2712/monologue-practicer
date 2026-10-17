@@ -31,6 +31,27 @@ export const REFERENCE_PAUSE_CHOICES: { category: FeedbackCategory; label: strin
   { category: "split_wrong", label: "Too short to split the phrase here" },
 ];
 
+/**
+ * What can be said about one particular pause.
+ *
+ * In a result whose phrases can hold a pause, a pause inside a phrase did not split
+ * anything, so "too short to split the phrase" is not offered for it. For a pause that did
+ * end a phrase, the same report is worded as what it now says.
+ */
+export function pauseChoices(
+  pause: { insideSegment?: boolean },
+  options: { reference: boolean; holdsPauses: boolean },
+): { category: FeedbackCategory; label: string }[] {
+  const choices = options.reference ? REFERENCE_PAUSE_CHOICES : PAUSE_CHOICES;
+  if (!options.holdsPauses) return choices;
+  if (pause.insideSegment) return choices.filter((choice) => choice.category !== "split_wrong");
+  return choices.map((choice) =>
+    choice.category === "split_wrong"
+      ? { ...choice, label: "Should not have ended the phrase" }
+      : choice,
+  );
+}
+
 const PAUSE_CATEGORIES = new Set(PAUSE_CHOICES.map((choice) => choice.category));
 
 const PAUSE_LABELS: Partial<Record<FeedbackCategory, PauseLabel>> = {
@@ -217,6 +238,14 @@ export function settingsMismatch(
 ): string | null {
   const a = mine?.min_pause_ms ?? DEFAULT_MIN_PAUSE_MS;
   const b = theirs?.min_pause_ms ?? DEFAULT_MIN_PAUSE_MS;
+  // Before a phrase could hold a pause, every pause ended one.
+  const breakA = mine?.segment_break_ms ?? a;
+  const breakB = theirs?.segment_break_ms ?? b;
+  if (a === b && breakA !== breakB) {
+    const ended = (breakMs: number, minPause: number) =>
+      breakMs <= minPause ? "at every pause" : `only at a pause of ${breakMs / 1000} s or more`;
+    return `The two were analysed with different settings: this attempt ended a phrase ${ended(breakA, a)}, and the earlier one ${ended(breakB, b)}. Pauses are found the same way in both. Phrase speeds, pace variation and the delivery pace are not like for like.`;
+  }
   if (a === b) return null;
   return `The two were analysed with different settings: a silence counted as a pause from ${a} ms in this attempt and from ${b} ms in the earlier one. Pause counts and phrase speeds are therefore not like for like.`;
 }

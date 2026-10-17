@@ -11,18 +11,20 @@ figure in `grounding.py`.
 import math
 from dataclasses import dataclass
 
-from app import profiles, schemas
+from app import profiles, schemas, stretches
 from app.coaching import rules
 from app.coaching.findings import (
     VOICE_HEARD,
     VOICE_KINDS,
     FindingSet,
     number,
+    pace_bands,
     seconds_text,
     timecode,
 )
 from app.coaching.settings import CoachingSettings
 from app.llm import Message
+from app.pipeline.settings import AnalysisSettings
 
 # Room kept free in the model's context for the instructions, the findings and its answer.
 RESERVED_TOKENS = 2600
@@ -30,6 +32,8 @@ MIN_TRANSCRIPT_TOKENS = 600
 MAX_ANSWER_TOKENS = 600
 # Tried in order until the transcript fits: words kept per phrase. None means all of them.
 WORD_LIMITS: tuple[int | None, ...] = (None, 40, 25, 15, 10, 6, 3)
+# How many words are shown before a pause inside a phrase, to say where in the line it fell.
+INSIDE_PAUSE_WORDS = 3
 
 LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "hinglish": "Hinglish (Hindi and English)"}
 
@@ -115,13 +119,33 @@ def _transcript_lines(
     compact: bool = False,
     labels: dict[str, str] | None = None,
 ) -> list[str]:
-    """One line per phrase, with the pauses between them, in order.
+    """One line per phrase, with the pauses inside it and after it, in order.
+
+    A pause inside a phrase gets a line of its own under the phrase, saying which words it
+    came after. The phrase's own line keeps all its words together, because that is the
+    line the model is told to quote from.
 
     The compact form is for long recordings. Timings and figures are costly for the model
     to read, so it gives each phrase's start time only, leaves out its WPM, and lists only
     the pauses long enough to register. That leaves room for more of the words.
     """
-    pause_after = {pause.after_segment_id: pause for pause in body.pauses}
+    pause_after = {
+        pause.after_segment_id: pause for pause in body.pauses if not pause.inside_segment
+    }
+    inside: dict[str, list[schemas.PauseEvent]] = {}
+    for pause in body.pauses:
+        if pause.inside_segment:
+            inside.setdefault(pause.after_segment_id, []).append(pause)
+    said_in: dict[int, list[str]] = {}
+    for word in body.words:
+        index = stretches.stretch_index_of(body, word)
+        if index is not None:
+            said_in.setdefault(index, []).append(word.text)
+
+    def marked_by(pause: schemas.PauseEvent) -> str:
+        label = (labels or {}).get(pause.id)
+        return f", marked {label} by the actor" if label else ""
+
     lines: list[str] = []
     for segment in body.segments:
         if only is None or segment.id in only:
@@ -133,20 +157,28 @@ def _transcript_lines(
             if compact:
                 lines.append(f"{segment.id} [{timecode(segment.start_seconds)}]: {said}")
             else:
-                pace = (
-                    f" {number(segment.segment_wpm)} WPM"
-                    if segment.reliable and segment.segment_wpm is not None
-                    else ""
-                )
+                wpm = stretches.delivery_wpm_of(segment)
+                pace = f" {number(wpm)} WPM" if segment.reliable and wpm is not None else ""
                 lines.append(
                     f"{segment.id} [{timecode(segment.start_seconds)}-"
                     f"{timecode(segment.end_seconds)}]{pace}: {said}"
                 )
+        for pause in inside.get(segment.id, []) if only is None else []:
+            marked = marked_by(pause)
+            if compact and not marked:
+                continue
+            # The few words before it, so the model can say where in the line it fell.
+            before = " ".join(said_in.get(pause.index, [])[-INSIDE_PAUSE_WORDS:])
+            after = f" after “{before}”" if before else ""
+            lines.append(
+                f"  (inside {segment.id}, {pause.id}: "
+                f"{seconds_text(pause.duration_seconds)} of silence{after}{marked})"
+            )
         pause = pause_after.get(segment.id)
         if pause is None or only is not None:
             continue
         label = (labels or {}).get(pause.id)
-        marked = f", marked {label} by the actor" if label else ""
+        marked = marked_by(pause)
         if not compact:
             lines.append(f"({pause.id}: {seconds_text(pause.duration_seconds)} of silence{marked})")
         elif pause.significance != "short" or label:
@@ -222,10 +254,15 @@ def _for_model(finding: schemas.Finding) -> str:
     return text
 
 
-def _bands_text(settings: CoachingSettings) -> str:
+def _segment_break_seconds(body: schemas.AnalysisBody) -> float:
+    return AnalysisSettings.from_dict(body.settings).segment_break_ms / 1000
+
+
+def _bands_text(body: schemas.AnalysisBody, settings: CoachingSettings) -> str:
+    slow, fast = pace_bands(body, settings)
     return (
         "BANDS (this app's rough bands, not targets taken from any actor): pace is unhurried "
-        f"under {number(settings.slow_wpm)} WPM and fast over {number(settings.fast_wpm)} WPM. "
+        f"under {number(slow)} WPM and fast over {number(fast)} WPM. "
         f"A pause registers from {seconds_text(settings.registering_pause_seconds)}. A held "
         f"silence is {seconds_text(settings.held_silence_seconds)} or more."
     )
@@ -312,11 +349,14 @@ def build_prompt(
             _profile_text(body.profile),
             f"RECORDING: {seconds_text(body.duration_seconds)} long. Language: {language}."
             + (f"\nCautions about the measurements:{cautions}" if cautions else ""),
-            "TRANSCRIPT, one line per segment. A segment is one phrase between pauses."
+            "TRANSCRIPT, one line per segment. A segment is one phrase, ended by a pause of "
+            f"{seconds_text(_segment_break_seconds(body))} or more. A shorter pause stays "
+            "inside its phrase and is listed under it. A phrase's WPM is its delivery pace: "
+            "its words over its whole length, the pauses inside it counted."
             + (" Long phrases are cut short with “…”." if shortened else "")
             + "\n"
             + "\n".join(lines),
-            _bands_text(settings),
+            _bands_text(body, settings),
             (
                 "FINDINGS\n"
                 "Issues, most important first (corrections come only from these):\n"

@@ -2,7 +2,7 @@
 
 import { type ReactNode, useCallback, useId, useState } from "react";
 
-import { Button } from "@/components/Button";
+import { Button, buttonClasses } from "@/components/Button";
 
 import { PAUSE_CONTEXT_SECONDS } from "../coaching";
 import { compareAttempts, earlierAttempts } from "../compare";
@@ -53,6 +53,18 @@ import {
   Section,
   Tile,
 } from "./parts";
+import {
+  deliveryWpmOf,
+  hasDeliveryPace,
+  insidePausesText,
+  madeBeforeSegmentBreak,
+  pausePlace,
+  phraseParts,
+  recordingDelivery,
+  secondsText,
+  segmentBreakSeconds,
+} from "../pace";
+import { analysisExportUrl } from "../exportLinks";
 import { TimelineChart } from "./TimelineChart";
 import { VoiceRangeSection } from "./VoiceRangeSection";
 
@@ -103,6 +115,7 @@ const SETTING_LABELS: Record<string, [label: string, unit: string]> = {
   version: ["Version of the app's default settings", ""],
   calibration_version: ["Version of your calibration (1 means the defaults)", ""],
   min_pause_ms: ["A silence counts as a pause from", "ms"],
+  segment_break_ms: ["A pause ends a phrase from", "ms"],
   medium_pause_ms: ["A pause is “medium” from", "ms"],
   long_silence_ms: ["A pause is a “long silence”, starting a new section, from", "ms"],
   min_segment_ms: ["Shortest segment whose WPM is trusted", "ms"],
@@ -149,6 +162,11 @@ export function Results({
   // The minimum pause this result was made with, in words. Feedback can move it, so it is
   // read from the result rather than assumed to be half a second.
   const pauseFloor = pauseFloorText(analysis.settings);
+  // A result made before a phrase could hold a pause has one pace, and is shown as it was.
+  const holdsPauses = hasDeliveryPace(analysis);
+  const delivery = recordingDelivery(analysis.metrics);
+  const breakText = secondsText(segmentBreakSeconds(analysis));
+  const insideCount = analysis.pauses.filter((pause) => pause.insideSegment).length;
   const items = feedback?.state.items ?? [];
   const calibration =
     feedback?.state.calibration.status === "ready" ? feedback.state.calibration.data : null;
@@ -219,14 +237,24 @@ export function Results({
             </p>
           )}
         </div>
-        {!isReference && (
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={onClose}>Close results</Button>
-            <Button variant="danger" onClick={onDelete}>
-              Delete this analysis
-            </Button>
-          </div>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {/* A plain link: the backend answers with a file, and the browser saves it. */}
+          <a
+            href={analysisExportUrl(analysis.analysisId)}
+            download
+            className={buttonClasses("secondary")}
+          >
+            Download as Markdown
+          </a>
+          {!isReference && (
+            <>
+              <Button onClick={onClose}>Close results</Button>
+              <Button variant="danger" onClick={onDelete}>
+                Delete this analysis
+              </Button>
+            </>
+          )}
+        </div>
       </header>
 
       {analysis.warnings.length > 0 && (
@@ -262,23 +290,62 @@ export function Results({
         </Notice>
       )}
 
+      {madeBeforeSegmentBreak(analysis) && (
+        <Notice kind="info">
+          <p>
+            This result was made when every pause ended a phrase. The app now ends a phrase
+            only at a pause of 1 second or more, and keeps a shorter pause inside its phrase.
+            So here the phrases are shorter than a new analysis would make them, and the pace
+            shown leaves every pause out. This result is not changed.
+          </p>
+          <p className={`mt-1 ${MUTED}`}>
+            {analysis.audioRetained
+              ? "Analysing again makes a new revision next to this one, cut the new way."
+              : "The recording was not kept, so it cannot be analysed again. New recordings are cut the new way."}
+          </p>
+          {analysis.audioRetained && onReanalyse && !outdated && (
+            <div className="mt-2">
+              <Button disabled={busy} onClick={onReanalyse}>
+                Analyse this recording again
+              </Button>
+            </div>
+          )}
+        </Notice>
+      )}
+
       {/* --- Summary ------------------------------------------------------------------- */}
       <Section id="summary-heading" title="Summary">
         <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
           <div className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
             <div className="flex flex-wrap items-center gap-2">
-              <p className={`text-sm ${MUTED}`}>Speech-active WPM</p>
-              <QualityBadge quality={m.speechActiveWpm.quality} />
-              {isFocus("speechActiveWpm") && <FocusTag />}
+              <p className={`text-sm ${MUTED}`}>{holdsPauses ? "Delivery pace" : "Speech-active WPM"}</p>
+              <QualityBadge quality={delivery.quality} />
+              {(isFocus("deliveryWpm") || isFocus("speechActiveWpm")) && <FocusTag />}
             </div>
-            <p className="mt-1 text-5xl font-semibold">{formatMetric(m.speechActiveWpm)}</p>
+            <p className="mt-1 text-5xl font-semibold">
+              {formatMetric(delivery)}
+              {delivery.value !== null && (
+                <span className={`ml-2 text-base font-normal ${MUTED}`}>WPM</span>
+              )}
+            </p>
             <p className={`mt-2 text-sm ${MUTED}`}>
-              {m.speechActiveWpm.quality === "unavailable"
-                ? m.speechActiveWpm.note
-                : "Words ÷ time spent speaking. Pauses are left out, so this is how fast you speak while you are speaking."}
+              {delivery.quality === "unavailable"
+                ? delivery.note
+                : holdsPauses
+                  ? `Words ÷ the length of ${isReference ? "the" : "your"} phrases. A pause shorter than ${breakText} is part of how a line is delivered, so it is counted. A longer one ends the phrase and is left out.`
+                  : "Words ÷ time spent speaking. Pauses are left out, so this is how fast you speak while you are speaking."}
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {holdsPauses && (
+              <Tile
+                label="Speaking speed"
+                value={formatMetric(m.speechActiveWpm)}
+                unit="WPM"
+                metric={m.speechActiveWpm}
+                hint="Every pause left out: how fast the words themselves were said."
+              />
+            )}
             <Tile
               label="Whole-clip WPM"
               value={formatMetric(m.wholeClipWpm)}
@@ -297,7 +364,11 @@ export function Results({
               label="Pauses"
               value={formatMetric(m.pauseCount, 0)}
               metric={m.pauseCount}
-              hint={`Silences of ${pauseFloor} or more between phrases.`}
+              hint={
+                holdsPauses
+                  ? `Silences of ${pauseFloor} or more. ${insideCount} inside a phrase, ${analysis.pauses.length - insideCount} long enough to end one.`
+                  : `Silences of ${pauseFloor} or more between phrases.`
+              }
             />
             <Tile
               label="Median pause"
@@ -377,7 +448,11 @@ export function Results({
       <Section
         id="pace-heading"
         title="Pace"
-        description={`Each segment is one phrase: speech with no pause of ${pauseFloor} or more inside it. Segment WPM is that phrase's words ÷ its own length.`}
+        description={
+          holdsPauses
+            ? `Each segment is one phrase: it ends at a pause of ${breakText} or more. A shorter pause stays inside the phrase and is shown where it fell. A phrase's WPM is its delivery pace: its words ÷ its whole length, those pauses counted.`
+            : `Each segment is one phrase: speech with no pause of ${pauseFloor} or more inside it. Segment WPM is that phrase's words ÷ its own length.`
+        }
       >
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Tile
@@ -407,7 +482,7 @@ export function Results({
                   <span>
                     Segment {segment.index + 1} at {formatTimecode(segment.startSeconds)}:{" "}
                     <span className="font-medium">
-                      {segment.paceVsTypical} ({formatNumber(segment.segmentWpm)} WPM)
+                      {segment.paceVsTypical} ({formatNumber(deliveryWpmOf(segment))} WPM)
                     </span>
                   </span>
                   {playButton(
@@ -502,7 +577,7 @@ export function Results({
                     <th scope="col" className="py-2 pr-4 font-medium">At</th>
                     <th scope="col" className="py-2 pr-4 font-medium">Length</th>
                     <th scope="col" className="py-2 pr-4 font-medium">Kind</th>
-                    <th scope="col" className="py-2 pr-4 font-medium">Between</th>
+                    <th scope="col" className="py-2 pr-4 font-medium">Where</th>
                     <th scope="col" className="py-2 pr-4 font-medium">Listen</th>
                     {feedback && <th scope="col" className="py-2 font-medium">Your feedback</th>}
                   </tr>
@@ -522,9 +597,7 @@ export function Results({
                           <span className={`block text-xs ${MUTED}`}>Starts a new section</span>
                         )}
                       </td>
-                      <td className="py-2 pr-4 whitespace-nowrap">
-                        Segments {pause.index + 1} and {pause.index + 2}
-                      </td>
+                      <td className="py-2 pr-4 whitespace-nowrap">{pausePlace(analysis, pause)}</td>
                       <td className="py-2 pr-4">
                         {playButton(
                           `Play the pause at ${formatTimecode(pause.startSeconds)} with a little either side`,
@@ -540,6 +613,7 @@ export function Results({
                             disabled={feedback.state.saving}
                             store={feedback.store}
                             reference={isReference}
+                            holdsPauses={holdsPauses}
                           />
                         </td>
                       )}
@@ -814,6 +888,7 @@ type SegmentsTableProps = {
 
 function SegmentsTable({ analysis, playButton, report }: SegmentsTableProps) {
   const { segments } = analysis;
+  const holdsPauses = hasDeliveryPace(analysis);
   const panelId = useId();
   // One phrase's report form is open at a time, so the table stays readable.
   const [openId, setOpenId] = useState<string | null>(null);
@@ -838,7 +913,9 @@ function SegmentsTable({ analysis, playButton, report }: SegmentsTableProps) {
             <th scope="col" className="py-2 pr-3 font-medium">#</th>
             <th scope="col" className="py-2 pr-3 font-medium">Time</th>
             <th scope="col" className="py-2 pr-3 text-right font-medium">Words</th>
-            <th scope="col" className="py-2 pr-3 text-right font-medium">WPM</th>
+            <th scope="col" className="py-2 pr-3 text-right font-medium">
+              {holdsPauses ? "Delivery pace" : "WPM"}
+            </th>
             <th scope="col" className="py-2 pr-3 font-medium">Vs. typical</th>
             <th scope="col" className="py-2 pr-3 font-medium">What was said</th>
             <th scope="col" className="py-2 font-medium">{report ? "Listen / report" : "Listen"}</th>
@@ -854,6 +931,9 @@ function SegmentsTable({ analysis, playButton, report }: SegmentsTableProps) {
             ].filter(Boolean);
             const saved = report ? segmentFeedback(report.tools.state.items, segment.id) : [];
             const open = openId === segment.id;
+            const pace = deliveryWpmOf(segment);
+            const inside = insidePausesText(segment);
+            const parts = phraseParts(analysis, segment);
             return (
                 <tr
                   key={segment.id}
@@ -867,15 +947,22 @@ function SegmentsTable({ analysis, playButton, report }: SegmentsTableProps) {
                   <td className="py-2 pr-3 tabular-nums whitespace-nowrap">
                     {formatTimecode(segment.startSeconds)} – {formatTimecode(segment.endSeconds)}
                     <span className={`block text-xs ${MUTED}`}>
-                      {formatSpan(segment.speechActiveSeconds)}
+                      {inside
+                        ? `${formatSpan(segment.endSeconds - segment.startSeconds)}, ${formatSpan(segment.speechActiveSeconds)} speaking`
+                        : formatSpan(segment.speechActiveSeconds)}
                     </span>
                   </td>
                   <td className="py-2 pr-3 text-right tabular-nums">
                     {segment.wordCount ?? UNAVAILABLE}
                   </td>
                   <td className="py-2 pr-3 text-right">
-                    <span className="font-medium tabular-nums">{formatNumber(segment.segmentWpm)}</span>
-                    {!segment.reliable && segment.segmentWpm !== null && (
+                    <span className="font-medium tabular-nums">{formatNumber(pace)}</span>
+                    {inside && segment.segmentWpm !== null && (
+                      <span className={`block text-xs whitespace-nowrap ${MUTED}`}>
+                        {formatNumber(segment.segmentWpm)} speaking
+                      </span>
+                    )}
+                    {!segment.reliable && pace !== null && (
                       <span className="mt-0.5 block">
                         <QualityBadge quality="estimated" />
                       </span>
@@ -885,7 +972,23 @@ function SegmentsTable({ analysis, playButton, report }: SegmentsTableProps) {
                     {segment.paceVsTypical ? PACE_LABELS[segment.paceVsTypical] : UNAVAILABLE}
                   </td>
                   <td className="py-2 pr-3">
-                    {segment.transcript || <span className={MUTED}>{UNAVAILABLE}</span>}
+                    {parts.length > 1 ? (
+                      parts.map((part, position) => (
+                        <span key={position}>
+                          {part.text}
+                          {part.pauseAfter && (
+                            <span
+                              className={`mx-1.5 rounded border border-zinc-300 px-1 text-xs whitespace-nowrap tabular-nums dark:border-zinc-700 ${MUTED}`}
+                            >
+                              pause {formatNumber(part.pauseAfter.durationSeconds, 1)} s
+                            </span>
+                          )}
+                        </span>
+                      ))
+                    ) : (
+                      segment.transcript || <span className={MUTED}>{UNAVAILABLE}</span>
+                    )}
+                    {inside && <span className={`mt-0.5 block text-xs ${MUTED}`}>{inside}.</span>}
                     {voice.length > 0 && (
                       <span className={`mt-0.5 block text-xs ${MUTED}`}>
                         Against your typical phrase: {voice.join(" · ")}

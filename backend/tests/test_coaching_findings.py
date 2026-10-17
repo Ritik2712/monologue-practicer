@@ -378,7 +378,9 @@ def test_bands_must_be_in_order():
         CoachingSettings(slow_wpm=200, fast_wpm=140)
     with pytest.raises(ValueError):
         CoachingSettings(held_silence_seconds=0)
-    assert CoachingSettings().to_dict()["version"] == 1
+    with pytest.raises(ValueError):
+        CoachingSettings(delivery_slow_wpm=175, delivery_fast_wpm=125)
+    assert CoachingSettings().to_dict()["version"] == 2
 
 
 # --- The user's own labels on pauses -----------------------------------------------------

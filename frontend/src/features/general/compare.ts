@@ -13,10 +13,15 @@ export type ComparedMetric = {
   digits: number;
   /** Shown as a percentage rather than a ratio. */
   percent?: boolean;
+  /** Read in its place from a result that does not have this one. */
+  fallback?: MetricName;
 };
 
 export const COMPARED_METRICS: ComparedMetric[] = [
-  { key: "speechActiveWpm", label: "Speech-active WPM", unit: "WPM", digits: 1 },
+  // A result made before the delivery pace existed has one pace, stored as its
+  // speech-active WPM: no phrase of it holds a pause, so that is its delivery pace.
+  { key: "deliveryWpm", label: "Delivery pace", unit: "WPM", digits: 1, fallback: "speechActiveWpm" },
+  { key: "speechActiveWpm", label: "Speaking speed (every pause left out)", unit: "WPM", digits: 1 },
   { key: "wholeClipWpm", label: "Whole-clip WPM (including pauses)", unit: "WPM", digits: 1 },
   { key: "paceVariation", label: "Pace variation", unit: "WPM", digits: 1 },
   { key: "pauseCount", label: "Pauses", unit: "", digits: 0 },
@@ -36,12 +41,14 @@ export type ComparisonRow = ComparedMetric & {
   estimated: boolean;
 };
 
-type MetricMap = Partial<Record<MetricName, MetricValue>>;
+type MetricMap = Partial<Record<MetricName, MetricValue | null>>;
 
 export function compareAttempts(current: MetricMap, previous: MetricMap): ComparisonRow[] {
   return COMPARED_METRICS.map((metric) => {
-    const now = current[metric.key];
-    const before = previous[metric.key];
+    const read = (metrics: MetricMap) =>
+      metrics[metric.key] ?? (metric.fallback ? metrics[metric.fallback] : undefined);
+    const now = read(current);
+    const before = read(previous);
     const scale = metric.percent ? 100 : 1;
     // Rounded to what is shown before subtracting, so the three columns always add up:
     // 32% against 50% reads as -18, never -19 because of hidden decimals.

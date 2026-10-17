@@ -9,8 +9,11 @@ is in [DOCUMENTATION_BACKEND.md](DOCUMENTATION_BACKEND.md).
 
 Everything described here is built.
 
-**Last updated:** end of Phase 9 (the "Where your voice sits" section of every result,
-and the optional voice goal on the recording form). Before that, Phase 8 (the Monologues
+**Last updated:** end of Phase 11 (links that download analyses as Markdown). Before
+that, Phase 10 (the delivery pace as the main figure, phrases that show
+the pauses inside them, in the results, the script, the timeline and the lists). Before
+that, Phase 9 (the "Where your voice sits" section of every result, and the optional
+voice goal on the recording form). Before that, Phase 8 (the Monologues
 list, Daily Practice done on a chosen monologue, rounds, the script of the original, a
 page for a take's full analysis).
 
@@ -96,6 +99,8 @@ frontend/
             ├── compare.ts            The change between two attempts
             ├── coaching.ts           Small decisions about showing coaching
             ├── voiceRange.ts         Small decisions about showing where a voice sits
+            ├── pace.ts               Small decisions about showing pace, and the pauses a phrase holds
+            ├── exportLinks.ts        The addresses analyses are downloaded from
             ├── feedbackStore.ts      The feedback on the result on view, and the calibration
             ├── feedback.ts           Small decisions about showing feedback and calibration
             ├── waveform.ts           The arithmetic behind the waveform picture
@@ -618,6 +623,7 @@ it rests on.
 | `validation.ts` | Is this file an audio type, non-empty and under the size limit? |
 | `compare.ts` | The difference between two attempts, metric by metric. |
 | `coaching.ts` | What to play for a piece of evidence, which phrase a correction is practised on, what to do when the AI model is unavailable, and whether asking again could help. |
+| `pace.ts` | Which pace a result has, the pauses a phrase holds, a phrase as runs of words with its pauses between them, and where a pause lies. Reads old and new results alike. Works no figure out. |
 | `voiceRange.ts` | The words for each range and marker, where the mark goes on a scale bar, and which phrases left the range aimed for. Works no measurement out. |
 | `feedbackStore.ts` | Holds the feedback on the result on view and the calibration; one request per action. No React. |
 | `feedback.ts` | Which feedback belongs to which pause or phrase, the silences inside a phrase, whether labels have changed, how the minimum pause is worded. |
@@ -769,10 +775,11 @@ From top to bottom, in `Results.tsx`:
 | Header | Date, profile, language (and how it was known), length. Which revision this is, with links to the other results from the same recording (6.20). Close and Delete |
 | Warnings | Anything that affects how far the numbers can be trusted |
 | Older settings | Only when the minimum pause has moved since this result was made: says so, and offers to analyse the recording again (6.20) |
-| Summary | **Speech-active WPM** as the one large figure; then whole-clip WPM (labelled "including pauses"), words, time speaking, pauses, median and longest pause |
+| Older phrases | Only on a result made before Phase 10: says that every pause ended a phrase then, and offers to analyse the recording again if it was kept (6.9c) |
+| Summary | **Delivery pace** as the one large figure; then the speaking speed, whole-clip WPM (labelled "including pauses"), words, time speaking, pauses (how many inside a phrase, how many ending one), median and longest pause. See 6.9c |
 | Recording | The player, and the timeline chart |
 | Coaching | Who wrote it; a four-line delivery summary; up to three corrections, each with **Useful / Not useful**; what is already working; targets for the next take; what is uncertain or not measured; a button to have it written again. See 6.9a |
-| Pace | Your typical pace, pace variation, slowest and fastest segment; phrases well away from your typical pace; the segments table, each row with **Report a problem** (6.18) |
+| Pace | Your typical pace, pace variation, slowest and fastest segment; phrases well away from your typical pace; the segments table, each row showing the pauses inside it where they fell, with **Report a problem** (6.18) |
 | Pauses | Average, total, pause share, silence before/after; the pauses table, each row with a **Your feedback** list (6.18) |
 | Voice | Loudness and pitch variation, pitch range, median pitch, voice above background, hesitation sounds, breaths (unavailable); emphasis candidates |
 | Where your voice sits | Pitch and resonance, each placed in a lower, neutral or higher range, for the recording and for every phrase. See 6.9b |
@@ -923,6 +930,84 @@ your pitch in the lower range", "Deepen your resonance") or under "What is alrea
 working", like any other finding, with **Measured** beside them and a Play button for the
 phrase furthest from the range. That needed no new component: the Coaching section draws
 whatever findings the backend sends (6.9a).
+
+### 6.9c Pace, and the pauses inside a phrase
+
+Added in Phase 10. What a phrase is, and why its pace counts the short pauses inside it,
+is in the science document, sections 4 and 6. This section is about how it is shown.
+
+**The large figure** is the delivery pace, with one sentence under it: "Words ÷ the length
+of your phrases. A pause shorter than 1 second is part of how a line is delivered, so it
+is counted. A longer one ends the phrase and is left out." The "1 second" is read from the
+result's own settings. Beside it, a smaller tile: **Speaking speed**, "Every pause left
+out: how fast the words themselves were said."
+
+**The segments table** has one row per phrase:
+
+```
+ #  Time              Words  Delivery pace   Vs. typical  What was said
+ 1  0:01.0 – 0:09.2      24  175.9           Typical      The morning train leaves the station
+    8.2 s, 6.8 s                210.6 speaking            at 7 and [pause 0.6 s] it reaches the
+    speaking                                              coast a little before noon [pause 0.8 s]
+                                                          So we should pack the bags tonight
+                                                          2 pauses inside, 1.4 s.
+ 2  0:10.4 – 0:13.6      10  189.6           Typical      Nobody told me the bridge had been …
+    3.2 s
+```
+
+| Part | What it shows |
+| --- | --- |
+| Time | From first sound to last. When the phrase holds a pause, its length and the time spent speaking in it |
+| Delivery pace | The phrase's main figure. Under it, the speaking speed, only when the two differ (the phrase holds a pause) |
+| What was said | The words, with each pause inside the phrase as a small mark at the place it fell, carrying its length |
+
+Which side of a pause a word is shown on comes from the stretch the backend put the word
+in, never from the word's own time, which can stray into the pause.
+
+**The pauses table** has a column **Where**: "Inside phrase 1" or "Between phrases 1 and
+2". As before it lists the pauses of a second or more first, with a tick box to list the
+shorter ones too; since Phase 10 those shorter ones are exactly the pauses inside
+phrases, so they are also visible in the segments table without ticking anything.
+
+**The feedback list on a pause** depends on where the pause lies (6.18): a pause inside a
+phrase is not offered "Too short to split the phrase", because it did not split one; a
+pause that ended a phrase offers "Should not have ended the phrase".
+
+**The script of the original** (5.13) keeps a phrase on one line and puts a small ‖ with
+the length after the word a pause followed: "Be honest are ‖ 0.5 s all of us". A pause
+that ended the phrase still has a line of its own under it.
+
+**The timeline** draws a phrase that holds pauses as its runs of speaking joined by a thin
+line, so the pauses show as gaps and the phrase still reads as one. Pointing at a moment
+inside such a gap says "Pause", not the phrase.
+
+**The lists** (the General Practice history, a monologue's takes) and the comparison with
+an earlier attempt show the delivery pace where they showed the speech-active WPM.
+
+**A result made before Phase 10** is shown as it was: "Speech-active WPM" as its large
+figure and "WPM" as its column, because that is the pace it has, with no pause marks,
+because none of its phrases holds one. A notice above the summary says why its phrases
+are shorter than a new analysis would make them, and offers **Analyse this recording
+again** when the recording was kept. Comparing it with a newer attempt adds a line saying
+that phrase speeds, pace variation and the delivery pace are not like for like.
+
+### 6.9d Downloading analyses
+
+Added in Phase 11. An analysis can be saved as a Markdown file: a text document with
+every figure of the result, to read, keep, or give to someone else. What the document
+holds is listed in the backend document, section 3.
+
+| Where | The button | What is downloaded |
+| --- | --- | --- |
+| The header of any result (a take's page, a General Practice result, the original in step 1) | **Download as Markdown** | That one analysis. For a take of a monologue, with its comparison with the original |
+| A row of the Monologues list | **Download** | That monologue: its original, then every take recorded for it |
+| The top of the Monologues list | **Download every analysis as Markdown** | Everything stored: every monologue with its takes, then the General Practice takes |
+| The General Practice history | **Download all as Markdown** | The takes that belong to no monologue |
+
+Each is a plain link to the backend, which answers with a file; the browser saves it to
+its downloads folder. The page fetches nothing and builds nothing. If the API is not
+running the link leads nowhere, and the notice at the top of the page already says the
+API is not running.
 
 ### 6.10 The timeline chart
 
@@ -2318,29 +2403,95 @@ Each entry says what was chosen, what was considered, and what was decided again
   recording against another goal, the file has to be submitted again with that goal
   chosen.
 
+### F84. A pause inside a phrase is shown in the words, where it fell
+
+- **Chosen:** the phrase's text is drawn as its runs of words with a small "pause 0.6 s"
+  mark between them. The same in the script, as ‖ with the length.
+- **Why:** the user asked for short pauses to be caught "so that it is clear where a
+  pause was taken". A count ("2 pauses inside") says how many; only the place says which
+  words they separate, and that is what an actor marks in a script.
+- **Decided against:** *a row of its own for each stretch under the phrase*: it brings
+  back the fragmented table this phase was about. *Only the count and total time*: kept
+  as a line under the words, not instead of them.
+
+### F85. Two paces on a phrase only when they differ
+
+- **Chosen:** every phrase shows its delivery pace. The speaking speed is added under it
+  only for a phrase that holds a pause.
+- **Why:** for a phrase with no pause inside, the two are the same number, and printing
+  it twice would invite the reader to look for a difference that is not there.
+- **In the summary** both are always shown, because for the recording as a whole they
+  almost always differ, and the smaller one is what tells slow words from long stops.
+
+### F86. An older result keeps its own labels
+
+- **Chosen:** a result made before Phase 10 is headed "Speech-active WPM", not "Delivery
+  pace", and carries a notice.
+- **Why:** its figure is words over speaking time, every pause left out. That is its
+  delivery pace only in the sense that none of its phrases holds a pause; under the new
+  heading, with the new one-line explanation ("a pause shorter than 1 second is
+  counted"), it would say something untrue about how that number was made.
+- **In lists and comparisons** the two share a column, "Delivery pace (WPM)", since each
+  row's figure is the main pace of its own result, and a mismatch of settings between
+  two results is said in words where they are set side by side.
+
+### F87. One helper file decides which pace a result has
+
+- **Chosen:** `pace.ts` holds `deliveryWpmOf`, `recordingDelivery`, `phraseParts` and
+  the rest. No component looks at `stretches` or `deliveryWpm` directly.
+- **Why:** the same reason as the backend's `stretches.py` (B69): "an older result has
+  one pace, and it is its delivery pace" should be written once. It is plain functions,
+  so it is tested without a browser.
+
+### F88. The pause choices are worked out from the pause
+
+- **Chosen:** `pauseChoices(pause, …)` returns the list for that pause: without "split
+  the phrase" for one inside a phrase, and with it reworded for one that ended a phrase.
+- **Why:** a control should not offer something the backend will refuse (B73), and the
+  old wording, "Too short to split the phrase here", is no longer what the report says
+  about a pause of over a second.
+- **Decided against:** hiding the report altogether. It is true of the pause, and the
+  answer explains why it changes nothing.
+
+### F89. A download is a link, not a request made by the page
+
+- **Chosen:** `<a href="…/export" download>`, styled as a button. The backend sends the
+  file with a header that tells the browser to save it.
+- **Why:** it is the simplest thing that works, and it works for a document of any size:
+  nothing is held in the page's memory, and there is no state to show (no progress, no
+  "preparing"). The addresses are built in one file, `exportLinks.ts`, and tested.
+- **Decided against:** *fetching the text and offering it through a blob*: more code, to
+  arrive at the same file. *Building the document in the browser from the result on
+  screen*: it could not include the other takes, or anything the screen has not loaded,
+  and would be a second writer of the same document.
+- **Honest limit:** with the API not running, pressing the link shows the browser's own
+  "cannot connect" page. The backend notice above says why; the link does not check.
+
 ### Decisions already made for later phases
 
 None. Every phase in the plan is built, and so is everything Phase 6 had listed as left out.
 
 ## 9. Tests
 
-Run with the command in the README. Current result: **309 tests pass**. 17 are new in
-Phase 9.
+Run with the command in the README. Current result: **329 tests pass**. 2 are new in
+Phase 11 (`features/general/exportLinks.test.ts`: one address per kind of document, and
+an ID with odd characters in it cannot change the address); 18 were new in Phase 10.
 
 | Test file | Tests | What it proves |
 | --- | --- | --- |
 | `features/practice/practiceState.test.ts` | 37 | Start, pause/resume, reset, expiry exactly once, skip, manual tick/untick, a stale timer cannot complete a step, progress numbers, config changes. The monologue of a round: choosing one is not progress; a round that is under way stays on its monologue; a day with none takes one at any point; switching clears only the round on screen. Rounds: not offered while a step is left; a finished round filed with its figures; a round with skipped steps is finished but not a full routine; **the day's routine stays done however little of an extra round is done**; a round never begun is not counted |
 | `features/practice/practiceStore.test.ts` | 34 | Saving and restoring after a refresh, new-day rollover, midnight edge cases, reset today vs. clear history, damaged or unavailable storage, two tabs. A day on which a monologue was only chosen is not saved; the monologue and the rounds survive a refresh; reset today clears every round and stays on the monologue; the next day starts with no monologue; **a day saved before Phase 8 still loads**, and can then be given a monologue; a monologue or round that does not read is dropped without losing the day |
-| `features/monologue/script.test.ts` | 6 | One line per phrase with the measured pause after it and none after the last; each phrase's pace and where to play it from; only the word that stood out is marked, not another saying of the same word; a phrase with no timed words falls back to its text, Hindi included; a recording with no words gives an empty script, not a broken one |
+| `features/monologue/script.test.ts` | 7 | One line per phrase with the measured pause after it and none after the last; each phrase's pace and where to play it from; only the word that stood out is marked, not another saying of the same word; a phrase with no timed words falls back to its text, Hindi included; a recording with no words gives an empty script, not a broken one. Since Phase 10: a pause inside a phrase is shown after the word it followed, by the word's stretch and not its time, and the phrase stays one line with its delivery pace |
+| `features/general/pace.test.ts` | 12 | Which pace a result has: the delivery pace where one is stored, and for an older result its one pace; the pause that ends a phrase, read from the result; the pauses a phrase holds, summed up or not mentioned; where a pause lies; **a phrase as runs of words with its pauses between them, going by the stretch a word was put in and not by its time**; the whole phrase in one piece for an older result or when no words were recognised |
 | `features/practice/format.test.ts` | 9 | `03:00`-style text, durations, local dates vs. UTC |
 | `features/general/voiceRange.test.ts` | 12 | The ranges are read from the result, one set per scale, and not guessed when it carries none; each range in words; the percentage worded as a position, and differently for the neutral range; the bar drawn in proportion, with the mark at the end for a value beyond it; nothing marked with no goal; **the measured phrases that sat anywhere but the range aimed for are marked**, and one that could not be placed is not; the goal sentence counts only what was measured; the count of phrases lists only the markers that occur |
 | `features/general/generalStore.test.ts` | 75 | *(Five more in Phase 9: the voice goal is none until chosen, and a recording is then sent without one; once chosen it is remembered between visits and sent with the next take; it is forgotten when set back to none; a remembered value that is not a goal is ignored; changing it changes nothing on view.)* *(Rewritten in part for Phase 8; the last sentences of this row say what replaced the tests about a chosen reference.)* Upload → poll → result; no double submit; refused uploads; resend with the same key; back-off and recovery when the backend is silent; retry; discard; cancel shown honestly; resume after refresh; open, delete, delete recording, clear history. Writing coaching again: followed to the new coaching; blocked while another run is in progress; does not pull you away from another analysis; failure with its reason and a second try; recognised after a refresh. References: loaded apart from takes; the chosen one remembered and restored; a stale choice dropped; adding one without disturbing the take on view; deleting one. The comparison: fetched as soon as a take and a reference are both there, following a change of either, never twice for one pair, never between two references, an out-of-date answer ignored. Waveforms: fetched once and only when asked, "not stored" told apart from a failure, and nothing else changed by loading one. Revisions: a corrected transcript shown as the new revision, with the earlier result still in the history; not shown if the user has opened another result meanwhile; a refused correction says why; the same recording played for both and released only when neither needs it; a fresh analysis followed to its new revision, for a take and for a reference; recognised after a refresh. A corrected reference becomes the chosen one, the take on view stays, and the comparison is fetched again with it. **Monologues (Phase 8):** the list loaded, and none watched until a screen says so; the history asking only for takes that belong to no monologue; watching one loads its takes and chooses its original, at once or when the list arrives; a late answer for the monologue watched before is ignored; an earlier revision of the original stays open until the original itself changes; a take sent with its monologue, shown, and every list brought up to date; adding a monologue without disturbing the take on view; deleting one with its takes; clearing the General Practice history leaving a monologue's take, run and recording. **The comparison:** fetched for a take of the watched monologue; **never for a take that belongs to none, and never with another monologue's original**; never twice for one pair; an out-of-date answer ignored |
 | `features/general/feedbackStore.test.ts` | 28 | Feedback and calibration loaded together for the result on view; an answer about a result the user has left is dropped, but its calibration kept; saving, removing, and staying busy until every save has finished; an adjustment announced until dismissed; a failed save keeps what was there and says why; undo and reset reword the list on view; the calibration's last good answer survives a failed check. The summary: loaded on request; asking the AI model and checking every two seconds until it has picked; a second click ignored; a refusal shown with the facts still on screen; a failed job shown and the checking stopped; checking carried on while the backend is briefly away; stopping a request; counted again after every change to feedback or settings, and not before the panel has asked; a late answer never replacing a newer one |
-| `features/general/feedback.test.ts` | 27 | Which entry belongs to which pause, phrase or correction (a rating never jumping to another correction); the silences inside a phrase, in order; the word before a moment; labels new, changed and removed since the coaching was written; the minimum pause read from the result and worded; when a result was made with older settings; how each piece of feedback and each revision is named. Picking a word: the gap after every word but the last, in time order, kept inside the phrase; **the silence a report will be about is the nearest within half a second**; words shown without punctuation, a Hindi word kept whole; which word a saved report came after, looking only at its own phrase. A reference is offered the two reports and neither label. The line beside the AI button in every state |
+| `features/general/feedback.test.ts` | 30 | Which entry belongs to which pause, phrase or correction (a rating never jumping to another correction); the silences inside a phrase, in order; the word before a moment; labels new, changed and removed since the coaching was written; the minimum pause read from the result and worded; when a result was made with older settings; how each piece of feedback and each revision is named. Picking a word: the gap after every word but the last, in time order, kept inside the phrase; **the silence a report will be about is the nearest within half a second**; words shown without punctuation, a Hindi word kept whole; which word a saved report came after, looking only at its own phrase. A reference is offered the two reports and neither label. The line beside the AI button in every state. Since Phase 10: what can be said about one pause (the full list in an older result; no “split the phrase” for a pause inside its phrase; reworded for one that ended a phrase); two results that cut their phrases differently are said to be not like for like |
 | `features/general/waveform.test.ts` | 16 | The shared timeline is as long as the longer recording; a shift moves a recording without changing its length; points that share a pixel keep their extremes; a quiet recording stays quiet unless stretched; nothing is drawn beyond full scale; round time-axis values, including before zero; where a moment falls in each recording |
 | `features/general/coaching.test.ts` | 12 | What is played for a phrase, a pause and a whole-recording measurement; the practice line always coming from the transcript; the help for each reason the AI model is unavailable; when writing again is and is not offered; the progress shown beside the button |
 | `features/general/recorder.test.ts` | 19 | Record, elapsed time from the clock, stop at the limit, WebM vs. MP4, discard at every stage, each kind of microphone problem, empty capture, microphone always released |
-| `features/general/helpers.test.ts` | 22 | Time and number formatting, missing values never shown as 0, file checks, comparison arithmetic, axis ticks, loudness scale, "what is at this moment", label fitting |
+| `features/general/helpers.test.ts` | 24 | Time and number formatting, missing values never shown as 0, file checks, comparison arithmetic, axis ticks, loudness scale, "what is at this moment", label fitting. Since Phase 10: a moment inside a phrase's own pause is a pause; attempts are compared on delivery pace, an older result's one pace read as that |
 | `features/general/healthMonitor.test.ts` | 5 | Checks only while watched, every 10 seconds, reports the worker or backend going away, stops when the screen is left |
 | `features/general/audioDuration.test.ts` | 4 | The unknown-length fix starts only when needed, waits for a real length, and cleans up |
 | `lib/api.test.ts` | 3 | Backend URLs are built correctly |
@@ -2557,3 +2708,41 @@ heard); the recordings with hiss and a result stored before Phase 9, whose wordi
 covered by tests and by the end-to-end script but was not looked at in the browser; and
 the section inside step 4 of Daily Practice, which is the same component on a narrower
 page.
+
+### Checked by hand in the browser at the end of Phase 10
+
+With the real API, worker, speech model and AI model, in a complete copy of the project
+on other ports, whose database was a copy of the project's own. The end-to-end script
+(backend document, section 10) had first put into it a recording with four known
+silences and a fresh analysis of each of the two real recordings.
+
+| Check | Result |
+| --- | --- |
+| The result of the recording with known silences, in General Practice | Large figure "Delivery pace 195.5 WPM" with its one-line explanation; tiles "Speaking speed 216.7 WPM", "Whole-clip WPM 139.1", "Pauses 4: 2 inside a phrase, 2 long enough to end one" |
+| Its segments table | Three rows. Row 1: "8.2 s, 6.8 s speaking", 24 words, 175.9 with "210.6 speaking" under it, and the words with "pause 0.6 s" and "pause 0.8 s" marked where they fell; "2 pauses inside, 1.4 s." Rows 2 and 3: one pace each, no mark |
+| Its pauses table | Column "Where": "Between phrases 1 and 2", "Between phrases 2 and 3". The feedback list offers "Should not have ended the phrase", and the report saved earlier shows its answer: the break is fixed, no setting changes |
+| The coaching on that result | The pace finding and the correction "Slow the delivery with pauses", worded by the AI model |
+| Daily Practice on the monologue whose original was analysed again | Summary "Delivery pace 170.4 WPM", "Speaking speed 201.6 WPM" |
+| The script of that original (step 2) | "13 phrases, 28 pauses". Line 2 reads "Be honest are ‖ pause 0.5 s all of us · 173 WPM", with "‖ pause 1.2 s" on its own line after it |
+| A result made before Phase 10 | Large figure headed "Speech-active WPM", column headed "WPM", no pause marks; the notice "This result was made when every pause ended a phrase…" and, the recording not having been kept, "it cannot be analysed again" |
+| The General Practice history | Column "Delivery pace (WPM)" |
+| The browser console, throughout | No errors |
+| 375 px wide | No sideways scrolling of the page; the pause marks wrap with the words |
+| A production build (`npm run build`), in the copy | All six routes built |
+
+One wording fault was found here and fixed: on a reference recording the large figure's
+explanation said "the length of *your* phrases". It now says "the phrases" there.
+
+**Not checked:** the **Analyse this recording again** button on a monologue's original in
+step 1, which was added after this check: it passes the store's existing, tested action
+to the notice, and was not pressed in a browser. The timeline's drawing of a phrase with
+gaps in it (the browser pane gave no picture at the time; what is under the pointer is covered by a test, the drawing is
+not); dark and light mode separately for the new marks; a screen reader; a real
+microphone, as in every phase.
+
+### Checked at the end of Phase 11
+
+Type-check, lint and all 329 tests. The four download links were **not** pressed in a
+browser: the user's app was not running, and the links are plain anchors to endpoints
+that are tested on the backend. Where each link sits on its screen was not looked at
+either, at any width.

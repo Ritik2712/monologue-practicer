@@ -46,7 +46,7 @@ def test_speech_active_wpm_excludes_pauses_and_whole_clip_wpm_includes_them():
     assert pace.speech_active_seconds == pytest.approx(8.0)
     assert pace.speech_active_wpm.value == pytest.approx(180)  # 24 words / 8 s
     assert pace.whole_clip_wpm.value == pytest.approx(72)  # 24 words / 20 s
-    assert "Pauses are excluded" in pace.speech_active_wpm.note
+    assert "Every pause is excluded" in pace.speech_active_wpm.note
     assert "including pauses" in pace.whole_clip_wpm.note
 
 
@@ -250,3 +250,85 @@ def test_no_typical_pace_with_fewer_than_three_reliable_segments():
     )
     assert typical_wpm(paces, DEFAULT_SETTINGS) is None
     assert [pace_vs_typical(pace, None, DEFAULT_SETTINGS) for pace in paces] == [None, None]
+
+
+# --- Delivery pace: a segment with pauses inside it ---------------------------------------
+
+
+def test_a_segment_with_a_pause_inside_has_a_delivery_pace_and_a_speaking_speed():
+    # One line of 11 words: 2 s of speaking, a 0.6 s pause, 2.4 s of speaking.
+    segments, _, paces = analyse(
+        [(0.0, 2.0), (2.6, 5.0)], make_words(0.0, 2.0, 5) + make_words(2.6, 5.0, 6)
+    )
+    assert len(segments) == 1
+    (pace,) = paces
+    assert pace.wpm == pytest.approx(132)  # 11 words / 5.0 s, the pause counted
+    assert pace.speaking_wpm == pytest.approx(150)  # 11 words / 4.4 s of speaking
+    assert pace.reliable
+
+
+def test_a_segment_with_no_pause_inside_has_one_pace():
+    _, _, (pace,) = analyse([(0.0, 4.0)], make_words(0.0, 4.0, 12))
+    assert pace.wpm == pace.speaking_wpm == pytest.approx(180)
+
+
+def test_the_recordings_delivery_pace_counts_pauses_inside_segments_and_not_those_between():
+    # A line with a 0.6 s pause in it, a 3 s pause, then a second line.
+    segments, _, paces = analyse(
+        [(0.0, 2.0), (2.6, 5.0), (8.0, 12.0)],
+        make_words(0.0, 2.0, 5) + make_words(2.6, 5.0, 6) + make_words(8.0, 12.0, 12),
+    )
+    pace = summarize_pace(segments, paces, 12.0, has_transcript=True, word_quality="measured")
+
+    assert len(segments) == 2
+    assert pace.delivery_wpm.value == pytest.approx(23 / (9.0 / 60))  # 5.0 s + 4.0 s
+    assert pace.speech_active_wpm.value == pytest.approx(23 / (8.4 / 60))  # speaking only
+    assert pace.whole_clip_wpm.value == pytest.approx(23 / (12.0 / 60))
+    assert pace.speech_active_seconds == pytest.approx(8.4)
+    assert pace.whole_clip_wpm.value < pace.delivery_wpm.value < pace.speech_active_wpm.value
+
+
+def test_without_a_pause_inside_any_segment_delivery_pace_is_the_speech_active_wpm():
+    segments, _, paces = analyse(
+        [(0.0, 4.0), (16.0, 20.0)], make_words(0.0, 4.0, 12) + make_words(16.0, 20.0, 12)
+    )
+    pace = summarize_pace(segments, paces, 20.0, has_transcript=True, word_quality="measured")
+    assert pace.delivery_wpm.value == pytest.approx(pace.speech_active_wpm.value)
+
+
+def test_whether_a_segment_is_long_enough_is_judged_on_its_speaking_time():
+    # 2.6 s from first sound to last, of which only 1.8 s is speaking.
+    _, _, (pace,) = analyse(
+        [(0.0, 1.0), (1.8, 2.6)], make_words(0.0, 1.0, 3) + make_words(1.8, 2.6, 2)
+    )
+    assert "short_segment" in pace.flags
+    assert not pace.reliable
+
+
+def test_a_segment_is_flagged_for_review_on_its_speaking_speed_whatever_pauses_it_holds():
+    # 13 words in 4 s of speaking is 195 WPM; with the 0.9 s pause counted it is 159.
+    _, _, (pace,) = analyse(
+        [(0.0, 2.0), (2.9, 4.9)], make_words(0.0, 2.0, 7) + make_words(2.9, 4.9, 6)
+    )
+    assert pace.speaking_wpm == pytest.approx(195)
+    assert pace.wpm == pytest.approx(13 / (4.9 / 60))
+    assert "wpm_outlier" in pace.flags
+    assert pace.reliable
+
+
+def test_typical_pace_and_variation_are_taken_from_delivery_pace():
+    # Three lines of 12 words in 4 s of speaking. The second also holds a 0.8 s pause.
+    spans = [(0.0, 4.0), (6.0, 8.0), (8.8, 10.8), (13.0, 17.0)]
+    words = (
+        make_words(0.0, 4.0, 12)
+        + make_words(6.0, 8.0, 6)
+        + make_words(8.8, 10.8, 6)
+        + make_words(13.0, 17.0, 12)
+    )
+    segments, _, paces = analyse(spans, words)
+    assert [pace.speaking_wpm for pace in paces] == pytest.approx([180, 180, 180])
+    assert [pace.wpm for pace in paces] == pytest.approx([180, 150, 180])
+    assert typical_wpm(paces, DEFAULT_SETTINGS) == pytest.approx(180)
+    pace = summarize_pace(segments, paces, 17.0, has_transcript=True, word_quality="measured")
+    assert pace.pace_min_wpm.value == pytest.approx(150)
+    assert pace.pace_variation.value > 0

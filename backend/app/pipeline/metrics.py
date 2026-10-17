@@ -1,14 +1,26 @@
 """Speaking-rate and pause numbers. Pure arithmetic on segments and pauses.
 
-Three different "words per minute" figures are produced, and they must never be confused:
+Several "words per minute" figures are produced, and they must never be confused.
 
-- segment WPM       = words in one segment / that segment's speaking time
-- speech-active WPM = all words / total speaking time          (pauses excluded)
-- whole-clip WPM    = all words / full clip length             (pauses included)
+For one segment:
 
-"Speaking time" is the length of the segments. Gaps shorter than the minimum pause sit
-inside a segment and count as speaking; detected pauses and the silence before and after
+- delivery pace  = its words / its whole length, the short pauses inside it included.
+                   How fast the line went by. The figure to practise against.
+- speaking speed = its words / the time spent speaking in it, those pauses left out.
+                   How fast the words themselves were said.
+
+For the recording:
+
+- delivery pace     = all words / the length of all segments   (pauses inside segments
+                      included; the longer pauses between segments are not)
+- speech-active WPM = all words / total speaking time          (every pause excluded)
+- whole-clip WPM    = all words / full clip length             (everything included)
+
+"Speaking time" is the length of the stretches. Gaps shorter than the minimum pause sit
+inside a stretch and count as speaking; detected pauses and the silence before and after
 the speech do not.
+
+A segment with no pause inside it has one pace: the two figures are the same number.
 """
 
 import statistics
@@ -48,7 +60,11 @@ def mean_confidence(segment: Segment) -> float | None:
 @dataclass(frozen=True)
 class SegmentPace:
     word_count: int
+    # Delivery pace: over the segment's whole length, its pauses included. This is the
+    # figure that is compared with the speaker's typical pace.
     wpm: float | None
+    # Speaking speed: over the time spent speaking only.
+    speaking_wpm: float | None
     confidence: float | None
     quality: Quality
     # False when the number should not be relied on; `flags` says why.
@@ -60,16 +76,17 @@ def segment_pace(
     segment: Segment, settings: AnalysisSettings, *, has_transcript: bool
 ) -> SegmentPace:
     if not has_transcript:
-        return SegmentPace(0, None, None, "unavailable", False, ("no_transcript",))
+        return SegmentPace(0, None, None, None, "unavailable", False, ("no_transcript",))
 
     word_count = count_words(segment.words)
     confidence = mean_confidence(segment)
-    wpm = words_per_minute(word_count, segment.duration)
-    if word_count == 0 or wpm is None:
-        return SegmentPace(word_count, None, confidence, "unavailable", False, ("no_words",))
+    wpm = words_per_minute(word_count, segment.span_seconds)
+    speaking_wpm = words_per_minute(word_count, segment.speaking_seconds)
+    if word_count == 0 or wpm is None or speaking_wpm is None:
+        return SegmentPace(word_count, None, None, confidence, "unavailable", False, ("no_words",))
 
     flags: list[str] = []
-    if round(segment.duration * 1000) < settings.min_segment_ms:
+    if round(segment.speaking_seconds * 1000) < settings.min_segment_ms:
         flags.append("short_segment")
     if word_count < settings.min_segment_words:
         flags.append("few_words")
@@ -77,11 +94,19 @@ def segment_pace(
         flags.append("low_confidence")
     reliable = not flags
     # An outlier is a prompt to double-check, not proof of a mistake, so it is flagged
-    # separately and the measured value is left exactly as it is.
-    if wpm > settings.wpm_outlier:
+    # separately and the measured value is left exactly as it is. It is judged on the
+    # speaking speed: too many words for the time spent speaking is what a misheard
+    # transcript looks like, whatever pauses the line had.
+    if speaking_wpm > settings.wpm_outlier:
         flags.append("wpm_outlier")
     return SegmentPace(
-        word_count, wpm, confidence, "measured" if reliable else "estimated", reliable, tuple(flags)
+        word_count,
+        wpm,
+        speaking_wpm,
+        confidence,
+        "measured" if reliable else "estimated",
+        reliable,
+        tuple(flags),
     )
 
 
@@ -121,6 +146,7 @@ def pace_vs_typical(
 class PaceSummary:
     total_words: int
     speech_active_seconds: float
+    delivery_wpm: Metric
     speech_active_wpm: Metric
     whole_clip_wpm: Metric
     pace_variation: Metric
@@ -136,7 +162,8 @@ def summarize_pace(
     has_transcript: bool,
     word_quality: Quality,
 ) -> PaceSummary:
-    speech_seconds = sum(segment.duration for segment in segments)
+    speech_seconds = sum(segment.speaking_seconds for segment in segments)
+    delivery_seconds = sum(segment.span_seconds for segment in segments)
     total_words = sum(pace.word_count for pace in paces)
 
     if not segments:
@@ -150,12 +177,24 @@ def summarize_pace(
 
     if reason:
         missing = unavailable("words/minute", reason)
-        return PaceSummary(total_words, speech_seconds, missing, missing, missing, missing, missing)
+        return PaceSummary(
+            total_words, speech_seconds, missing, missing, missing, missing, missing, missing
+        )
 
+    delivery_wpm = Metric(
+        words_per_minute(total_words, delivery_seconds),
+        "words/minute",
+        word_quality,
+        "Total words / the length of all segments. The short pauses inside a segment are "
+        "counted; the longer pauses between segments are not.",
+    )
     active = words_per_minute(total_words, speech_seconds)
     whole = words_per_minute(total_words, duration_seconds)
     speech_active_wpm = Metric(
-        active, "words/minute", word_quality, "Total words / speaking time. Pauses are excluded."
+        active,
+        "words/minute",
+        word_quality,
+        "Total words / speaking time. Every pause is excluded.",
     )
     whole_clip_wpm = Metric(
         whole,
@@ -172,6 +211,7 @@ def summarize_pace(
         return PaceSummary(
             total_words,
             speech_seconds,
+            delivery_wpm,
             speech_active_wpm,
             whole_clip_wpm,
             too_few,
@@ -183,13 +223,14 @@ def summarize_pace(
     return PaceSummary(
         total_words,
         speech_seconds,
+        delivery_wpm,
         speech_active_wpm,
         whole_clip_wpm,
         Metric(
             statistics.pstdev(reliable_wpms),
             "words/minute",
             word_quality,
-            f"Standard deviation of segment WPM. {note}",
+            f"Standard deviation of the segments' delivery pace. {note}",
         ),
         Metric(min(reliable_wpms), "words/minute", word_quality, f"Slowest segment. {note}"),
         Metric(max(reliable_wpms), "words/minute", word_quality, f"Fastest segment. {note}"),

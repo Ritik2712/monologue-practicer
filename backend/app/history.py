@@ -14,6 +14,7 @@ from app.models import Analysis, Job
 # The metrics shown in a history row and used to compare one attempt with another.
 SUMMARY_METRICS = (
     "totalWordCount",
+    "deliveryWpm",
     "speechActiveWpm",
     "wholeClipWpm",
     "typicalSegmentWpm",
@@ -73,7 +74,7 @@ def summarize(analysis: Analysis, original_filename: str | None) -> schemas.Anal
         name: schemas.MetricValue.model_validate(stored_metrics[name])
         for name in SUMMARY_METRICS
         # Results saved before a metric existed simply do not have it.
-        if name in stored_metrics
+        if stored_metrics.get(name) is not None
     }
     return schemas.AnalysisSummary(
         analysis_id=analysis.id,
